@@ -1,0 +1,66 @@
+import React, { useState } from 'react';
+import dynamic from 'next/dynamic';
+// @ts-ignore
+import 'react-grid-layout/css/styles.css';
+// @ts-ignore
+import 'react-resizable/css/styles.css';
+
+// dynamic で読み込む（SSRオフ）
+const GridLayout = dynamic(
+  () => import('react-grid-layout').then(mod => mod.WidthProvider(mod.Responsive)),
+  { ssr: false }
+) as any;
+
+type Props = {
+  presetTables: string[];
+  setPresetTables: React.Dispatch<React.SetStateAction<string[]>>;
+};
+
+const TableConfig: React.FC<Props> = ({ presetTables, setPresetTables }) => {
+  // レイアウト情報を state 管理
+  const [layout, setLayout] = useState<any[]>(
+    presetTables.map((tbl, i) => ({ i: tbl, x: i % 4, y: Math.floor(i / 4), w: 1, h: 1 }))
+  );
+
+  return (
+    <div>
+      {/* ① グリッドレイアウト */}
+      <GridLayout
+        className="layout"
+        layout={layout}
+        cols={8}
+        rowHeight={80}
+        width={800}
+        onLayoutChange={(newLayout: any[]) => setLayout(newLayout)}
+      >
+        {presetTables.map((tbl) => (
+          <div key={tbl} className="border p-2">
+            {tbl}
+          </div>
+        ))}
+      </GridLayout>
+
+      {/* ② 卓番号追加 */}
+      <div className="mt-4 flex">
+        <input
+          type="text"
+          placeholder="卓番号を追加"
+          value={''}
+          onChange={() => {}}
+          className="border px-2 py-1 rounded flex-1"
+        />
+        <button className="ml-2 px-4 py-1 bg-blue-500 text-white rounded">
+          ＋卓追加
+        </button>
+      </div>
+
+      {/* ③ 食／飲メニュー設定（略称） */}
+      <div className="mt-4">
+        <h4 className="font-medium mb-2">食べ放題メニュー設定</h4>
+        {/* ここに <select> と略称入力フォームを並べます */}
+      </div>
+    </div>
+  );
+};
+
+export default TableConfig;

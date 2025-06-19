@@ -1,0 +1,26 @@
+// src/types/react-grid-layout.d.ts
+declare module 'react-grid-layout' {
+  import * as React from 'react';
+
+  export interface LayoutItem {
+    i: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }
+
+  export interface GridLayoutProps {
+    layout?: LayoutItem[];
+    cols?: number;
+    rowHeight?: number;
+    width?: number;
+    onLayoutChange?: (layout: LayoutItem[]) => void;
+    children?: React.ReactNode;
+  }
+
+  const ReactGridLayout: React.ComponentType<GridLayoutProps>;
+  export class Responsive extends React.Component<GridLayoutProps> {}
+  export function WidthProvider<T>(comp: T): T;
+  export default ReactGridLayout;
+}
