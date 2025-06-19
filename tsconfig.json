@@ -28,6 +28,6 @@
     "**/*.tsx",
     "src/types/**/*.d.ts",
     ".next/types/**/*.ts"
-  ],
+, "src/app/table-management/page.tsx.backup", "src/components/TableManagement.tsx.backup "  ],
   "exclude": ["node_modules"]
 }
