@@ -1,4 +1,5 @@
 'use client';
+/* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-expressions */
 // 📌 ChatGPT からのテスト編集: 拡張機能連携確認済み
 
 import { useState, ChangeEvent, FormEvent, useMemo, useEffect } from 'react';
@@ -73,56 +74,6 @@ export default function Home() {
   const [showCourseStart, setShowCourseStart] = useState<boolean>(true);
   // 「コース開始時間表」で卓番を表示するかどうか
 const [showTableStart, setShowTableStart] = useState<boolean>(true);  
-      {/* ─────────────── 予約リスト×コース開始時間表セクション ─────────────── */}
-      {selectedMenu === '予約リスト×コース開始時間表' && (
-        <>
-          <section>
-            {/* ── フィルター切り替え ── */}
-            <div className="flex items-center space-x-2 mb-4">
-              <span className="font-semibold text-sm">フィルター:</span>
-              {/* フィルターコントロール等ここに挿入されている前提 */}
-              {/* ...既存のフィルターUI... */}
-            </div>
-            {/* ── コース名表示 切り替え ── */}
-            <div className="flex items-center space-x-2 mb-4">
-              <span className="font-semibold text-sm">コース名:</span>
-              <button
-                onClick={() => setShowCourseStart(true)}
-                className={`px-2 py-0.5 rounded text-xs ${
-                  showCourseStart ? 'bg-blue-500 text-white' : 'bg-gray-200'
-                }`}
-              >
-                ON
-              </button>
-              <button
-                onClick={() => setShowCourseStart(false)}
-                className={`px-2 py-0.5 rounded text-xs ${
-                  !showCourseStart ? 'bg-blue-500 text-white' : 'bg-gray-200'
-                }`}
-              >
-                OFF
-              </button>
-            </div>
-            {/* ...以下「コース開始時間表」の内容... */}
-            {/* 例: groupedStartTimes のレンダリング */}
-            {/* 
-            {Object.entries(groupedStartTimes).map(([time, courseGroups]) => (
-              <div key={time}>
-                <div className="font-bold">{time}</div>
-                {courseGroups.map((cg) => (
-                  <div key={cg.courseName}>
-                    {showCourseStart && (
-                      <div className="text-xs mb-1">({cg.courseName})</div>
-                    )}
-                    // ...その他の内容...
-                  </div>
-                ))}
-              </div>
-            ))}
-            */}
-          </section>
-        </>
-      )}
   const [mergeSameTasks, setMergeSameTasks] = useState<boolean>(false);
   const [taskSort, setTaskSort] = useState<'table' | 'guests'>('table');
   const [filterCourse, setFilterCourse] = useState<string>('全体');

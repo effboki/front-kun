@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 強制的にライトモードを固定 */
+html {
+  color-scheme: light;      /* ブラウザの自動ダーク適用を抑止 */
+  background-color: #ffffff;/* 念のため白背景を固定 */
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -14,12 +20,14 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/*
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
   }
 }
+*/
 
 body {
   background: var(--background);
