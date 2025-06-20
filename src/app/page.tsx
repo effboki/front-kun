@@ -1322,9 +1322,8 @@ if (allowedTaskLabels.size > 0 && !allowedTaskLabels.has(t.label)) return;
                         </select>
                       </div>
                       <div className="space-y-1">
-                        {courses
-                          .find((c) => c.name === courseByPosition[pos])!
-                          .tasks.slice()
+                        {(courses.find((c) => c.name === courseByPosition[pos])?.tasks ?? [])
+                          .slice()
                           .sort((a, b) => a.timeOffset - b.timeOffset)
                           .map((task) => (
                             <div
