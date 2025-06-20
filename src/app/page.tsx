@@ -315,6 +315,22 @@ const [showTableStart, setShowTableStart] = useState<boolean>(true);
     setPositions(next);
     localStorage.setItem('front-kun-positions', JSON.stringify(next));
     setNewPositionName('');
+    // --- 追加: courseByPosition / openPositions の初期化 -----------------
+    // 新しく作ったポジションにはデフォルトで先頭のコースを割り当てる。
+    const defaultCourse = courses[0]?.name || '';
+    const nextCourseByPosition = {
+      ...courseByPosition,
+      [newPositionName.trim()]: defaultCourse,
+    };
+    setCourseByPosition(nextCourseByPosition);
+    localStorage.setItem(
+      'front-kun-courseByPosition',
+      JSON.stringify(nextCourseByPosition)
+    );
+
+    // openPositions にもエントリを追加しておく（初期状態は閉じる）
+    setOpenPositions(prev => ({ ...prev, [newPositionName.trim()]: false }));
+    // --------------------------------------------------------------------
   };
   const removePosition = (pos: string) => {
     const next = positions.filter((p) => p !== pos);
@@ -324,6 +340,19 @@ const [showTableStart, setShowTableStart] = useState<boolean>(true);
     delete nextTasks[pos];
     setTasksByPosition(nextTasks);
     localStorage.setItem('front-kun-tasksByPosition', JSON.stringify(nextTasks));
+    // --- 追加: courseByPosition / openPositions から該当ポジションを削除 ----
+    setCourseByPosition(prev => {
+      const next = { ...prev };
+      delete next[pos];
+      localStorage.setItem('front-kun-courseByPosition', JSON.stringify(next));
+      return next;
+    });
+    setOpenPositions(prev => {
+      const next = { ...prev };
+      delete next[pos];
+      return next;
+    });
+    // --------------------------------------------------------------------
   };
 
   // ポジションの並び替え: 上へ移動
