@@ -1004,7 +1004,10 @@ if (allowedTaskLabels.size > 0 && !allowedTaskLabels.has(t.label)) return;
                   店舗設定画面
                 </button>
               </li>
-              <li>
+              <li aria-hidden="true">
+                <hr className="my-4 border-gray-600 opacity-50" />
+              </li>
+              <li className="mt-4">
                 <button
                   onClick={() => {
                     setSelectedMenu('営業前設定');
@@ -1015,7 +1018,10 @@ if (allowedTaskLabels.size > 0 && !allowedTaskLabels.has(t.label)) return;
                   営業前設定
                 </button>
               </li>
-              <li>
+              <li aria-hidden="true">
+                <hr className="my-4 border-gray-600 opacity-50" />
+              </li>
+              <li className="mt-4">
                 <button
                   onClick={() => {
                     setSelectedMenu('リマインド');
