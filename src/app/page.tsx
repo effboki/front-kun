@@ -543,6 +543,30 @@ const [courseStartFiltered, setCourseStartFiltered] = useState<boolean>(true);
       }
       return next;
     });
+
+    // --- 予約リストに登録済みのコース名も一括で更新する ---
+    setReservations(prev => {
+      const next = prev.map(r => {
+        if (r.course !== oldName) return r;
+
+        // completed キーの末尾に付く旧コース名も新コース名へ置換
+        const migratedCompleted: Record<string, boolean> = {};
+        Object.entries(r.completed || {}).forEach(([key, done]) => {
+          if (key.endsWith(`_${oldName}`)) {
+            const newKey = key.replace(new RegExp(`_${oldName}$`), `_${newName}`);
+            migratedCompleted[newKey] = done;
+          } else {
+            migratedCompleted[key] = done;
+          }
+        });
+
+        return { ...r, course: newName, completed: migratedCompleted };
+      });
+
+      // ローカルストレージへ保存
+      persistReservations(next);
+      return next;
+    });
   };
 
   // “表示タスクフィルター” のチェック操作
