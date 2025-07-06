@@ -47,7 +47,7 @@
     })
   );
   localStorage.setItem(
-    'front-kun-reservations',
+    'front-kun-reservations_cache',
     JSON.stringify(defaultData.reservations)
   );
 

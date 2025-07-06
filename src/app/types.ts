@@ -37,3 +37,10 @@ export interface CourseDef {
   /** そのコースで行うタスク一覧 */
   tasks: TaskDef[];
 }
+// ------------ 数値パッドで編集するフィールド種別 -----------------
+export type NumPadField =
+  | 'table'
+  | 'guests'
+  | 'presetTable'
+  | 'targetTable'
+  | 'pendingTable';
