@@ -49,34 +49,33 @@ export function useRealtimeReservations(
 
   useEffect(() => {
     console.log('[RealtimeRes] storeId=', storeId, 'joined=', joined);
-    console.log('[RealtimeRes] listening on path:', `stores/${storeId}/reservations`);
-    if (!joined || !storeId) {
-      console.log('[RealtimeRes] skip subscription');
+    if (!storeId) {
+      console.warn('[RealtimeRes] storeId is undefined, skipping listener');
+      return detach();
+    }
+    if (!joined) {
+      console.log('[RealtimeRes] joined flag is false, skipping subscription');
       return detach();
     }
 
-    // すでに付いていれば一度外す（多重 attach 防止）
-    detach();
+    const path = `stores/${storeId}/reservations`;
+    console.log('[RealtimeRes] listening on path:', path);
 
     // 今日の日付（"YYYY-MM-DD"）
     const today = new Date().toISOString().slice(0, 10);
 
-    // /stores/{id}/reservations から “本日” だけを listen
     const q = query(
       collection(db, 'stores', storeId, 'reservations'),
       where('date', '==', today)
     );
     console.log('[RealtimeRes] query object:', q);
 
-    console.log('[RealtimeRes] subscribing to query:', q);
     unsubRef.current = onSnapshot(q, (snap) => {
-      const arr = snap.docs.map(
-        (d) =>
-          ({
-            id: d.id,
-            ...d.data(),
-          } as Reservation)
-      );
+      const arr = snap.docs.map((d) => {
+        // Extract reservation data without id field, then append id
+        const data = d.data() as Omit<Reservation, 'id'>;
+        return { ...data, id: d.id };
+      });
       console.log('[RealtimeRes] got docs:', arr);
       setList(arr);
     });
@@ -84,12 +83,12 @@ export function useRealtimeReservations(
     // 0:00 で自動 detach
     const timer = setTimeout(detach, msUntilMidnight());
 
-    // コンポーネント unmount 時にも detach
+    // cleanup on unmount
     return () => {
       clearTimeout(timer);
       detach();
     };
-  }, [joined, storeId]);
+  }, [storeId, joined]);
 
   return list;
 }
