@@ -17,7 +17,7 @@ import type { Reservation } from '@/types/reservation';
  * @param joined  参加ボタン ON/OFF
  */
 export function useRealtimeReservations(
-  storeId: string,
+  storeId: string | undefined,
   joined: boolean
 ): Reservation[] {
   // detach 用 unsubscribe を覚えておく
@@ -48,8 +48,12 @@ export function useRealtimeReservations(
   };
 
   useEffect(() => {
-    // 参加していなければ何もしない
-    if (!joined) return detach();
+    console.log('[RealtimeRes] storeId=', storeId, 'joined=', joined);
+    console.log('[RealtimeRes] listening on path:', `stores/${storeId}/reservations`);
+    if (!joined || !storeId) {
+      console.log('[RealtimeRes] skip subscription');
+      return detach();
+    }
 
     // すでに付いていれば一度外す（多重 attach 防止）
     detach();
@@ -62,7 +66,9 @@ export function useRealtimeReservations(
       collection(db, 'stores', storeId, 'reservations'),
       where('date', '==', today)
     );
+    console.log('[RealtimeRes] query object:', q);
 
+    console.log('[RealtimeRes] subscribing to query:', q);
     unsubRef.current = onSnapshot(q, (snap) => {
       const arr = snap.docs.map(
         (d) =>
@@ -71,6 +77,7 @@ export function useRealtimeReservations(
             ...d.data(),
           } as Reservation)
       );
+      console.log('[RealtimeRes] got docs:', arr);
       setList(arr);
     });
 

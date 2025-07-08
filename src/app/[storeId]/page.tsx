@@ -162,7 +162,7 @@ const [pendingTables, setPendingTables] =
   });
 
   // Firestore リアルタイム listener（参加時のみ接続）
-  useRealtimeReservations('default', joinedToday);
+  useRealtimeReservations(id, joinedToday);
 
   // 0:00 で自動リセット
   useEffect(() => {
