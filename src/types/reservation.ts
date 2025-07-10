@@ -25,4 +25,10 @@ export interface Reservation {
 
   /** メモ（任意） */
   notes?: string | null;
+
+  /** 最終更新時刻（サーバ側で自動付与） */
+  updatedAt?: any;  // Firebase Timestamp
+
+  /** ドキュメントの世代番号（1,2,3…） */
+  version?: number;
 }

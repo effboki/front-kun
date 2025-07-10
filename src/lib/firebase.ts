@@ -4,7 +4,7 @@
 // ──────────────────────────────────────────────────────────────
 
 import { initializeApp } from 'firebase/app';
-import { getFirestore }   from 'firebase/firestore';
+import { initializeFirestore, persistentLocalCache } from 'firebase/firestore';
 import {
   doc,
   getDoc,
@@ -36,17 +36,16 @@ const ns = `front-kun-${getStoreId()}`;
 const RES_KEY   = `${ns}-reservations`;
 const STORE_KEY = `${ns}-storeSettings`;
 
-// ── joinedToday flag for offline queue control ──
-const JOINED_KEY = `${ns}-joinedToday`;
-
-/** 本日の営業に参加状態を取得 */
+/**
+ * 参加ボタン機能を廃止したため
+ * - getJoinedToday は常に true を返す
+ * - setJoinedToday は no‑op
+ */
 export function getJoinedToday(): boolean {
-  return localStorage.getItem(JOINED_KEY) === 'true';
+  return true;
 }
-
-/** 本日の営業に参加状態を設定 (参加ボタン押下時に呼び出し) */
-export function setJoinedToday(flag: boolean): void {
-  localStorage.setItem(JOINED_KEY, flag ? 'true' : 'false');
+export function setJoinedToday(_flag: boolean): void {
+  /* no-op */
 }
 
 // Firebase config は .env.local (NEXT_PUBLIC_*) から取得
@@ -58,7 +57,9 @@ const firebaseConfig = {
 
 // アプリ／DB を初期化＆エクスポート
 export const app = initializeApp(firebaseConfig);
-export const db  = getFirestore(app);
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache()
+});
 
 // ─────────────────────────────────────────────
 // 既存ローカルストレージ版 API も引き継ぎ

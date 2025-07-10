@@ -4,9 +4,7 @@ import {
   onSnapshot,
   collection,
   query,
-  where,
-  Timestamp,
-  Unsubscribe,
+  Unsubscribe
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import type { Reservation } from '@/types/reservation';
@@ -64,9 +62,12 @@ export function useRealtimeReservations(
     // 今日の日付（"YYYY-MM-DD"）
     const today = new Date().toISOString().slice(0, 10);
 
+<<<<<<< HEAD
+=======
+    // /stores/{id}/reservations-YYYY-MM-DD サブコレクションを直接 listen
+>>>>>>> restore-nojoin
     const q = query(
-      collection(db, 'stores', storeId, 'reservations'),
-      where('date', '==', today)
+      collection(db, 'stores', storeId, `reservations-${today}`)
     );
     console.log('[RealtimeRes] query object:', q);
 

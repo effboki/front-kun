@@ -4,7 +4,7 @@ import React from 'react';
 import { useParams } from 'next/navigation';
 import { toggleTaskComplete } from '@/lib/reservations';
 import { renameCourseTx } from '@/lib/courses';
-import { loadStoreSettings, saveStoreSettingsTx, db, setJoinedToday } from '@/lib/firebase';
+import { loadStoreSettings, saveStoreSettingsTx, db } from '@/lib/firebase';
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-expressions */
 // 📌 ChatGPT からのテスト編集: 拡張機能連携確認済み
 
@@ -153,28 +153,17 @@ const [pendingTables, setPendingTables] =
   useState<Record<number, { old: string; next: string }>>({});
 
 
-  // ⏰ “本日の営業に参加” フラグ（localStorage で日付つき保存）
-  const JOIN_KEY = `${ns}-joinedDate`;
-  const todayStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const [joinedToday, setJoinedToday] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return localStorage.getItem(JOIN_KEY) === todayStr;
-  });
+  // 参加ボタンを廃止したので常に true
+  const joinedToday = true;
 
   // Firestore リアルタイム listener（参加時のみ接続）
+<<<<<<< HEAD
   useRealtimeReservations(id, joinedToday);
+=======
+  useRealtimeReservations('default', true);
 
-  // 0:00 で自動リセット
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = new Date();
-      if (now.getHours() === 0 && now.getMinutes() === 0) {
-        setJoinedToday(false);
-        localStorage.removeItem(JOIN_KEY);
-      }
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, []);
+>>>>>>> restore-nojoin
+
 
   // ─── Firestore 初回 1 read → localStorage キャッシュ ───
   useEffect(() => {
@@ -1478,37 +1467,6 @@ setNewResDrink('');
 
   return (
     <>
-      {/* ─── 参加バナー ─── */}
-      {!joinedToday && (
-        <div className="fixed bottom-4 right-4 z-50">
-          <button
-            onClick={async () => {
-              setJoinedToday(true);
-              localStorage.setItem(JOIN_KEY, todayStr);
-              const ops = dequeueAll();
-              for (const op of ops) {
-                switch (op.type) {
-                  case 'storeSettings':
-                    await saveStoreSettingsTx(op.payload);
-                    break;
-                  case 'add':
-                    await addReservationFS(op.payload);
-                    break;
-                  case 'update':
-                    await updateReservationFS(op.id, { [op.field]: op.value });
-                    break;
-                  case 'delete':
-                    await deleteAllReservationsFS();
-                    break;
-                }
-              }
-            }}
-            className="px-4 py-2 bg-blue-600 text-white rounded shadow"
-          >
-            本日の営業に参加する
-          </button>
-        </div>
-      )}
       {/* Header with hamburger */}
       <header className="fixed top-0 left-0 w-full bg-white z-40 p-2 shadow">
         <button
