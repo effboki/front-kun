@@ -3,8 +3,9 @@ import { enqueueOp } from './opsQueue';
 // ── store-specific Firestore helper ──
 function getStoreId(): string {
   if (typeof window === 'undefined') return 'default';
-  const parts = window.location.pathname.split('/');
-  return parts[1] || 'default';
+  // 例:  /demo/   →  demo
+  const raw = window.location.pathname.split('/')[1] || 'default';
+  return raw.replace(/^\/+|\/+$/g, '') || 'default';
 }
 // localStorage namespace prefix
 const ns = `front-kun-${getStoreId()}`;

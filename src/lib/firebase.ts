@@ -23,11 +23,19 @@ import {
 
 // ── storeId取得ヘルパー ─────────────────
 export function getStoreId(): string {
+  // 環境変数用 Fallback（前後スラッシュ除去）
+  const fallback =
+    (process.env.NEXT_PUBLIC_STORE_ID || 'default').replace(/^\/+|\/+$/g, '');
+
+  // SSR 時は window が無い
   if (typeof window === 'undefined') {
-    return process.env.NEXT_PUBLIC_STORE_ID || 'default';
+    return fallback;
   }
-  const parts = window.location.pathname.split('/');
-  return parts[1] || (process.env.NEXT_PUBLIC_STORE_ID || 'default');
+
+  // `/demo/` や `//demo//foo` のようなパスでも
+  // 空文字セグメントを除去して 先頭の storeId を取得
+  const parts = window.location.pathname.split('/').filter(Boolean);
+  return parts[0] || fallback;
 }
 
 // ── localStorage 名前空間設定 ─────────────────
