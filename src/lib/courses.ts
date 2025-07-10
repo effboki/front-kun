@@ -10,6 +10,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { getStoreId } from '@/lib/firebase';
 
 /**
  * Firestore 予約コレクション内でコース名を一括リネームするヘルパー。
@@ -19,7 +20,14 @@ import { db } from '@/lib/firebase';
 export async function renameCourseTx(oldName: string, newName: string) {
   if (oldName === newName) return;
 
-  const reservationsRef = collection(db, 'reservations');
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const storeId = getStoreId();          // ← 既存ヘルパー
+  const reservationsRef = collection(
+    db,
+    'stores',
+    storeId,
+    `reservations-${todayStr}`
+  );
   // course === oldName のドキュメントだけ取得
   const q = query(reservationsRef, where('course', '==', oldName));
   const snap = await getDocs(q);
@@ -38,7 +46,9 @@ export async function renameCourseTx(oldName: string, newName: string) {
         editedCompleted[replacedKey] = val;
       });
 
-      trx.update(doc(db, 'reservations', docSnap.id), {
+      trx.update(
+        doc(db, 'stores', storeId, `reservations-${todayStr}`, docSnap.id),
+      {
         course: newName,
         completed: editedCompleted,
       });

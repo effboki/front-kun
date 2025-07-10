@@ -8,8 +8,10 @@ function getStoreId(): string {
 }
 // localStorage namespace prefix
 const ns = `front-kun-${getStoreId()}`;
-// --- YYYY-MM-DD 文字列をサブコレ名に使う ---
-const todayStr = new Date().toISOString().slice(0, 10);
+/** 当日の日付 "YYYY-MM-DD" を返すヘルパー */
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 /** 既存予約ドキュメントを部分更新。
  *   - ドキュメントが無い場合は setDoc で新規作成（merge:true）
  *   - オフライン時は pending 書き込みを待機
@@ -37,7 +39,7 @@ export async function updateReservationFS(
       setDoc,
     } = await import('firebase/firestore');
 
-    const useTodayStr = options?.todayStr ?? todayStr;
+    const useTodayStr = options?.todayStr ?? todayStr();
     const ref = doc(db, 'stores', getStoreId(), `reservations-${useTodayStr}`, String(id));
 
     const autoPatch = {
@@ -87,7 +89,7 @@ export async function toggleTaskComplete(
     return;
   }
   const { doc, runTransaction, serverTimestamp, increment } = await import('firebase/firestore');
-  const ref = doc(db, 'stores', getStoreId(), `reservations-${todayStr}`, String(reservationId));
+  const ref = doc(db, 'stores', getStoreId(), `reservations-${todayStr()}`, String(reservationId));
 
   await runTransaction(db, async trx => {
     const snap = await trx.get(ref);
@@ -116,7 +118,7 @@ export async function addReservationFS(data: any): Promise<void> {
     return;
   }
   const { addDoc, collection, waitForPendingWrites, serverTimestamp } = await import('firebase/firestore');
-  const ref = collection(db, 'stores', getStoreId(), `reservations-${todayStr}`);
+  const ref = collection(db, 'stores', getStoreId(), `reservations-${todayStr()}`);
   await addDoc(ref, {
     ...data,
     version: 1,
@@ -128,7 +130,7 @@ export async function addReservationFS(data: any): Promise<void> {
 /** 予約を 1 回だけ全件取得（初回キャッシュ用） */
 export async function fetchAllReservationsOnce(): Promise<any[]> {
   const { collection, getDocs, query, orderBy } = await import('firebase/firestore');
-  const q = query(collection(db, 'stores', getStoreId(), `reservations-${todayStr}`), orderBy('time', 'asc'));
+  const q = query(collection(db, 'stores', getStoreId(), `reservations-${todayStr()}`), orderBy('time', 'asc'));
   const snap = await getDocs(q);
   return snap.docs.map(d => ({ id: Number(d.id), ...(d.data() as any) }));
 }
@@ -151,7 +153,7 @@ export async function deleteAllReservationsFS(): Promise<void> {
   } = await import('firebase/firestore');
 
   // 予約コレクションを取得
-  const snap = await getDocs(collection(db, 'stores', getStoreId(), `reservations-${todayStr}`));
+  const snap = await getDocs(collection(db, 'stores', getStoreId(), `reservations-${todayStr()}`));
   if (snap.empty) return;           // ドキュメントが無ければ終了
 
   // 一括削除バッチ
