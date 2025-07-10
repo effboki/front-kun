@@ -56,19 +56,18 @@ export function useRealtimeReservations(
       return detach();
     }
 
-    const path = `stores/${storeId}/reservations`;
-    console.log('[RealtimeRes] listening on path:', path);
-
     // 今日の日付（"YYYY-MM-DD"）
     const today = new Date().toISOString().slice(0, 10);
 
-<<<<<<< HEAD
-=======
+    // listen 先サブコレ: /stores/{id}/reservations-YYYY-MM-DD
+    const path = `stores/${storeId}/reservations-${today}`;
+    console.log('[RealtimeRes] listening on path:', path);
+
     // /stores/{id}/reservations-YYYY-MM-DD サブコレクションを直接 listen
->>>>>>> restore-nojoin
     const q = query(
       collection(db, 'stores', storeId, `reservations-${today}`)
     );
+
     console.log('[RealtimeRes] query object:', q);
 
     unsubRef.current = onSnapshot(q, (snap) => {

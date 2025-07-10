@@ -17,6 +17,7 @@ const todayStr = new Date().toISOString().slice(0, 10);
 export async function updateReservationFS(
   id: string | number,
   patch: Partial<any>,
+  options?: { todayStr?: string }
 ) {
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
@@ -29,38 +30,39 @@ export async function updateReservationFS(
     // Firestore 動的 import
     const {
       doc,
-      getDoc,
-      updateDoc,
-      setDoc,
+      runTransaction,
       waitForPendingWrites,
       increment,
       serverTimestamp,
+      setDoc,
     } = await import('firebase/firestore');
 
-    const ref = doc(db, 'stores', getStoreId(), `reservations-${todayStr}`, String(id));
+    const useTodayStr = options?.todayStr ?? todayStr;
+    const ref = doc(db, 'stores', getStoreId(), `reservations-${useTodayStr}`, String(id));
 
     const autoPatch = {
       version: increment(1),
       updatedAt: serverTimestamp(),
     };
 
-    // --- version conflict check ---
-    const { baseVersion, ...editPatch } = patch as any;
-    const snap = await getDoc(ref);
-    const serverVer = snap.exists() ? ((snap.data() as any).version ?? 0) : 0;
-    if (baseVersion !== undefined && baseVersion < serverVer) {
-      throw new Error('STALE_WRITE');
-    }
+    await runTransaction(db, async (trx) => {
+      const snap = await trx.get(ref);
+      const serverVer = snap.exists() ? ((snap.data() as any).version ?? 0) : 0;
 
-    if (snap.exists()) {
-      // 既存 ⇒ 差分更新
-      await updateDoc(ref, { ...editPatch, ...autoPatch });
-    } else {
-      // 無い ⇒ 新規作成（merge:true で将来の update に耐える）
-      await setDoc(ref, { ...editPatch, ...autoPatch }, { merge: true });
-    }
+      const { baseVersion, ...editPatch } = patch as any;
+      if (baseVersion !== undefined && baseVersion < serverVer) {
+        throw new Error('STALE_WRITE');
+      }
 
-    // ② オフライン時の再送同期
+      if (snap.exists()) {
+        trx.update(ref, { ...editPatch, ...autoPatch });
+      } else {
+        // 新規作成 (merge:true 相当の挙動を再現)
+        trx.set(ref, { ...editPatch, ...autoPatch });
+      }
+    });
+
+    // オフライン時の再送同期
     await waitForPendingWrites(db);
   } catch (err) {
     console.error('updateReservationFS failed:', err);

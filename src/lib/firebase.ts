@@ -36,18 +36,6 @@ const ns = `front-kun-${getStoreId()}`;
 const RES_KEY   = `${ns}-reservations`;
 const STORE_KEY = `${ns}-storeSettings`;
 
-/**
- * 参加ボタン機能を廃止したため
- * - getJoinedToday は常に true を返す
- * - setJoinedToday は no‑op
- */
-export function getJoinedToday(): boolean {
-  return true;
-}
-export function setJoinedToday(_flag: boolean): void {
-  /* no-op */
-}
-
 // Firebase config は .env.local (NEXT_PUBLIC_*) から取得
 const firebaseConfig = {
   apiKey:      process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -157,7 +145,7 @@ export async function saveStoreSettingsTx(settings: {
   tables: any[];
 }) {
   // オフライン時はキューに積んで終了
-  if (!getJoinedToday()) {
+  if (!navigator.onLine) {
     enqueueOp({ type: 'storeSettings', payload: settings });
     return;
   }
@@ -176,29 +164,40 @@ export async function saveStoreSettingsTx(settings: {
   saveStoreSettings(settings);
 }
 
+// ── 溜め込んだ opsQueue を Firestore へ一括反映 ──────────────
+async function flushQueuedOps() {
+  const ops = dequeueAll();
+  for (const op of ops) {
+    switch (op.type) {
+      case 'storeSettings':
+        await saveStoreSettingsTx(op.payload);
+        break;
+      case 'add':
+        await addReservationFS(op.payload);
+        break;
+      case 'update':
+        await updateReservationFS(op.id, { [op.field]: op.value });
+        break;
+      case 'delete':
+        await deleteAllReservationsFS();
+        break;
+    }
+  }
+}
+
 // ─────────────────────────────────────────────
 // オンライン復帰時に溜めた操作を一括処理
 // ─────────────────────────────────────────────
 if (typeof window !== 'undefined') {
   console.log('[online event] navigator.onLine=', navigator.onLine, 'queued ops=', localStorage.getItem(QUEUE_KEY));
+
+  // ページ読み込み時点でオンラインなら即座にキューを反映
+  if (navigator.onLine) {
+    flushQueuedOps();
+  }
+
+  // オンライン復帰時のみ再送
   window.addEventListener('online', async () => {
-    const ops = dequeueAll();
-    for (const op of ops) {
-      switch (op.type) {
-        case 'storeSettings':
-          await saveStoreSettingsTx(op.payload);
-          break;
-        case 'add':
-          await addReservationFS(op.payload);
-          break;
-            case 'update':
-      // Op の型が { type: 'update'; id; field; value; } なので
-      await updateReservationFS(op.id, { [op.field]: op.value });
-      break;
-        case 'delete':
-          await deleteAllReservationsFS();
-          break;
-      }
-    }
+    await flushQueuedOps();
   });
 }

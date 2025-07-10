@@ -153,21 +153,13 @@ const [pendingTables, setPendingTables] =
   useState<Record<number, { old: string; next: string }>>({});
 
 
-  // 参加ボタンを廃止したので常に true
-  const joinedToday = true;
-
-  // Firestore リアルタイム listener（参加時のみ接続）
-<<<<<<< HEAD
-  useRealtimeReservations(id, joinedToday);
-=======
-  useRealtimeReservations('default', true);
-
->>>>>>> restore-nojoin
+  // Firestore リアルタイム listener（オンライン時のみ接続）
+  useRealtimeReservations(id, navigator.onLine);
 
 
   // ─── Firestore 初回 1 read → localStorage キャッシュ ───
   useEffect(() => {
-    if (!joinedToday) return;                // 参加していなければ Firestore を読まない
+    if (!navigator.onLine) return;           // オフラインならスキップ
     (async () => {
       try {
         const list = await fetchAllReservationsOnce();
@@ -184,7 +176,7 @@ const [pendingTables, setPendingTables] =
         console.error('fetchAllReservationsOnce failed', err);
       }
     })();
-  }, [joinedToday]);
+  }, []);
   const hasLoadedStore = useRef(false); // 店舗設定を 1 回だけ取得
   const [selectedMenu, setSelectedMenu] = useState<string>('予約リスト×タスク表');
 /* ─────────────── 卓番変更用 ─────────────── */
@@ -248,23 +240,19 @@ const toggleTableForMove = (id: number) => {
   }, [selectedMenu]);
   // --- 店舗設定を Firestore に保存して閉じる ----------------------------
   const handleStoreSave = async () => {
-    if (joinedToday) {
-      await toast.promise(
-        saveStoreSettingsTx({
-          eatOptions,
-          drinkOptions,
-          courses,
-          tables: presetTables,
-        }),
-        {
-          loading: '保存中…',
-          success: '店舗設定を保存しました',
-          error: '保存に失敗しました（オフライン中かもしれません）',
-        }
-      );
-    } else {
-      toast('ローカルにのみ保存しました（サーバ共有していません）', { icon: '💾' });
-    }
+    await toast.promise(
+      saveStoreSettingsTx({
+        eatOptions,
+        drinkOptions,
+        courses,
+        tables: presetTables,
+      }),
+      {
+        loading: '保存中…',
+        success: '店舗設定を保存しました',
+        error: '保存に失敗しました（オフライン中かもしれません）',
+      }
+    );
     // Always write current courses array to localStorage
     localStorage.setItem(`${ns}-courses`, JSON.stringify(courses));
   };
@@ -916,7 +904,7 @@ const renameCourse = async () => {
   toast.success(`「${oldName}」を「${newName}」に変更しました`);
 
   /* ── 2) Firestore トランザクションで一括リネーム ─── */
-  if (joinedToday) {
+  if (navigator.onLine) {
     try {
       await renameCourseTx(oldName, newName);
     } catch (err) {
@@ -1339,8 +1327,8 @@ const onNumPadConfirm = () => {
     });
     setNextResId(prev => prev + 1);
 
-    // 2) Firestore への書込みは「本日の営業に参加」している端末のみ実行
-    if (joinedToday) {
+    // 2) Firestore への書込みはオンライン時のみ実行
+    if (navigator.onLine) {
       try {
         await addReservationFS(newEntry as any);
       } catch (err) {
@@ -1370,8 +1358,8 @@ setNewResDrink('');
       return next;
     });
 
-    // --- 2) Firestore からも削除（本日の営業に参加端末のみ） -----------
-    if (joinedToday) {
+    // --- 2) Firestore からも削除（オンライン時のみ） -----------
+    if (navigator.onLine) {
       try {
         await updateReservationFS(id, { deleted: true } as any);
       } catch (err) {
@@ -1388,8 +1376,8 @@ setNewResDrink('');
     // ② 現在の予約をコピー（Firestore batch 用）
     const current = [...reservations];
 
-    /* ── ③ Firestore 側も一括削除 (joinedToday 端末のみ) ----------------------------- */
-    if (joinedToday) {
+    /* ── ③ Firestore 側も一括削除 (オンライン時のみ) ----------------------------- */
+    if (navigator.onLine) {
       try {
         await deleteAllReservationsFS();
       } catch (err) {
@@ -1454,8 +1442,8 @@ setNewResDrink('');
         return { ...r, [field]: value };
       });
       persistReservations(next);
-      // Firestore への反映は参加端末のみ
-      if (joinedToday) {
+      // オンライン時だけ Firestore へ反映
+      if (navigator.onLine) {
         updateReservationFS(id, { [field]: value } as any).catch((err) =>
           console.error('updateReservationFS failed:', err)
         );

@@ -17,10 +17,12 @@ export type Op =
 
 /** キューに操作を追加する */
 export function enqueueOp(op: Op): void {
-  const existing = localStorage.getItem(QUEUE_KEY);
-  const queue: Op[] = existing ? JSON.parse(existing) : [];
-  queue.push(op);
-  localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+  if (!navigator.onLine) {
+    const existing = localStorage.getItem(QUEUE_KEY);
+    const queue: Op[] = existing ? JSON.parse(existing) : [];
+    queue.push(op);
+    localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+  }
 }
 
 /** キュー内のすべての操作を取り出し、クリアして返す */
