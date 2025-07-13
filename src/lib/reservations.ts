@@ -33,39 +33,12 @@ export async function updateReservationFS(
     // Firestore 動的 import
     const {
       doc,
-      runTransaction,
+      updateDoc,
       waitForPendingWrites,
-      increment,
-      serverTimestamp,
-      setDoc,
     } = await import('firebase/firestore');
 
-    const useTodayStr = options?.todayStr ?? todayStr();
-    const ref = doc(db, 'stores', getStoreId(), `reservations-${useTodayStr}`, String(id));
-
-    const autoPatch = {
-      version: increment(1),
-      updatedAt: serverTimestamp(),
-    };
-
-    await runTransaction(db, async (trx) => {
-      const snap = await trx.get(ref);
-      const serverVer = snap.exists() ? ((snap.data() as any).version ?? 0) : 0;
-
-      const { baseVersion, ...editPatch } = patch as any;
-      if (baseVersion !== undefined && baseVersion < serverVer) {
-        throw new Error('STALE_WRITE');
-      }
-
-      if (snap.exists()) {
-        trx.update(ref, { ...editPatch, ...autoPatch });
-      } else {
-        // 新規作成 (merge:true 相当の挙動を再現)
-        trx.set(ref, { ...editPatch, ...autoPatch });
-      }
-    });
-
-    // オフライン時の再送同期
+    const ref = doc(db, 'stores', getStoreId(), 'reservations', String(id));
+    await updateDoc(ref, patch);
     await waitForPendingWrites(db);
   } catch (err) {
     console.error('updateReservationFS failed:', err);
@@ -74,16 +47,16 @@ export async function updateReservationFS(
 
 /** 指定タスク（compKey）の完了フラグをトグル */
 export async function toggleTaskComplete(
-  reservationId: number,
-  compKey: string,
-  baseVersion?: number,
-): Promise<void> {
+   reservationId: string | number,
+   compKey: string,
+　baseVersion?: number,
+ ): Promise<void> {
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
     // Firestore update will be replayed later
     enqueueOp({
       type: 'update',
-      id: reservationId,
+      id: Number(reservationId),
       field: `completed.${compKey}`,
       value: !JSON.parse(localStorage.getItem(`${ns}-reservations-cache`) || '{}').completed?.[compKey]
     });
@@ -119,7 +92,7 @@ export async function addReservationFS(data: any): Promise<void> {
     return;
   }
   const { addDoc, collection, waitForPendingWrites, serverTimestamp } = await import('firebase/firestore');
-  const ref = collection(db, 'stores', getStoreId(), `reservations-${todayStr()}`);
+  const ref = collection(db, 'stores', getStoreId(), 'reservations');
   await addDoc(ref, {
     ...data,
     version: 1,
@@ -131,7 +104,7 @@ export async function addReservationFS(data: any): Promise<void> {
 /** 予約を 1 回だけ全件取得（初回キャッシュ用） */
 export async function fetchAllReservationsOnce(): Promise<any[]> {
   const { collection, getDocs, query, orderBy } = await import('firebase/firestore');
-  const q = query(collection(db, 'stores', getStoreId(), `reservations-${todayStr()}`), orderBy('time', 'asc'));
+  const q = query(collection(db, 'stores', getStoreId(), 'reservations'), orderBy('time', 'asc'));
   const snap = await getDocs(q);
   return snap.docs.map(d => ({ id: Number(d.id), ...(d.data() as any) }));
 }

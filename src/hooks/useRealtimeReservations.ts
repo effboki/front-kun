@@ -4,6 +4,8 @@ import {
   onSnapshot,
   collection,
   query,
+  where,
+  orderBy,
   Unsubscribe
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
@@ -59,15 +61,15 @@ export function useRealtimeReservations(
     // 今日の日付（"YYYY-MM-DD"）
     const today = new Date().toISOString().slice(0, 10);
 
-    // listen 先サブコレ: /stores/{id}/reservations-YYYY-MM-DD
-    const path = `stores/${storeId}/reservations-${today}`;
-    console.log('[RealtimeRes] listening on path:', path);
-
-    // /stores/{id}/reservations-YYYY-MM-DD サブコレクションを直接 listen
+    // listen 先コレクション: /stores/{id}/reservations, フィルタ: date === today, 時間順
+    const reservationsCol = collection(db, 'stores', storeId, 'reservations');
     const q = query(
-      collection(db, 'stores', storeId, `reservations-${today}`)
+      reservationsCol,
+      where('date', '==', today),
+      orderBy('time', 'asc')
     );
 
+    console.log('[RealtimeRes] listening on collection:', 'stores', storeId, 'reservations');
     console.log('[RealtimeRes] query object:', q);
 
     unsubRef.current = onSnapshot(q, (snap) => {

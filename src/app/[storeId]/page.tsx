@@ -33,7 +33,7 @@ type CourseDef = {
 
 // 予約(来店)情報
 type Reservation = {
-  id: number;
+  id: string;
   table: string;       // 卓番 (文字列で OK)
   time: string;        // "HH:MM"
   course: string;      // コース名
@@ -147,10 +147,10 @@ useEffect(() => {
   // ─── 2.2 予約(来店) の状態管理 ────────────────────────────────────────────
   //
   const [reservations, setReservations] = useState<Reservation[]>(loadReservations());
-  const [nextResId, setNextResId] = useState<number>(1);
+  const [nextResId, setNextResId] = useState<string>("1");
   // 予約ID → { old, next } を保持（卓番変更プレビュー用）
 const [pendingTables, setPendingTables] =
-  useState<Record<number, { old: string; next: string }>>({});
+  useState<Record<string, { old: string; next: string }>>({});
 
 
   // Firestore リアルタイム listener（オンライン時のみ接続）
@@ -170,7 +170,7 @@ const [pendingTables, setPendingTables] =
             (m: number, r: any) => (Number(r.id) > m ? Number(r.id) : m),
             0
           );
-          setNextResId(maxId + 1);
+          setNextResId((maxId + 1).toString());
         }
       } catch (err) {
         console.error('fetchAllReservationsOnce failed', err);
@@ -180,7 +180,7 @@ const [pendingTables, setPendingTables] =
   const hasLoadedStore = useRef(false); // 店舗設定を 1 回だけ取得
   const [selectedMenu, setSelectedMenu] = useState<string>('予約リスト×タスク表');
 /* ─────────────── 卓番変更用 ─────────────── */
-const [tablesForMove,   setTablesForMove]   = useState<number[]>([]); // 変更対象
+const [tablesForMove, setTablesForMove] = useState<string[]>([]); // 変更対象
 // 現在入力中の “変更後卓番号”
 const [targetTable, setTargetTable] = useState<string>('');
 // 変更確定処理
@@ -188,12 +188,12 @@ const commitTableMoves = () => {
   const entries = Object.entries(pendingTables);
   if (entries.length === 0) return;
 
-  const moveDocs: { id: number; old: string; new: string }[] = [];   // ←①
+  const moveDocs: { id: string; old: string; new: string }[] = [];   // ←①
 
   // Firestore & local 更新
   entries.forEach(([idStr, { old, next }]) => {                     // ←②
-    moveDocs.push({ id: Number(idStr), old, new: next });           // ←③
-    updateReservationField(Number(idStr), 'table', next);
+    moveDocs.push({ id: idStr, old, new: next });           // ←③
+    updateReservationField(idStr, 'table', next);
   });
 
   // 後片付け
@@ -207,7 +207,7 @@ const commitTableMoves = () => {
   toast.success('卓番号の変更を反映しました');
 };
 // 選択トグル用ユーティリティ
-const toggleTableForMove = (id: number) => {
+const toggleTableForMove = (id: string) => {
   setTablesForMove(prev =>
     prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]
   );
@@ -270,7 +270,7 @@ const [showTableStart, setShowTableStart] = useState<boolean>(true);
 
   // タスク選択モード状態
   const [selectionModeTask, setSelectionModeTask] = useState<string | null>(null);
-  const [selectedForComplete, setSelectedForComplete] = useState<number[]>([]);
+  const [selectedForComplete, setSelectedForComplete] = useState<string[]>([]);
 
   // 来店チェック用 state
   //
@@ -287,12 +287,12 @@ const [showTableStart, setShowTableStart] = useState<boolean>(true);
     return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
   };
 
-  const [checkedArrivals, setCheckedArrivals] = useState<number[]>([]);
-  const [checkedDepartures, setCheckedDepartures] = useState<number[]>([]);
+  const [checkedArrivals, setCheckedArrivals] = useState<string[]>([]);
+  const [checkedDepartures, setCheckedDepartures] = useState<string[]>([]);
   // 会計チェック用 state
-const [checkedPayments, setCheckedPayments] = useState<number[]>([]);
+const [checkedPayments, setCheckedPayments] = useState<string[]>([]);
 
-const togglePaymentChecked = (id: number) => {
+const togglePaymentChecked = (id: string) => {
   setCheckedPayments(prev => {
     const paidNow = !prev.includes(id);
     updateReservationField(id, 'paid', paidNow);
@@ -301,7 +301,7 @@ const togglePaymentChecked = (id: number) => {
 };
 
   // 来店チェック切り替え用ヘルパー
-  const toggleArrivalChecked = (id: number) => {
+  const toggleArrivalChecked = (id: string) => {
     setCheckedArrivals(prev => {
       const arrivedNow = !prev.includes(id);
       updateReservationField(id, 'arrived', arrivedNow);
@@ -309,7 +309,7 @@ const togglePaymentChecked = (id: number) => {
     });
   };
   // 退店チェック切り替え用ヘルパー
-  const toggleDepartureChecked = (id: number) => {
+  const toggleDepartureChecked = (id: string) => {
     setCheckedDepartures(prev => {
       const departedNow = !prev.includes(id);
       updateReservationField(id, 'departed', departedNow);
@@ -988,8 +988,8 @@ const deleteCourse = async () => {
         const cached: Reservation[] = JSON.parse(raw);
         if (cached.length > 0) {
           setReservations(cached);
-          const maxId = cached.reduce((m, x) => (x.id > m ? x.id : m), 0);
-          setNextResId(maxId + 1);
+          const maxId = cached.reduce((m, x) => (Number(x.id) > m ? Number(x.id) : m), 0);
+          setNextResId((maxId + 1).toString());
         }
       }
     } catch (err) {
@@ -1102,7 +1102,7 @@ const deleteCourse = async () => {
   });
   const rotatingTables = new Set(Object.keys(tableCounts).filter((t) => tableCounts[t] > 1));
   // 各回転テーブルごとに最初の予約IDを記録
-  const firstRotatingId: Record<string, number> = {};
+  const firstRotatingId: Record<string, string> = {};
   filteredReservations.forEach((r) => {
     if (rotatingTables.has(r.table) && !(r.table in firstRotatingId)) {
       firstRotatingId[r.table] = r.id;
@@ -1220,7 +1220,7 @@ if (allowedTaskLabels.size > 0 && !allowedTaskLabels.has(t.label)) return;
   //
   // 現在入力中の “変更後卓番号” を保持
   const [numPadState, setNumPadState] = useState<{
-    id: number;
+    id: string;
     field: NumPadField;
     value: string;
   } | null>(null);
@@ -1265,12 +1265,12 @@ const onNumPadConfirm = () => {
   }
 
   // 新規予約入力用: テーブルと人数入力を反映
-  if (numPadState.id < 0 && numPadState.field === 'table') {
+  if (numPadState.id === '-1' && numPadState.field === 'table') {
     setNewResTable(numPadState.value);
     setNumPadState(null);
     return;
   }
-  if (numPadState.id < 0 && numPadState.field === 'guests') {
+  if (numPadState.id === '-1' && numPadState.field === 'guests') {
     setNewResGuests(numPadState.value === '' ? '' : Number(numPadState.value));
     setNumPadState(null);
     return;
@@ -1348,7 +1348,7 @@ setNewResDrink('');
   };
 
     // 1件だけ予約を削除（ローカル & Firestore）
-  const deleteReservation = async (id: number) => {
+  const deleteReservation = async (id: string) => {
     if (!confirm('この来店情報を削除しますか？')) return;
 
     // --- 1) 画面 & localStorage を即時更新 -----------------------------
@@ -1387,7 +1387,7 @@ setNewResDrink('');
 
     // --- ④ ローカル状態 & キャッシュのクリア ----------------------------------------
     setReservations([]);
-    setNextResId(1);
+  　setNextResId('1');
     setCheckedArrivals([]);
     setCheckedDepartures([]);
 
@@ -1401,12 +1401,12 @@ setNewResDrink('');
   };
 
   const updateReservationField = (
-    id: number,
+    id: string,
     field:
-      'time'
+      | 'time'
       | 'course'
-      | 'eat'            
-    　| 'drink' 
+      | 'eat'
+      | 'drink'
       | 'guests'
       | 'name'
       | 'notes'
@@ -1424,7 +1424,6 @@ setNewResDrink('');
         else if (field === 'course') {
           const oldCourse = r.course;
           const newCourse = value as string;
-          // --- 完了フラグのキーを旧コース名から新コース名へ置換 ---
           const migratedCompleted: { [key: string]: boolean } = {};
           Object.entries(r.completed || {}).forEach(([key, done]) => {
             if (key.endsWith(`_${oldCourse}`)) {
@@ -1435,19 +1434,25 @@ setNewResDrink('');
             }
           });
           return { ...r, course: newCourse, completed: migratedCompleted };
+        } else {
+          return { ...r, [field]: value };
         }
-        else if (field === 'arrived' || field === 'paid' || field === 'departed') {
-          return { ...r, [field]: value as boolean };
-        }
-        return { ...r, [field]: value };
       });
       persistReservations(next);
+
       // オンライン時だけ Firestore へ反映
       if (navigator.onLine) {
-        updateReservationFS(id, { [field]: value } as any).catch((err) =>
+        // 直前に読み取った version を baseVersion として取得
+        const baseVersion = (prev.find(r => r.id === id) as any)?.version ?? 0;
+        updateReservationFS(
+          id,
+          { [field]: value } as any,
+          baseVersion
+        ).catch(err =>
           console.error('updateReservationFS failed:', err)
         );
       }
+
       return next;
     });
   };
@@ -1860,13 +1865,11 @@ setNewResDrink('');
                   電卓型パッドで卓番号を入力し、Enter で追加します。追加された卓は番号順に並びます。
                 </p>
                 <div className="flex items-center space-x-2">
-                  <input
-                    type="text"
-                    value={numPadState && numPadState.field === 'presetTable' ? numPadState.value : newTableTemp}
-                    readOnly
-                    onClick={() =>
-                      setNumPadState({ id: -1, field: 'presetTable', value: newTableTemp })
-                    }
+                             <input
+             type="text"
+             value={newResTable}
+             readOnly
+             onClick={() => setNumPadState({ id: '-1', field: 'table', value: '' })}
                     placeholder="卓番号を入力"
                     maxLength={3}
                     className="border px-2 py-1 w-full rounded text-sm text-center cursor-pointer"
@@ -3035,7 +3038,7 @@ setNewResDrink('');
                           type="text"
                           value={newResTable}
                           readOnly
-                          onClick={() => setNumPadState({ id: -1, field: 'table', value: '' })}
+                          onClick={() => setNumPadState({ id: '', field: 'table', value: '' })}
                           placeholder="例:101"
                           maxLength={3}
                           className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
@@ -3106,7 +3109,7 @@ setNewResDrink('');
                             type="text"
                             value={newResGuests}
                             readOnly
-                            onClick={() => setNumPadState({ id: -1, field: 'guests', value: '' })}
+                            onClick={() => setNumPadState({ id: '', field: 'guests', value: '' })}
                             placeholder="人数"
                             maxLength={3}
                             className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
@@ -3983,12 +3986,12 @@ setNewResDrink('');
                 </select>
               </td>
               <td className="border px-1 py-1">
-                <input
-                  type="text"
-                  value={newResTable}
-                  readOnly
-                  onClick={() => setNumPadState({ id: -1, field: 'table', value: '' })}
-                  placeholder="例:101"
+                           <input
+             type="text"
+             value={newResTable}
+             readOnly
+             onClick={() => setNumPadState({ id: '-1', field: 'table', value: '' })}
+             placeholder="例:101"
                   maxLength={3}
                   className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
                   required
@@ -4020,12 +4023,12 @@ setNewResDrink('');
               </td>
               {showGuestsCol && (
                 <td className="border px-1 py-1">
-                  <input
-                    type="text"
-                    value={newResGuests}
-                    readOnly
-                    onClick={() => setNumPadState({ id: -1, field: 'guests', value: '' })}
-                    placeholder="人数"
+                             <input
+             type="text"
+             value={newResTable}
+             readOnly
+             onClick={() => setNumPadState({ id: '-1', field: 'table', value: '' })}
+             placeholder="例:101"
                     maxLength={3}
                     className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
                     required

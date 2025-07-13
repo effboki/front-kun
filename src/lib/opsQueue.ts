@@ -17,6 +17,12 @@ export type Op =
 
 /** キューに操作を追加する */
 export function enqueueOp(op: Op): void {
+  // ---- フィールド名マイグレーション -----------------------------
+  if (op.type === 'update' && op.field === 'updateTime') {
+    // 旧フィールド名を新フィールド名へ置換
+    op = { ...op, field: 'updatedAt' };
+  }
+  // --------------------------------------------------------------
   if (!navigator.onLine) {
     const existing = localStorage.getItem(QUEUE_KEY);
     const queue: Op[] = existing ? JSON.parse(existing) : [];
