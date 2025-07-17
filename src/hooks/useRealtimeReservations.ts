@@ -48,13 +48,13 @@ export function useRealtimeReservations(
   };
 
   useEffect(() => {
-    console.log('[RealtimeRes] storeId=', storeId, 'joined=', joined);
+    console.log('[RealtimeRes] storeId=', storeId, 'online=', navigator.onLine);
     if (!storeId) {
       console.warn('[RealtimeRes] storeId is undefined, skipping listener');
       return detach();
     }
-    if (!joined) {
-      console.log('[RealtimeRes] joined flag is false, skipping subscription');
+    if (!navigator.onLine) {
+      console.log('[RealtimeRes] offline, skipping subscription');
       return detach();
     }
 
@@ -90,7 +90,7 @@ export function useRealtimeReservations(
       clearTimeout(timer);
       detach();
     };
-  }, [storeId, joined]);
+  }, [storeId]);
 
   return list;
 }

@@ -6,7 +6,7 @@ export interface Reservation {
   id: string;
 
   /** 卓番号 */
-  table_no: string;
+  table: string;
 
   /** コース名 */
   course: string;
@@ -25,6 +25,19 @@ export interface Reservation {
 
   /** メモ（任意） */
   notes?: string | null;
+
+  /** 食べ放題オプション 任意 */
+  eat?: string;
+  /** 飲み放題オプション 任意 */
+  drink?: string;
+  /** 卓変更プレビュー用 任意 */
+  pendingTable?: string;
+  /** 来店済みフラグ 任意 */
+  arrived?: boolean;
+  /** 会計済みフラグ 任意 */
+  paid?: boolean;
+  /** 退店済みフラグ 任意 */
+  departed?: boolean;
 
   /** 最終更新時刻（サーバ側で自動付与） */
   updatedAt?: any;  // Firebase Timestamp

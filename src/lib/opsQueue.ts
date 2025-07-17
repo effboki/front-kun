@@ -11,8 +11,8 @@ export const QUEUE_KEY = `${ns}-opsQueue`;
 // オペレーションの型定義
 export type Op =
   | { type: 'add'; payload: Reservation }
-  | { type: 'update'; id: number; field: string; value: any }
-  | { type: 'delete'; id: number }
+  | { type: 'update'; id: string; field: string; value: any }
+  | { type: 'delete'; id: string }
   | { type: 'storeSettings'; payload: StoreSettings };
 
 /** キューに操作を追加する */
@@ -22,7 +22,11 @@ export function enqueueOp(op: Op): void {
     // 旧フィールド名を新フィールド名へ置換
     op = { ...op, field: 'updatedAt' };
   }
-  // --------------------------------------------------------------
+  // --- ID を文字列に統一 (update/delete ops) ---
+  if (op.type === 'update' || op.type === 'delete') {
+    op = { ...op, id: String(op.id) };
+  }
+  // ---------------------------------------------
   if (!navigator.onLine) {
     const existing = localStorage.getItem(QUEUE_KEY);
     const queue: Op[] = existing ? JSON.parse(existing) : [];

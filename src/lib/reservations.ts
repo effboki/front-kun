@@ -18,14 +18,18 @@ function todayStr(): string {
  *   - オフライン時は pending 書き込みを待機
  */
 export async function updateReservationFS(
-  id: string | number,
+  id: string,
   patch: Partial<any>,
   options?: { todayStr?: string }
 ) {
+  if (!id) {
+    console.warn('[updateReservationFS] called with empty id, skipping');
+    return;
+  }
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
     Object.entries(patch).forEach(([field, value]) => {
-      enqueueOp({ type: 'update', id: Number(id), field, value });
+      enqueueOp({ type: 'update', id: String(id), field, value });
     });
     return;
   }
@@ -45,25 +49,27 @@ export async function updateReservationFS(
   }
 }
 
-/** 指定タスク（compKey）の完了フラグをトグル */
+/** 指定タスク（compKey）の完了フラグをトグル
+ * @param reservationId 予約ID（string型）
+ */
 export async function toggleTaskComplete(
-   reservationId: string | number,
+   reservationId: string,
    compKey: string,
-　baseVersion?: number,
+   baseVersion?: number,
  ): Promise<void> {
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
     // Firestore update will be replayed later
     enqueueOp({
       type: 'update',
-      id: Number(reservationId),
+      id: reservationId,
       field: `completed.${compKey}`,
       value: !JSON.parse(localStorage.getItem(`${ns}-reservations-cache`) || '{}').completed?.[compKey]
     });
     return;
   }
   const { doc, runTransaction, serverTimestamp, increment } = await import('firebase/firestore');
-  const ref = doc(db, 'stores', getStoreId(), `reservations-${todayStr()}`, String(reservationId));
+  const ref = doc(db, 'stores', getStoreId(), 'reservations', reservationId);
 
   await runTransaction(db, async trx => {
     const snap = await trx.get(ref);
@@ -106,7 +112,7 @@ export async function fetchAllReservationsOnce(): Promise<any[]> {
   const { collection, getDocs, query, orderBy } = await import('firebase/firestore');
   const q = query(collection(db, 'stores', getStoreId(), 'reservations'), orderBy('time', 'asc'));
   const snap = await getDocs(q);
-  return snap.docs.map(d => ({ id: Number(d.id), ...(d.data() as any) }));
+  return snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
 }
 
 /**
@@ -116,7 +122,7 @@ export async function fetchAllReservationsOnce(): Promise<any[]> {
 export async function deleteAllReservationsFS(): Promise<void> {
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
-    enqueueOp({ type: 'delete', id: 0 });
+    enqueueOp({ type: 'delete', id: '0' });
     return;
   }
   const {

@@ -1325,7 +1325,7 @@ const onNumPadConfirm = () => {
       persistReservations(next);
       return next;
     });
-    setNextResId(prev => prev + 1);
+    setNextResId(prev => (Number(prev) + 1).toString());
 
     // 2) Firestore への書込みはオンライン時のみ実行
     if (navigator.onLine) {
@@ -1440,15 +1440,14 @@ setNewResDrink('');
       });
       persistReservations(next);
 
-      // オンライン時だけ Firestore へ反映
-      if (navigator.onLine) {
+      // ── Firestore へは「既に Firestore に存在している予約」のみ同期 ──
+      // Firestore の自動生成 ID は 20 文字程度の英数字。
+      const isFirestoreDocId = typeof id === 'string' && id.length >= 20;
+
+      if (navigator.onLine && isFirestoreDocId) {
         // 直前に読み取った version を baseVersion として取得
         const baseVersion = (prev.find(r => r.id === id) as any)?.version ?? 0;
-        updateReservationFS(
-          id,
-          { [field]: value } as any,
-          baseVersion
-        ).catch(err =>
+        updateReservationFS(id, { [field]: value } as any, baseVersion).catch(err =>
           console.error('updateReservationFS failed:', err)
         );
       }
@@ -1869,14 +1868,14 @@ setNewResDrink('');
              type="text"
              value={newResTable}
              readOnly
-             onClick={() => setNumPadState({ id: '-1', field: 'table', value: '' })}
+             onClick={() => setNumPadState({ id: '-1', field: 'guests', value: '' })}
                     placeholder="卓番号を入力"
                     maxLength={3}
                     className="border px-2 py-1 w-full rounded text-sm text-center cursor-pointer"
                   />
                 </div>
                 <div className="grid grid-cols-3 gap-0 p-1">
-                  {numPadState && numPadState.field === 'presetTable'
+                  {numPadState && (numPadState.field === 'presetTable' || numPadState.field === 'table' || numPadState.field === 'guests')
                     ? ['1','2','3','4','5','6','7','8','9','0','←','C'].map((digit) => (
                         <button
                           key={digit}
@@ -1887,7 +1886,7 @@ setNewResDrink('');
                         </button>
                       ))
                     : null}
-                  {numPadState && numPadState.field === 'presetTable' && (
+                  {numPadState && (numPadState.field === 'presetTable' || numPadState.field === 'table' || numPadState.field === 'guests') && (
                     <button
                       onClick={onNumPadConfirm}
                       className="col-span-3 bg-blue-500 rounded text-white text-lg py-2"
@@ -1895,7 +1894,7 @@ setNewResDrink('');
                       追加
                     </button>
                   )}
-                  {numPadState && numPadState.field === 'presetTable' && (
+                  {numPadState && (numPadState.field === 'presetTable' || numPadState.field === 'table' || numPadState.field === 'guests') && (
                     <button
                       onClick={onNumPadCancel}
                       className="col-span-3 text-center text-sm text-gray-500 py-2"
@@ -3038,7 +3037,7 @@ setNewResDrink('');
                           type="text"
                           value={newResTable}
                           readOnly
-                          onClick={() => setNumPadState({ id: '', field: 'table', value: '' })}
+                          onClick={() => setNumPadState({ id: '-1', field: 'table', value: '' })}
                           placeholder="例:101"
                           maxLength={3}
                           className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
@@ -3109,7 +3108,7 @@ setNewResDrink('');
                             type="text"
                             value={newResGuests}
                             readOnly
-                            onClick={() => setNumPadState({ id: '', field: 'guests', value: '' })}
+                            onClick={() => setNumPadState({ id: '-1', field: 'guests', value: '' })}
                             placeholder="人数"
                             maxLength={3}
                             className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
@@ -3990,7 +3989,7 @@ setNewResDrink('');
              type="text"
              value={newResTable}
              readOnly
-             onClick={() => setNumPadState({ id: '-1', field: 'table', value: '' })}
+             onClick={() => setNumPadState({ id: '-1', field: 'guests', value: '' })}
              placeholder="例:101"
                   maxLength={3}
                   className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
@@ -4027,7 +4026,7 @@ setNewResDrink('');
              type="text"
              value={newResTable}
              readOnly
-             onClick={() => setNumPadState({ id: '-1', field: 'table', value: '' })}
+             onClick={() => setNumPadState({ id: '-1', field: 'guests', value: '' })}
              placeholder="例:101"
                     maxLength={3}
                     className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
