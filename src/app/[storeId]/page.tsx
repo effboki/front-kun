@@ -1349,6 +1349,11 @@ const onNumPadConfirm = () => {
 
   const addReservation = async (e: FormEvent) => {
     e.preventDefault();
+    // --- Guard: make sure nextResId is non‑empty ---------------------------
+    if (!nextResId || nextResId.trim() === '') {
+      alert('内部エラー：予約IDが採番できませんでした。ページを再読み込みして下さい');
+      return;
+    }
     if (
       !newResTable ||                      // 卓番号未入力
       !newResTime ||                       // 時刻未入力
@@ -1380,7 +1385,10 @@ const onNumPadConfirm = () => {
       persistReservations(next);
       return next;
     });
-    setNextResId(prev => (Number(prev) + 1).toString());
+    setNextResId(prev => {
+      const base = prev && prev.trim() !== '' ? Number(prev) : 0;
+      return (base + 1).toString();
+    });
 
     // 2) Firestore への書込みはオンライン時のみ実行
     if (navigator.onLine) {

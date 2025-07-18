@@ -50,15 +50,18 @@ export function dequeueAll(): Op[] {
   const existing = localStorage.getItem(QUEUE_KEY);
   const queue: Op[] = existing ? JSON.parse(existing) : [];
 
-  // 空 id / payload.id==='' のエントリを除外
-  const cleaned: Op[] = queue.filter(op => {
+  // 空 id エントリを除外
+  const cleaned = queue.filter(op => {
     if (op.type === 'add') {
-      return op.payload?.id !== '' && op.payload?.id !== undefined;
+      // payload.id が truthy なら残す
+      return op.payload?.id;
     }
     if (op.type === 'update' || op.type === 'delete') {
-      return op.id !== '' && op.id !== undefined;
+      // id が truthy なら残す
+      return op.id;
     }
-    return true; // storeSettings
+    // storeSettings などは常に残す
+    return true;
   });
 
   // クリアして、空でなければ掃除後キューを書き戻す

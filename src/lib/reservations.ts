@@ -128,7 +128,10 @@ export async function addReservationFS(data: any): Promise<void> {
 
 /** 予約を 1 件削除 */
 export async function deleteReservationFS(id: string): Promise<void> {
-  if (!id) return;
+  if (!id) {
+    console.warn('[deleteReservationFS] empty id, skip');
+    return;
+  }
 
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
