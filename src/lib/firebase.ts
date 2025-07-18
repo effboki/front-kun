@@ -37,6 +37,27 @@ async function ensureStoreDoc(storeId: string) {
   }
 }
 
+/**
+ * 確実に stores/{storeId} および stores/{storeId}/settings/config
+ * を生成してから解決するユーティリティ。
+ * どちらも空オブジェクト `{}` で OK。
+ */
+export async function ensureStoreStructure(storeId: string): Promise<void> {
+  // ① ルートの店舗ドキュメント
+  await ensureStoreDoc(storeId);
+
+  // ② 設定ドキュメント (settings/config)
+  try {
+    const configRef = doc(db, 'stores', storeId, 'settings', 'config');
+    const configSnap = await getDoc(configRef);
+    if (!configSnap.exists()) {
+      await setDoc(configRef, {}); // 空オブジェクトで作成
+    }
+  } catch (err) {
+    console.warn('[ensureStoreStructure] failed:', err);
+  }
+}
+
 // ── storeId取得ヘルパー ─────────────────
 export function getStoreId(): string {
   /**

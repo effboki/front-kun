@@ -1,12 +1,5 @@
-import { db } from './firebase';
+import { db, getStoreId, ensureStoreStructure } from './firebase';
 import { enqueueOp } from './opsQueue';
-// ── store-specific Firestore helper ──
-function getStoreId(): string {
-  if (typeof window === 'undefined') return 'default';
-  // 例:  /demo/   →  demo
-  const raw = window.location.pathname.split('/')[1] || 'default';
-  return raw.replace(/^\/+|\/+$/g, '') || 'default';
-}
 // localStorage namespace prefix
 const ns = `front-kun-${getStoreId()}`;
 /** 当日の日付 "YYYY-MM-DD" を返すヘルパー */
@@ -97,11 +90,24 @@ export async function addReservationFS(data: any): Promise<void> {
     console.warn('[addReservationFS] called with empty id, abort');
     return;
   }
+  const storeId = getStoreId();
+  if (!storeId) {
+    console.warn('[addReservationFS] empty storeId, abort');
+    return;
+  }
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
     enqueueOp({ type: 'add', payload: data });
     return;
   }
+
+  // --- 親ドキュメントと設定ドキュメントを自動生成 -----------------
+  try {
+    await ensureStoreStructure(storeId);
+  } catch (e) {
+    console.warn('[addReservationFS] ensureStoreStructure failed', e);
+  }
+  // ----------------------------------------------------------------
 
   const {
     doc,
@@ -111,7 +117,7 @@ export async function addReservationFS(data: any): Promise<void> {
   } = await import('firebase/firestore');
 
   // UI が管理する連番 / 文字列 ID をそのままドキュメント ID に使う
-  const ref = doc(db, 'stores', getStoreId(), 'reservations', String(data.id));
+  const ref = doc(db, 'stores', storeId, 'reservations', String(data.id));
 
   await setDoc(
     ref,
