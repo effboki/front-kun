@@ -21,6 +21,22 @@ import {
   deleteAllReservationsFS,
 } from './reservations';
 
+/* ────────────────────────────────
+   stores/{storeId} ドキュメントが
+   無ければ空で自動生成するユーティリティ
+────────────────────────────────*/
+async function ensureStoreDoc(storeId: string) {
+  try {
+    const ref = doc(db, 'stores', storeId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {}); // フィールド空でOK
+    }
+  } catch (err) {
+    console.warn('[ensureStoreDoc] failed:', err);
+  }
+}
+
 // ── storeId取得ヘルパー ─────────────────
 export function getStoreId(): string {
   // 環境変数用 Fallback（前後スラッシュ除去）
@@ -41,20 +57,20 @@ export function getStoreId(): string {
 // ── localStorage 名前空間設定 ─────────────────
 
 const ns = `front-kun-${getStoreId()}`;
-const RES_KEY   = `${ns}-reservations`;
+const RES_KEY = `${ns}-reservations`;
 const STORE_KEY = `${ns}-storeSettings`;
 
 // Firebase config は .env.local (NEXT_PUBLIC_*) から取得
 const firebaseConfig = {
-  apiKey:      process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain:  process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId:   process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
 };
 
 // アプリ／DB を初期化＆エクスポート
 export const app = initializeApp(firebaseConfig);
 export const db = initializeFirestore(app, {
-  localCache: persistentLocalCache()
+  localCache: persistentLocalCache(),
 });
 
 // ─────────────────────────────────────────────
@@ -108,7 +124,6 @@ export function saveStoreSettings(obj: {
   localStorage.setItem(STORE_KEY, JSON.stringify(obj));
 }
 
-
 /* ────────────────────────────────
    Firestore 版 店舗設定 CRUD
    ────────────────────────────────*/
@@ -124,17 +139,34 @@ export async function loadStoreSettings(): Promise<{
   tables: any[];
 }> {
   try {
+    // ドキュメントツリー自動生成
+    await ensureStoreDoc(getStoreId());
     const ref = doc(db, 'stores', getStoreId(), 'settings', 'config');
     const snap = await getDoc(ref);
-    if (snap.exists()) {
-      const data = snap.data() as any;
-      return {
-        eatOptions: data.eatOptions ?? ['⭐︎', '⭐︎⭐︎'],
-        drinkOptions: data.drinkOptions ?? ['スタ', 'プレ'],
-        courses: data.courses ?? [],
-        tables: data.tables ?? [],
+
+    // ── ドキュメントが存在しなければデフォルトを生成 ──
+    if (!snap.exists()) {
+      const defaults = {
+        eatOptions: ['⭐︎', '⭐︎⭐︎'],
+        drinkOptions: ['スタ', 'プレ'],
+        courses: [],
+        tables: [],
       };
+      try {
+        await setDoc(ref, defaults, { merge: true }); // 初回のみ作成
+      } catch (e) {
+        console.warn('[loadStoreSettings] setDoc failed (likely offline):', e);
+      }
+      return defaults;
     }
+
+    const data = snap.data() as any;
+    return {
+      eatOptions: data.eatOptions ?? ['⭐︎', '⭐︎⭐︎'],
+      drinkOptions: data.drinkOptions ?? ['スタ', 'プレ'],
+      courses: data.courses ?? [],
+      tables: data.tables ?? [],
+    };
   } catch (err) {
     console.error('loadStoreSettings failed', err);
   }
@@ -161,11 +193,7 @@ export async function saveStoreSettingsTx(settings: {
   await runTransaction(db, async (trx) => {
     const snap = await trx.get(ref);
     const prev = snap.exists() ? snap.data() : {};
-    trx.set(
-      ref,
-      { ...prev, ...settings },
-      { merge: true }
-    );
+    trx.set(ref, { ...prev, ...settings }, { merge: true });
   });
   await waitForPendingWrites(db);
   // ローカルキャッシュも更新
@@ -173,7 +201,7 @@ export async function saveStoreSettingsTx(settings: {
 }
 
 // ── 溜め込んだ opsQueue を Firestore へ一括反映 ──────────────
-async function flushQueuedOps() {
+async function _flushQueuedOps() {
   const ops = dequeueAll();
   for (const op of ops) {
     switch (op.type) {
@@ -193,19 +221,29 @@ async function flushQueuedOps() {
   }
 }
 
+/** 手動 “予約確定” ボタン用：溜まったキューを送信 */
+export async function flushQueuedOps(): Promise<void> {
+  await _flushQueuedOps();
+}
+
 // ─────────────────────────────────────────────
 // オンライン復帰時に溜めた操作を一括処理
 // ─────────────────────────────────────────────
-if (typeof window !== 'undefined') {
-  console.log('[online event] navigator.onLine=', navigator.onLine, 'queued ops=', localStorage.getItem(QUEUE_KEY));
+// if (typeof window !== 'undefined') {
+//   console.log(
+//     '[online event] navigator.onLine=',
+//     navigator.onLine,
+//     'queued ops=',
+//     localStorage.getItem(QUEUE_KEY)
+//   );
 
-  // ページ読み込み時点でオンラインなら即座にキューを反映
-  if (navigator.onLine) {
-    flushQueuedOps();
-  }
+//   // ページ読み込み時点でオンラインなら即座にキューを反映
+//   if (navigator.onLine) {
+//     _flushQueuedOps();
+//   }
 
-  // オンライン復帰時のみ再送
-  window.addEventListener('online', async () => {
-    await flushQueuedOps();
-  });
-}
+//   // オンライン復帰時のみ再送
+//   window.addEventListener('online', async () => {
+//     await _flushQueuedOps();
+//   });
+// }

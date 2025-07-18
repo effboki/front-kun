@@ -5,14 +5,15 @@ import { useParams } from 'next/navigation';
 import { toggleTaskComplete } from '@/lib/reservations';
 import { renameCourseTx } from '@/lib/courses';
 import { loadStoreSettings, saveStoreSettingsTx, db } from '@/lib/firebase';
+import { flushQueuedOps } from '@/lib/firebase';
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-expressions */
 // 📌 ChatGPT からのテスト編集: 拡張機能連携確認済み
 
 import { useState, ChangeEvent, FormEvent, useMemo, useEffect, useRef } from 'react';
 import { useRealtimeReservations } from '@/hooks/useRealtimeReservations';
 import { toast } from 'react-hot-toast';
-import { dequeueAll } from '@/lib/opsQueue';
-import { addReservationFS, updateReservationFS, fetchAllReservationsOnce, deleteAllReservationsFS } from '@/lib/reservations';
+import { dequeueAll} from '@/lib/opsQueue';
+import { addReservationFS, updateReservationFS, deleteReservationFS, fetchAllReservationsOnce, deleteAllReservationsFS } from '@/lib/reservations';
 
 //
 // ───────────────────────────── ① TYPES ────────────────────────────────────────────
@@ -255,6 +256,49 @@ const toggleTableForMove = (id: string) => {
     );
     // Always write current courses array to localStorage
     localStorage.setItem(`${ns}-courses`, JSON.stringify(courses));
+
+    // 最新設定を Firestore から再取得し、eatOptions/drinkOptions/positions/tasksByPosition を再セット
+    try {
+      // 型定義が追いついていないため any キャストで拡張プロパティを参照
+      const latest = (await loadStoreSettings()) as {
+        eatOptions: string[];
+        drinkOptions: string[];
+        courses: any[];
+        tables: any[];
+        positions?: string[];
+        tasksByPosition?: Record<string, Record<string, string[]>>;
+      };
+      // eatOptions
+      if (Array.isArray(latest.eatOptions) && latest.eatOptions.length > 0) {
+        setEatOptions(latest.eatOptions);
+        localStorage.setItem(`${ns}-eatOptions`, JSON.stringify(latest.eatOptions));
+      }
+      // drinkOptions
+      if (Array.isArray(latest.drinkOptions) && latest.drinkOptions.length > 0) {
+        setDrinkOptions(latest.drinkOptions);
+        localStorage.setItem(`${ns}-drinkOptions`, JSON.stringify(latest.drinkOptions));
+      }
+      // positions
+      if (Array.isArray(latest.positions) && latest.positions.length > 0) {
+        setPositions(latest.positions);
+        localStorage.setItem(`${ns}-positions`, JSON.stringify(latest.positions));
+      }
+      // tasksByPosition
+      if (
+        latest.tasksByPosition &&
+        typeof latest.tasksByPosition === 'object'
+      ) {
+        setTasksByPosition(latest.tasksByPosition);
+        localStorage.setItem(
+          `${ns}-tasksByPosition`,
+          JSON.stringify(latest.tasksByPosition)
+        );
+      }
+    } catch (err) {
+      // 取得失敗時は無視
+    }
+    // 保存後は設定画面を閉じてメイン画面へ戻る
+    setSelectedMenu('営業前設定');
   };
   // ----------------------------------------------------------------------
   // ─────────────── 追加: コントロールバー用 state ───────────────
@@ -1347,24 +1391,29 @@ const onNumPadConfirm = () => {
 setNewResDrink('');
   };
 
-    // 1件だけ予約を削除（ローカル & Firestore）
+  // 1件だけ予約を削除（ローカル & Firestore）
   const deleteReservation = async (id: string) => {
     if (!confirm('この来店情報を削除しますか？')) return;
 
-    // --- 1) 画面 & localStorage を即時更新 -----------------------------
+    // 1) UI & localStorage から即時削除
     setReservations(prev => {
       const next = prev.filter(r => r.id !== id);
       persistReservations(next);
       return next;
     });
 
-    // --- 2) Firestore からも削除（オンライン時のみ） -----------
+    // 2) Firestore からも削除
     if (navigator.onLine) {
       try {
-        await updateReservationFS(id, { deleted: true } as any);
+        await deleteReservationFS(id);
+        toast.success('予約を削除しました');
       } catch (err) {
-        console.warn('deleteReservation: Firestore cleanup failed', err);
+        console.error('deleteReservationFS failed:', err);
+        toast.error('サーバへの削除が失敗しました');
       }
+    } else {
+      // オフライン時はキュー投入済み
+      toast('オフラインのため後でサーバへ送信します', { icon: '📶' });
     }
   };
 
@@ -1440,11 +1489,8 @@ setNewResDrink('');
       });
       persistReservations(next);
 
-      // ── Firestore へは「既に Firestore に存在している予約」のみ同期 ──
-      // Firestore の自動生成 ID は 20 文字程度の英数字。
-      const isFirestoreDocId = typeof id === 'string' && id.length >= 20;
-
-      if (navigator.onLine && isFirestoreDocId) {
+      // ── オンライン時は常に Firestore へ同期 ──
+      if (navigator.onLine) {
         // 直前に読み取った version を baseVersion として取得
         const baseVersion = (prev.find(r => r.id === id) as any)?.version ?? 0;
         updateReservationFS(id, { [field]: value } as any, baseVersion).catch(err =>
@@ -2678,7 +2724,7 @@ setNewResDrink('');
                     </label>
                   </div>
 
-                  {/* 下段：卓番変更 & 全リセット */}
+                  {/* 下段：卓番変更 & 全リセット & 予約確定 */}
                   <div className="flex items-center space-x-4">
                     <button
                       onClick={() => setEditTableMode(prev => !prev)}
@@ -2695,6 +2741,24 @@ setNewResDrink('');
                     >
                       全リセット
                     </button>
+                    
+                    <button
+  onClick={() => {
+    if (!navigator.onLine) {
+      alert('オフラインのため送信できません。オンラインで再度お試しください。');
+      return;
+    }
+    flushQueuedOps()
+      .then(() => toast.success('予約を一括送信しました！'))
+      .catch((err) => {
+        console.error('flushQueuedOps failed', err);
+        toast.error('送信に失敗しました');
+      });
+  }}
+  className="px-6 py-4 bg-blue-600 text-white rounded text-sm"
+>
+  予約確定
+</button>
                   </div>
                 </div>
                 <div className="flex items-center space-x-4 ml-4">
@@ -2737,7 +2801,6 @@ setNewResDrink('');
                     <span>備考表示</span>
                   </label>
                 </div>
-
                 {editTableMode && Object.keys(pendingTables).length > 0 && (
                   <div className="mt-2 space-y-1">
                     {Object.entries(pendingTables).map(([id, tbl]) => (
@@ -3639,7 +3702,7 @@ setNewResDrink('');
             </label>
           </div>
 
-          {/* 下段：卓番変更 & 全リセット */}
+          {/* 下段：卓番変更 & 全リセット & 予約確定 */}
           <div className="flex items-center space-x-4">
             <button
               onClick={() => setEditTableMode(prev => !prev)}
@@ -3656,6 +3719,24 @@ setNewResDrink('');
             >
               全リセット
             </button>
+
+            <button
+  onClick={() => {
+    if (!navigator.onLine) {
+      alert('オフラインのため送信できません。オンラインで再度お試しください。');
+      return;
+    }
+    flushQueuedOps()
+      .then(() => toast.success('Firestore へ予約を一括送信しました！'))
+      .catch((err) => {
+        console.error('flushQueuedOps failed', err);
+        toast.error('送信に失敗しました');
+      });
+  }}
+  className="px-6 py-4 bg-blue-600 text-white rounded text-sm"
+>
+  予約確定
+</button>
           </div>
         </div>
                 <div className="flex items-center space-x-4 ml-4">

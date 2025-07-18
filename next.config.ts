@@ -21,6 +21,21 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  /**
+   * Redirect root "/" to "/<storeId>"
+   * `NEXT_PUBLIC_STORE_ID` should be set per‑environment (Vercel project or .env.local).
+   * Falls back to "demo" when not defined.
+   */
+  async redirects() {
+    const storeId = process.env.NEXT_PUBLIC_STORE_ID || 'demo';
+    return [
+      {
+        source: '/',               // incoming path
+        destination: `/${storeId}`, // redirected path
+        permanent: false,          // 302 (set true for 308)
+      },
+    ];
+  },
   // 他に必要な Next.js 設定をここに追加
 };
 

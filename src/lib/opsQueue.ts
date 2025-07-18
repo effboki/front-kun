@@ -26,6 +26,16 @@ export function enqueueOp(op: Op): void {
   if (op.type === 'update' || op.type === 'delete') {
     op = { ...op, id: String(op.id) };
   }
+  // --- ADD: payload.id を文字列に統一 ---
+  if (op.type === 'add') {
+    op = {
+      ...op,
+      payload: {
+        ...op.payload,
+        id: String(op.payload.id),
+      } as Reservation,
+    };
+  }
   // ---------------------------------------------
   if (!navigator.onLine) {
     const existing = localStorage.getItem(QUEUE_KEY);

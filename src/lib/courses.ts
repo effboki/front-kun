@@ -7,7 +7,6 @@ import {
   runTransaction,
   getDocs,
   doc,
-  updateDoc,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { getStoreId } from '@/lib/firebase';
@@ -20,13 +19,12 @@ import { getStoreId } from '@/lib/firebase';
 export async function renameCourseTx(oldName: string, newName: string) {
   if (oldName === newName) return;
 
-  const todayStr = new Date().toISOString().slice(0, 10);
   const storeId = getStoreId();          // ← 既存ヘルパー
   const reservationsRef = collection(
     db,
     'stores',
     storeId,
-    `reservations-${todayStr}`
+    'reservations'
   );
   // course === oldName のドキュメントだけ取得
   const q = query(reservationsRef, where('course', '==', oldName));
@@ -47,11 +45,12 @@ export async function renameCourseTx(oldName: string, newName: string) {
       });
 
       trx.update(
-        doc(db, 'stores', storeId, `reservations-${todayStr}`, docSnap.id),
-      {
-        course: newName,
-        completed: editedCompleted,
-      });
+        doc(db, 'stores', storeId, 'reservations', docSnap.id),
+        {
+          course: newName,
+          completed: editedCompleted,
+        }
+      );
     });
   });
 }

@@ -97,13 +97,48 @@ export async function addReservationFS(data: any): Promise<void> {
     enqueueOp({ type: 'add', payload: data });
     return;
   }
-  const { addDoc, collection, waitForPendingWrites, serverTimestamp } = await import('firebase/firestore');
-  const ref = collection(db, 'stores', getStoreId(), 'reservations');
-  await addDoc(ref, {
-    ...data,
-    version: 1,
-    updatedAt: serverTimestamp(),
-  });
+
+  const {
+    doc,
+    setDoc,
+    waitForPendingWrites,
+    serverTimestamp,
+  } = await import('firebase/firestore');
+
+  // UI が管理する連番 / 文字列 ID をそのままドキュメント ID に使う
+  const ref = doc(db, 'stores', getStoreId(), 'reservations', String(data.id));
+
+  await setDoc(
+    ref,
+    {
+      ...data,
+      version: 1,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true } // 既にあっても上書きできるように
+  );
+
+  await waitForPendingWrites(db);
+}
+
+/** 予約を 1 件削除 */
+export async function deleteReservationFS(id: string): Promise<void> {
+  if (!id) return;
+
+  // オフライン時はキューに積んで終了
+  if (!navigator.onLine) {
+    enqueueOp({ type: 'delete', id });
+    return;
+  }
+
+  const {
+    doc,
+    deleteDoc,
+    waitForPendingWrites,
+  } = await import('firebase/firestore');
+
+  const ref = doc(db, 'stores', getStoreId(), 'reservations', id);
+  await deleteDoc(ref);
   await waitForPendingWrites(db);
 }
 
@@ -133,7 +168,7 @@ export async function deleteAllReservationsFS(): Promise<void> {
   } = await import('firebase/firestore');
 
   // 予約コレクションを取得
-  const snap = await getDocs(collection(db, 'stores', getStoreId(), `reservations-${todayStr()}`));
+  const snap = await getDocs(collection(db, 'stores', getStoreId(), 'reservations'));
   if (snap.empty) return;           // ドキュメントが無ければ終了
 
   // 一括削除バッチ
