@@ -149,6 +149,13 @@ useEffect(() => {
   //
   const [reservations, setReservations] = useState<Reservation[]>(loadReservations());
   const [nextResId, setNextResId] = useState<string>("1");
+  // --- keep nextResId in sync with current reservation count ---
+  useEffect(() => {
+    // 予約が 0 件なら必ず 1 から開始する
+    if (reservations.length === 0 && nextResId !== '1') {
+      setNextResId('1');
+    }
+  }, [reservations]);
   // 予約ID → { old, next } を保持（卓番変更プレビュー用）
 const [pendingTables, setPendingTables] =
   useState<Record<string, { old: string; next: string }>>({});
@@ -1343,12 +1350,16 @@ const onNumPadConfirm = () => {
   const addReservation = async (e: FormEvent) => {
     e.preventDefault();
     if (
-  !newResTable ||
-  !newResTime ||
-  newResGuests === '' ||
-  isNaN(Number(newResGuests)) ||
-  !newResCourse            // ← コース未選択も弾く
-) return;
+      !newResTable ||                      // 卓番号未入力
+      !newResTime ||                       // 時刻未入力
+      newResGuests === '' ||               // 人数未入力
+      isNaN(Number(newResGuests)) ||       // 人数が数値でない
+      !newResCourse ||                     // コース未選択
+      nextResId === ''                     // ID が空  → 予約追加禁止
+    ) {
+      alert('卓番号・人数・コース・ID を正しく入力してください');
+      return;
+    }
 
     const newEntry: Reservation = {
       id: nextResId,

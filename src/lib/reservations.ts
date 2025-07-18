@@ -92,6 +92,11 @@ export async function toggleTaskComplete(
 
 /** 予約を 1 件追加 */
 export async function addReservationFS(data: any): Promise<void> {
+  // ガード: 空 ID なら予約を送信しない
+  if (!data.id) {
+    console.warn('[addReservationFS] called with empty id, abort');
+    return;
+  }
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
     enqueueOp({ type: 'add', payload: data });

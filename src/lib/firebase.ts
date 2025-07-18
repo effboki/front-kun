@@ -39,19 +39,28 @@ async function ensureStoreDoc(storeId: string) {
 
 // ── storeId取得ヘルパー ─────────────────
 export function getStoreId(): string {
-  // 環境変数用 Fallback（前後スラッシュ除去）
+  /**
+   * 店舗 ID 解決ルール
+   *  1) URL 先頭セグメント（ /{storeId}/... ）
+   *  2) NEXT_PUBLIC_STORE_ID（Vercel / .env.local）
+   *  3) "default"
+   *
+   * ①が空文字やスラッシュのみだった場合は②へフォールバック。
+   * 戻り値は両端のスラッシュを取り除き、必ず非空文字列になる。
+   */
   const fallback =
     (process.env.NEXT_PUBLIC_STORE_ID || 'default').replace(/^\/+|\/+$/g, '');
 
-  // SSR 時は window が無い
+  // SSR / ビルド時は window が無い
   if (typeof window === 'undefined') {
     return fallback;
   }
 
-  // `/demo/` や `//demo//foo` のようなパスでも
-  // 空文字セグメントを除去して 先頭の storeId を取得
-  const parts = window.location.pathname.split('/').filter(Boolean);
-  return parts[0] || fallback;
+  // 例: "/", "//", "/demo/", "//demo//foo" なども安全に分解
+  const rawSeg = window.location.pathname.split('/').filter(Boolean)[0] ?? '';
+  const cleaned = rawSeg.replace(/^\/+|\/+$/g, '');
+
+  return cleaned || fallback;
 }
 
 // ── localStorage 名前空間設定 ─────────────────

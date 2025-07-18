@@ -45,10 +45,27 @@ export function enqueueOp(op: Op): void {
   }
 }
 
-/** キュー内のすべての操作を取り出し、クリアして返す */
+/** キュー内のすべての操作を取り出し、空 ID エントリを除去して返す */
 export function dequeueAll(): Op[] {
   const existing = localStorage.getItem(QUEUE_KEY);
   const queue: Op[] = existing ? JSON.parse(existing) : [];
-  localStorage.removeItem(QUEUE_KEY);
-  return queue;
+
+  // 空 id / payload.id==='' のエントリを除外
+  const cleaned: Op[] = queue.filter(op => {
+    if (op.type === 'add') {
+      return op.payload?.id !== '' && op.payload?.id !== undefined;
+    }
+    if (op.type === 'update' || op.type === 'delete') {
+      return op.id !== '' && op.id !== undefined;
+    }
+    return true; // storeSettings
+  });
+
+  // クリアして、空でなければ掃除後キューを書き戻す
+  if (cleaned.length > 0) {
+    localStorage.setItem(QUEUE_KEY, JSON.stringify(cleaned));
+  } else {
+    localStorage.removeItem(QUEUE_KEY);
+  }
+  return cleaned;
 }
