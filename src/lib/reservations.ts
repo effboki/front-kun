@@ -2,6 +2,9 @@ import { db, getStoreId, ensureStoreStructure } from './firebase';
 import { enqueueOp } from './opsQueue';
 // localStorage namespace prefix
 const ns = `front-kun-${getStoreId()}`;
+
+console.log('[reservations.ts] module loaded, storeId=', getStoreId());
+
 /** 当日の日付 "YYYY-MM-DD" を返すヘルパー */
 function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
@@ -101,11 +104,13 @@ export async function addReservationFS(data: any): Promise<void> {
     return;
   }
 
+  console.log(`[addReservationFS] online; ensuring store structure for storeId=${storeId}`);
   // --- 親ドキュメントと設定ドキュメントを自動生成 -----------------
   try {
     await ensureStoreStructure(storeId);
+    console.log(`[addReservationFS] ensureStoreStructure succeeded for ${storeId}`);
   } catch (e) {
-    console.warn('[addReservationFS] ensureStoreStructure failed', e);
+    console.warn(`[addReservationFS] ensureStoreStructure failed for ${storeId}:`, e);
   }
   // ----------------------------------------------------------------
 
