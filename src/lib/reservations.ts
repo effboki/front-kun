@@ -1,7 +1,5 @@
 import { db, getStoreId, ensureStoreStructure } from './firebase';
 import { enqueueOp } from './opsQueue';
-// localStorage namespace prefix
-const ns = `front-kun-${getStoreId()}`;
 
 console.log('[reservations.ts] module loaded, storeId=', getStoreId());
 
@@ -12,6 +10,10 @@ function todayStr(): string {
 /** Firestore で使えない "/" などを "_" に置換して返す */
 function sanitizeSegment(seg: string): string {
   return String(seg).replace(/[\/\\.#$\[\]]/g, '_');
+}
+/** 予約・ローカルキャッシュ用の dynamic localStorage 名前空間 */
+function ns(): string {
+  return `front-kun-${getStoreId()}`;
 }
 /** 既存予約ドキュメントを部分更新。
  *   - ドキュメントが無い場合は setDoc で新規作成（merge:true）
@@ -81,7 +83,7 @@ export async function toggleTaskComplete(
       type: 'update',
       id: sanitizeSegment(reservationId),
       field: `completed.${compKey}`,
-      value: !JSON.parse(localStorage.getItem(`${ns}-reservations-cache`) || '{}').completed?.[compKey]
+      value: !JSON.parse(localStorage.getItem(`${ns()}-reservations-cache`) || '{}').completed?.[compKey]
     });
     return;
   }
