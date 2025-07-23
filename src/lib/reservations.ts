@@ -9,6 +9,10 @@ console.log('[reservations.ts] module loaded, storeId=', getStoreId());
 function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
+/** Firestore で使えない "/" などを "_" に置換して返す */
+function sanitizeSegment(seg: string): string {
+  return String(seg).replace(/[\/\\.#$\[\]]/g, '_');
+}
 /** 既存予約ドキュメントを部分更新。
  *   - ドキュメントが無い場合は setDoc で新規作成（merge:true）
  *   - オフライン時は pending 書き込みを待機
@@ -22,12 +26,20 @@ export async function updateReservationFS(
     console.warn('[updateReservationFS] called with empty id, skipping');
     return;
   }
+  const rawStoreId = getStoreId();
+  const storeId = sanitizeSegment(rawStoreId);
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
     Object.entries(patch).forEach(([field, value]) => {
-      enqueueOp({ type: 'update', id: String(id), field, value });
+      enqueueOp({ type: 'update', id: sanitizeSegment(String(id)), field, value });
     });
     return;
+  }
+  // 確実に親ドキュメントと設定ドキュメントを生成
+  try {
+    await ensureStoreStructure(storeId);
+  } catch (e) {
+    console.warn(`[updateReservationFS] ensureStoreStructure failed for ${storeId}:`, e);
   }
   try {
     // Firestore 動的 import
@@ -37,7 +49,8 @@ export async function updateReservationFS(
       waitForPendingWrites,
     } = await import('firebase/firestore');
 
-    const ref = doc(db, 'stores', getStoreId(), 'reservations', String(id));
+    const docId = sanitizeSegment(String(id));
+    const ref = doc(db, 'stores', storeId, 'reservations', docId);
     await updateDoc(ref, patch);
     await waitForPendingWrites(db);
   } catch (err) {
@@ -53,19 +66,28 @@ export async function toggleTaskComplete(
    compKey: string,
    baseVersion?: number,
  ): Promise<void> {
+  const rawStoreId = getStoreId();
+  const storeId = sanitizeSegment(rawStoreId);
+  // 親ドキュメントの存在を保証
+  try {
+    await ensureStoreStructure(storeId);
+  } catch (e) {
+    console.warn(`[toggleTaskComplete] ensureStoreStructure failed for ${storeId}:`, e);
+  }
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
     // Firestore update will be replayed later
     enqueueOp({
       type: 'update',
-      id: reservationId,
+      id: sanitizeSegment(reservationId),
       field: `completed.${compKey}`,
       value: !JSON.parse(localStorage.getItem(`${ns}-reservations-cache`) || '{}').completed?.[compKey]
     });
     return;
   }
   const { doc, runTransaction, serverTimestamp, increment } = await import('firebase/firestore');
-  const ref = doc(db, 'stores', getStoreId(), 'reservations', reservationId);
+  const docId = sanitizeSegment(reservationId);
+  const ref = doc(db, 'stores', storeId, 'reservations', docId);
 
   await runTransaction(db, async trx => {
     const snap = await trx.get(ref);
@@ -93,7 +115,8 @@ export async function addReservationFS(data: any): Promise<void> {
     console.warn('[addReservationFS] called with empty id, abort');
     return;
   }
-  const storeId = getStoreId();
+  const rawStoreId = getStoreId();
+  const storeId = sanitizeSegment(rawStoreId);
   if (!storeId) {
     console.warn('[addReservationFS] empty storeId, abort');
     return;
@@ -122,7 +145,8 @@ export async function addReservationFS(data: any): Promise<void> {
   } = await import('firebase/firestore');
 
   // UI が管理する連番 / 文字列 ID をそのままドキュメント ID に使う
-  const ref = doc(db, 'stores', storeId, 'reservations', String(data.id));
+  const docId = sanitizeSegment(String(data.id));
+  const ref = doc(db, 'stores', storeId, 'reservations', docId);
 
   await setDoc(
     ref,
@@ -143,10 +167,18 @@ export async function deleteReservationFS(id: string): Promise<void> {
     console.warn('[deleteReservationFS] empty id, skip');
     return;
   }
+  const rawStoreId = getStoreId();
+  const storeId = sanitizeSegment(rawStoreId);
+  // 親ドキュメントと設定ドキュメントを生成（存在しない場合のみ）
+  try {
+    await ensureStoreStructure(storeId);
+  } catch (e) {
+    console.warn(`[deleteReservationFS] ensureStoreStructure failed for ${storeId}:`, e);
+  }
 
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
-    enqueueOp({ type: 'delete', id });
+    enqueueOp({ type: 'delete', id: sanitizeSegment(id) });
     return;
   }
 
@@ -156,15 +188,18 @@ export async function deleteReservationFS(id: string): Promise<void> {
     waitForPendingWrites,
   } = await import('firebase/firestore');
 
-  const ref = doc(db, 'stores', getStoreId(), 'reservations', id);
+  const docId = sanitizeSegment(id);
+  const ref = doc(db, 'stores', storeId, 'reservations', docId);
   await deleteDoc(ref);
   await waitForPendingWrites(db);
 }
 
 /** 予約を 1 回だけ全件取得（初回キャッシュ用） */
 export async function fetchAllReservationsOnce(): Promise<any[]> {
+  const rawStoreId = getStoreId();
+  const storeId = sanitizeSegment(rawStoreId);
   const { collection, getDocs, query, orderBy } = await import('firebase/firestore');
-  const q = query(collection(db, 'stores', getStoreId(), 'reservations'), orderBy('time', 'asc'));
+  const q = query(collection(db, 'stores', storeId, 'reservations'), orderBy('time', 'asc'));
   const snap = await getDocs(q);
   return snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
 }
@@ -174,6 +209,8 @@ export async function fetchAllReservationsOnce(): Promise<any[]> {
  * joinedToday 端末からのみ呼び出される想定
  */
 export async function deleteAllReservationsFS(): Promise<void> {
+  const rawStoreId = getStoreId();
+  const storeId = sanitizeSegment(rawStoreId);
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
     enqueueOp({ type: 'delete', id: '0' });
@@ -187,7 +224,7 @@ export async function deleteAllReservationsFS(): Promise<void> {
   } = await import('firebase/firestore');
 
   // 予約コレクションを取得
-  const snap = await getDocs(collection(db, 'stores', getStoreId(), 'reservations'));
+  const snap = await getDocs(collection(db, 'stores', storeId, 'reservations'));
   if (snap.empty) return;           // ドキュメントが無ければ終了
 
   // 一括削除バッチ

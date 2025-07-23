@@ -51,7 +51,17 @@ export async function ensureStoreStructure(storeId: string): Promise<void> {
     const configRef = doc(db, 'stores', storeId, 'settings', 'config');
     const configSnap = await getDoc(configRef);
     if (!configSnap.exists()) {
-      await setDoc(configRef, {}); // 空オブジェクトで作成
+      // 空オブジェクトで作成（merge:true 付きで二重実行でも安全）
+      await setDoc(
+  configRef,
+  {
+    eatOptions: ['⭐︎', '⭐︎⭐︎'],
+    drinkOptions: ['スタ', 'プレ'],
+    courses: [],
+    tables: [],
+  },
+  { merge: true },
+);
     }
   } catch (err) {
     console.warn('[ensureStoreStructure] failed:', err);
