@@ -162,7 +162,16 @@ const [pendingTables, setPendingTables] =
 
 
   // Firestore リアルタイム listener（オンライン時のみ接続）
-  useRealtimeReservations(id, navigator.onLine);
+  const liveReservations = useRealtimeReservations(id, navigator.onLine);
+  useEffect(() => {
+    if (!liveReservations) return;
+    setReservations(liveReservations as any);
+    const maxId = liveReservations.reduce(
+      (m: number, r: any) => (Number(r.id) > m ? Number(r.id) : m),
+      0
+    );
+    setNextResId((maxId + 1).toString());
+  }, [liveReservations]);
 
 
   // ─── Firestore 初回 1 read → localStorage キャッシュ ───
