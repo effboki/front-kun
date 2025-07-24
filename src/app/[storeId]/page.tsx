@@ -9,8 +9,11 @@ import { flushQueuedOps } from '@/lib/firebase';
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-expressions */
 // 📌 ChatGPT からのテスト編集: 拡張機能連携確認済み
 
+import type { StoreSettings } from '@/types/settings';
+
 import { useState, ChangeEvent, FormEvent, useMemo, useEffect, useRef } from 'react';
 import { useRealtimeReservations } from '@/hooks/useRealtimeReservations';
+import { useRealtimeStoreSettings } from '@/hooks/useRealtimeStoreSettings';
 import { toast } from 'react-hot-toast';
 import { dequeueAll} from '@/lib/opsQueue';
 import { addReservationFS, updateReservationFS, deleteReservationFS, fetchAllReservationsOnce, deleteAllReservationsFS } from '@/lib/reservations';
@@ -97,6 +100,7 @@ export default function Home() {
   const ns        = `front-kun-${id}`;
   const RES_KEY   = `${ns}-reservations`;
   const CACHE_KEY = `${ns}-reservations_cache`;
+  const SETTINGS_CACHE_KEY = `${ns}-settings-cache`; // settings + cachedAt
   // Sidebar open state
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
 
@@ -108,6 +112,8 @@ export default function Home() {
   useEffect(() => {
     setHydrated(true);
   }, []);
+  // 店舗設定（eatOptions / drinkOptions / positions …）をリアルタイム購読
+  const storeSettings = useRealtimeStoreSettings(id);
   //
   // ───────── 食・飲 オプション ─────────
   //
@@ -172,6 +178,63 @@ const [pendingTables, setPendingTables] =
     );
     setNextResId((maxId + 1).toString());
   }, [liveReservations]);
+
+  // ─── (先読み) localStorage の settings キャッシュをロード ─────────────
+  useEffect(() => {
+    if (storeSettings) return; // Firestore から来たら不要
+    try {
+      const raw = localStorage.getItem(SETTINGS_CACHE_KEY);
+      if (!raw) return;
+      const obj = JSON.parse(raw) as { cachedAt: number; data: any };
+      const cached = obj?.data as Partial<StoreSettings>;
+      if (!cached) return;
+
+      // 最低限 eat/drinkOptions / positions / tasksByPosition を復元
+      setEatOptions(cached.eatOptions ?? []);
+      setDrinkOptions(cached.drinkOptions ?? []);
+      if (cached.positions) setPositions(cached.positions);
+      if (cached.tasksByPosition) setTasksByPosition(cached.tasksByPosition);
+    } catch (err) {
+      console.warn('SETTINGS_CACHE_KEY parse failed', err);
+    }
+  }, [storeSettings]);
+
+  // ─── Firestore からの店舗設定を UI State へ反映 ─────────────────
+  useEffect(() => {
+    if (!storeSettings) return; // まだ取得前
+
+    // eatOptions / drinkOptions
+    setEatOptions(storeSettings.eatOptions ?? []);
+    localStorage.setItem(`${ns}-eatOptions`, JSON.stringify(storeSettings.eatOptions ?? []));
+
+    setDrinkOptions(storeSettings.drinkOptions ?? []);
+    localStorage.setItem(`${ns}-drinkOptions`, JSON.stringify(storeSettings.drinkOptions ?? []));
+
+    // courses
+    if (storeSettings.courses && storeSettings.courses.length > 0) {
+      setCourses(storeSettings.courses as any);
+      localStorage.setItem(`${ns}-courses`, JSON.stringify(storeSettings.courses));
+    }
+
+    // tables
+    if (storeSettings.tables && storeSettings.tables.length > 0) {
+      setPresetTables(storeSettings.tables as any);
+      localStorage.setItem(`${ns}-presetTables`, JSON.stringify(storeSettings.tables));
+    }
+
+    // positions
+    setPositions(storeSettings.positions ?? []);
+    localStorage.setItem(`${ns}-positions`, JSON.stringify(storeSettings.positions ?? []));
+
+    // tasksByPosition
+    setTasksByPosition(storeSettings.tasksByPosition ?? {});
+    localStorage.setItem(
+      `${ns}-tasksByPosition`,
+      JSON.stringify(storeSettings.tasksByPosition ?? {})
+    );
+    // settings 全体をまとめてキャッシュ（最新タイムスタンプ付き）
+    localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ cachedAt: Date.now(), data: storeSettings }));
+  }, [storeSettings]);
 
 
   // ─── Firestore 初回 1 read → localStorage キャッシュ ───
@@ -1306,6 +1369,22 @@ if (allowedTaskLabels.size > 0 && !allowedTaskLabels.has(t.label)) return;
 const onNumPadConfirm = () => {
   if (!numPadState) return;
 
+  // ── プリセット卓番号を確定 ──────────────────
+  if (numPadState.field === 'presetTable') {
+    if (numPadState.value) {
+      setPresetTables(prev => {
+        const next = Array.from(
+          new Set([...prev, numPadState.value])
+        ).sort((a, b) => Number(a) - Number(b));
+        localStorage.setItem(`${ns}-presetTables`, JSON.stringify(next));
+        return next;
+      });
+      setNewTableTemp(''); // 表示用テキストリセット
+    }
+    setNumPadState(null);
+    return;
+  }
+
   // ── 卓番号変更モード ──────────────────
   if (numPadState.field === 'targetTable') {
     if (numPadState.value) {
@@ -1939,10 +2018,11 @@ setNewResDrink('');
                 </p>
                 <div className="flex items-center space-x-2">
                              <input
-             type="text"
-             value={newResTable}
-             readOnly
-             onClick={() => setNumPadState({ id: '-1', field: 'guests', value: '' })}
+  type="text"
+  value={newTableTemp}                            
+  readOnly
+  onClick={() =>
+    setNumPadState({ id: '-1', field: 'presetTable', value: '' })}  
                     placeholder="卓番号を入力"
                     maxLength={3}
                     className="border px-2 py-1 w-full rounded text-sm text-center cursor-pointer"

@@ -35,6 +35,13 @@ export async function updateReservationFS(
     Object.entries(patch).forEach(([field, value]) => {
       enqueueOp({ type: 'update', id: sanitizeSegment(String(id)), field, value });
     });
+    // 併せて更新時刻を入れておく（オンライン復帰後に最新判定しやすい）
+    enqueueOp({
+      type: 'update',
+      id: sanitizeSegment(String(id)),
+      field: 'updatedAt',
+      value: Date.now(), // クライアントタイムで暫定
+    });
     return;
   }
   // 確実に親ドキュメントと設定ドキュメントを生成
@@ -49,11 +56,18 @@ export async function updateReservationFS(
       doc,
       updateDoc,
       waitForPendingWrites,
+      serverTimestamp,
+      increment,
     } = await import('firebase/firestore');
 
     const docId = sanitizeSegment(String(id));
     const ref = doc(db, 'stores', storeId, 'reservations', docId);
-    await updateDoc(ref, patch);
+    // version を +1、updatedAt をサーバー時刻で更新して他端末の並び順・競合検出を正確に
+    await updateDoc(ref, {
+      ...patch,
+      version: increment(1),
+      updatedAt: serverTimestamp(),
+    });
     await waitForPendingWrites(db);
   } catch (err) {
     console.error('updateReservationFS failed:', err);

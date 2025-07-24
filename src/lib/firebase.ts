@@ -20,7 +20,18 @@ import {
   updateReservationFS,
   deleteAllReservationsFS,
 } from './reservations';
+
 import type { StoreSettings } from '@/types/settings';
+
+// ── StoreSettings のデフォルト（Firestore / localStorage 双方で使い回す）──
+export const DEFAULT_STORE_SETTINGS: StoreSettings = {
+  eatOptions: ['⭐︎', '⭐︎⭐︎'],
+  drinkOptions: ['スタ', 'プレ'],
+  courses: [],
+  tables: [],
+  positions: [],
+  tasksByPosition: {},
+};
 
 /* ────────────────────────────────
    stores/{storeId} ドキュメントが
@@ -50,22 +61,9 @@ export async function ensureStoreStructure(storeId: string): Promise<void> {
   // ② 設定ドキュメント (settings/config)
   try {
     const configRef = doc(db, 'stores', storeId, 'settings', 'config');
-    const configSnap = await getDoc(configRef);
-    if (!configSnap.exists()) {
-      // 空オブジェクトで作成（merge:true 付きで二重実行でも安全）
-      await setDoc(
-        configRef,
-        {
-          eatOptions: ['⭐︎', '⭐︎⭐︎'],
-          drinkOptions: ['スタ', 'プレ'],
-          courses: [],
-          tables: [],
-          positions: [],            // ← 追加
-          tasksByPosition: {},      // ← 追加
-        },
-        { merge: true },
-      );
-    }
+    // 存在チェックをする/しないに関わらず、必ず DEFAULT を merge して
+    // 欠けているフィールドを穴埋めする（将来フィールドを追加しても自動補完される）
+    await setDoc(configRef, DEFAULT_STORE_SETTINGS, { merge: true });
   } catch (err) {
     console.warn('[ensureStoreStructure] failed:', err);
   }
@@ -243,30 +241,16 @@ export async function saveStoreSettingsTx(
     const prev = snap.exists()
       ? (snap.data() as Partial<StoreSettings>)
       : {};
+
+    // まず DEFAULT と prev を合成して「完全型」を作ってから、差分(settings)で上書き
+    const prevSafe: StoreSettings = {
+      ...DEFAULT_STORE_SETTINGS,
+      ...prev,
+    };
+
     full = {
-      eatOptions: (
-        settings.eatOptions ?? prev.eatOptions ?? ['⭐︎', '⭐︎⭐︎']
-      ) as string[],
-
-      drinkOptions: (
-        settings.drinkOptions ?? prev.drinkOptions ?? ['スタ', 'プレ']
-      ) as string[],
-
-      courses: (
-        settings.courses ?? prev.courses ?? []
-      ) as any[],
-
-      tables: (
-        settings.tables ?? prev.tables ?? []
-      ) as any[],
-
-      positions: (
-        settings.positions ?? prev.positions ?? []
-      ) as string[],
-
-      tasksByPosition: (
-        settings.tasksByPosition ?? prev.tasksByPosition ?? {}
-      ) as Record<string, Record<string, string[]>>,
+      ...prevSafe,
+      ...settings,
     } as StoreSettings;
     trx.set(ref, full, { merge: true });
   });

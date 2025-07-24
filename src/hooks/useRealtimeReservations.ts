@@ -48,13 +48,13 @@ export function useRealtimeReservations(
   };
 
   useEffect(() => {
-    console.log('[RealtimeRes] storeId=', storeId, 'online=', navigator.onLine);
+    console.log('[RealtimeRes] storeId=', storeId, 'joined=', joined);
     if (!storeId) {
       console.warn('[RealtimeRes] storeId is undefined, skipping listener');
       return detach();
     }
-    if (!navigator.onLine) {
-      console.log('[RealtimeRes] offline, skipping subscription');
+    if (!joined) {
+      console.log('[RealtimeRes] joined flag is false; detaching listener');
       return detach();
     }
 
@@ -74,9 +74,9 @@ export function useRealtimeReservations(
 
     unsubRef.current = onSnapshot(q, (snap) => {
       const arr = snap.docs.map((d) => {
-        // Extract reservation data without id field, then append id
-        const data = d.data() as Omit<Reservation, 'id'>;
-        return { ...data, id: d.id };
+        // Extract reservation data with id field
+        const data = d.data() as Partial<Reservation>;
+        return { ...data, id: d.id } as Reservation;
       });
       console.log('[RealtimeRes] got docs:', arr);
       setList(arr);
@@ -90,7 +90,7 @@ export function useRealtimeReservations(
       clearTimeout(timer);
       detach();
     };
-  }, [storeId]);
+  }, [storeId, joined]);
 
   return list;
 }
