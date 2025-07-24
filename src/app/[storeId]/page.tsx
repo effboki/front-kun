@@ -163,6 +163,11 @@ const [pendingTables, setPendingTables] =
 
   // Firestore リアルタイム listener（オンライン時のみ接続）
   const liveReservations = useRealtimeReservations(id, navigator.onLine);
+  // ---- 共通表示用配列 (オンライン: liveReservations / オフライン: local cache) ----
+  const reservationsToDisplay: Reservation[] =
+    navigator.onLine && liveReservations && (liveReservations as Reservation[]).length > 0
+      ? (liveReservations as Reservation[])
+      : reservations;
   useEffect(() => {
     if (!liveReservations) return;
     setReservations(liveReservations as any);
@@ -1070,14 +1075,14 @@ const deleteCourse = async () => {
   //
 
   const sortedByTable = useMemo(() => {
-    return [...reservations].sort((a, b) => Number(a.table) - Number(b.table));
-  }, [reservations]);
+    return [...reservationsToDisplay].sort((a, b) => Number(a.table) - Number(b.table));
+  }, [reservationsToDisplay]);
 
   const sortedByTime = useMemo(() => {
-    return [...reservations].sort((a, b) => {
+    return [...reservationsToDisplay].sort((a, b) => {
       return parseTimeToMinutes(a.time) - parseTimeToMinutes(b.time);
     });
-  }, [reservations]);
+  }, [reservationsToDisplay]);
 
   // 表示順決定
   const sortedReservations = resOrder === 'time' ? sortedByTime : sortedByTable;
@@ -1092,7 +1097,7 @@ const deleteCourse = async () => {
         if (filterCourse !== '全体' && r.course !== filterCourse) return false;
         return true;
       });
-  }, [sortedReservations, checkedTables, filterCourse, checkedDepartures]);
+  }, [sortedReservations, checkedTables, filterCourse, checkedDepartures, reservationsToDisplay]);
 
   /* ─── 2.x リマインド機能 state & ロジック ───────────────────────── */
   // 通知の ON/OFF
@@ -1153,7 +1158,7 @@ const deleteCourse = async () => {
     return Object.entries(map)
       .sort((a, b) => parseTimeToMinutes(a[0]) - parseTimeToMinutes(b[0]))
       .map(([timeKey, set]) => ({ timeKey, tasks: Array.from(set) }));
-  }, [filteredReservations, courses, currentTime]);
+  }, [filteredReservations, courses, currentTime, reservationsToDisplay]);
 
   // 回転テーブル判定: 同じ卓番号が複数予約されている場合、その卓は回転中とみなす
   const tableCounts: Record<string, number> = {};
@@ -1192,7 +1197,7 @@ source.forEach((r) => {
         Object.entries(coursesMap).map(([courseName, reservations]) => ({ courseName, reservations })),
       ])
     );
-  }, [filteredReservations, sortedReservations, filterCourse, courseStartFiltered]);
+  }, [filteredReservations, sortedReservations, filterCourse, courseStartFiltered, reservationsToDisplay]);
 
   type TaskGroup = {
     timeKey: string;
