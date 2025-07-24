@@ -20,6 +20,7 @@ import {
   updateReservationFS,
   deleteAllReservationsFS,
 } from './reservations';
+import type { StoreSettings } from '@/types/settings';
 
 /* ────────────────────────────────
    stores/{storeId} ドキュメントが
@@ -53,15 +54,17 @@ export async function ensureStoreStructure(storeId: string): Promise<void> {
     if (!configSnap.exists()) {
       // 空オブジェクトで作成（merge:true 付きで二重実行でも安全）
       await setDoc(
-  configRef,
-  {
-    eatOptions: ['⭐︎', '⭐︎⭐︎'],
-    drinkOptions: ['スタ', 'プレ'],
-    courses: [],
-    tables: [],
-  },
-  { merge: true },
-);
+        configRef,
+        {
+          eatOptions: ['⭐︎', '⭐︎⭐︎'],
+          drinkOptions: ['スタ', 'プレ'],
+          courses: [],
+          tables: [],
+          positions: [],            // ← 追加
+          tasksByPosition: {},      // ← 追加
+        },
+        { merge: true },
+      );
     }
   } catch (err) {
     console.warn('[ensureStoreStructure] failed:', err);
@@ -132,17 +135,19 @@ export function saveReservations(arr: any[]): void {
   localStorage.setItem(RES_KEY, JSON.stringify(arr));
 }
 
-/** 店舗設定（eatOptions / drinkOptions / courses / tables）を取得 */
+/** 店舗設定（eatOptions / drinkOptions / courses / tables / positions / tasksByPosition）を取得 */
 export function getStoreSettings(): {
   eatOptions: string[];
   drinkOptions: string[];
   courses: any[];
   tables: any[];
+  positions: string[];
+  tasksByPosition: Record<string, Record<string, string[]>>;
 } {
   try {
     return JSON.parse(
       localStorage.getItem(STORE_KEY) ??
-        '{"eatOptions":["⭐︎","⭐︎⭐︎"],"drinkOptions":["スタ","プレ"],"courses":[],"tables":[]}'
+        '{"eatOptions":["⭐︎","⭐︎⭐︎"],"drinkOptions":["スタ","プレ"],"courses":[],"tables":[],"positions":[],"tasksByPosition":{}}'
     );
   } catch {
     return {
@@ -150,17 +155,14 @@ export function getStoreSettings(): {
       drinkOptions: ['スタ', 'プレ'],
       courses: [],
       tables: [],
+      positions: [],
+      tasksByPosition: {},
     };
   }
 }
 
-/** 店舗設定（eatOptions / drinkOptions / courses / tables）を保存 */
-export function saveStoreSettings(obj: {
-  eatOptions: string[];
-  drinkOptions: string[];
-  courses: any[];
-  tables: any[];
-}): void {
+/** 店舗設定（eatOptions / drinkOptions / courses / tables / positions / tasksByPosition）を保存 */
+export function saveStoreSettings(obj: StoreSettings): void {
   localStorage.setItem(STORE_KEY, JSON.stringify(obj));
 }
 
@@ -169,7 +171,7 @@ export function saveStoreSettings(obj: {
    ────────────────────────────────*/
 
 /**
- * Firestore から店舗設定 (eatOptions / drinkOptions / courses / tables) を取得。
+ * Firestore から店舗設定 (eatOptions / drinkOptions / courses / tables / positions / tasksByPosition) を取得。
  * ドキュメントが無い場合は空の設定を返す。
  */
 export async function loadStoreSettings(): Promise<{
@@ -177,6 +179,8 @@ export async function loadStoreSettings(): Promise<{
   drinkOptions: string[];
   courses: any[];
   tables: any[];
+  positions: string[];
+  tasksByPosition: Record<string, Record<string, string[]>>;
 }> {
   try {
     // ドキュメントツリー自動生成
@@ -191,6 +195,8 @@ export async function loadStoreSettings(): Promise<{
         drinkOptions: ['スタ', 'プレ'],
         courses: [],
         tables: [],
+        positions: [],
+        tasksByPosition: {},
       };
       try {
         await setDoc(ref, defaults, { merge: true }); // 初回のみ作成
@@ -206,6 +212,8 @@ export async function loadStoreSettings(): Promise<{
       drinkOptions: data.drinkOptions ?? ['スタ', 'プレ'],
       courses: data.courses ?? [],
       tables: data.tables ?? [],
+      positions: data.positions ?? [],
+      tasksByPosition: data.tasksByPosition ?? {},
     };
   } catch (err) {
     console.error('loadStoreSettings failed', err);
@@ -218,12 +226,12 @@ export async function loadStoreSettings(): Promise<{
  * 店舗設定をトランザクションで保存。
  * 同時編集を防ぐため、既存ドキュメントを読んで merge 更新。
  */
-export async function saveStoreSettingsTx(settings: {
-  eatOptions: string[];
-  drinkOptions: string[];
-  courses: any[];
-  tables: any[];
-}) {
+export async function saveStoreSettingsTx(
+  settings: Partial<StoreSettings>,
+): Promise<void> {
+  // 取引内で生成し、外でも参照できるように宣言しておく
+  let full = {} as StoreSettings;
+
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
     enqueueOp({ type: 'storeSettings', payload: settings });
@@ -232,12 +240,39 @@ export async function saveStoreSettingsTx(settings: {
   const ref = doc(db, 'stores', getStoreId(), 'settings', 'config');
   await runTransaction(db, async (trx) => {
     const snap = await trx.get(ref);
-    const prev = snap.exists() ? snap.data() : {};
-    trx.set(ref, { ...prev, ...settings }, { merge: true });
+    const prev = snap.exists()
+      ? (snap.data() as Partial<StoreSettings>)
+      : {};
+    full = {
+      eatOptions: (
+        settings.eatOptions ?? prev.eatOptions ?? ['⭐︎', '⭐︎⭐︎']
+      ) as string[],
+
+      drinkOptions: (
+        settings.drinkOptions ?? prev.drinkOptions ?? ['スタ', 'プレ']
+      ) as string[],
+
+      courses: (
+        settings.courses ?? prev.courses ?? []
+      ) as any[],
+
+      tables: (
+        settings.tables ?? prev.tables ?? []
+      ) as any[],
+
+      positions: (
+        settings.positions ?? prev.positions ?? []
+      ) as string[],
+
+      tasksByPosition: (
+        settings.tasksByPosition ?? prev.tasksByPosition ?? {}
+      ) as Record<string, Record<string, string[]>>,
+    } as StoreSettings;
+    trx.set(ref, full, { merge: true });
   });
   await waitForPendingWrites(db);
   // ローカルキャッシュも更新
-  saveStoreSettings(settings);
+  saveStoreSettings(full);
 }
 
 // ── 溜め込んだ opsQueue を Firestore へ一括反映 ──────────────

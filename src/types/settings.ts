@@ -1,14 +1,21 @@
-// src/types/settings.ts
-/** 店舗設定の型定義 */
 export interface StoreSettings {
-    eatOptions: string[];
-  drinkOptions: string[];
-  courses: any[];
-  tables: any[];
-  // ここに店舗設定画面の各設定項目をキーと値の型で列挙してください
-  // 例:
-  // courses: { name: string; tasks: Task[] }[];
-  // tables: string[];
-  // isAllYouCanEatEnabled: boolean;
-  // ...
+  /** 食べ放題オプション */
+  eatOptions?: string[];
+  /** 飲み放題オプション */
+  drinkOptions?: string[];
+  /** コース一覧 */
+  courses?: any[];
+  /** テーブル一覧 */
+  tables?: any[];
+  /** ポジション名のリスト。未定義時は空配列で扱う */
+  positions?: string[];
+  /**
+   * ポジションごとのタスクマップ。
+   * 例:
+   * {
+   *   "ホール":   { "開店前": ["テーブル拭き"], "営業中": ["配膳"] },
+   *   "キッチン": { "仕込み": ["カレー準備"] }
+   * }
+   */
+  tasksByPosition?: Record<string, Record<string, string[]>>;
 }
