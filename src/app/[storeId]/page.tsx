@@ -326,6 +326,8 @@ const toggleTableForMove = (id: string) => {
         drinkOptions,
         courses,
         tables: presetTables,
+        positions,
+        tasksByPosition,
       }),
       {
         loading: '保存中…',
@@ -414,6 +416,13 @@ const [showTableStart, setShowTableStart] = useState<boolean>(true);
   const [checkedDepartures, setCheckedDepartures] = useState<string[]>([]);
   // 会計チェック用 state
 const [checkedPayments, setCheckedPayments] = useState<string[]>([]);
+
+  // 🔽 reservations が更新されたら arrive/paid/departed のチェック配列を同期
+  useEffect(() => {
+    setCheckedArrivals(reservations.filter(r => r.arrived).map(r => r.id));
+    setCheckedPayments(reservations.filter(r => r.paid).map(r => r.id));
+    setCheckedDepartures(reservations.filter(r => r.departed).map(r => r.id));
+  }, [reservations]);
 
 const togglePaymentChecked = (id: string) => {
   setCheckedPayments(prev => {
