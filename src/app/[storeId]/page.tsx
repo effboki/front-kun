@@ -446,6 +446,8 @@ const togglePaymentChecked = (id: string) => {
       const departedNow = !prev.includes(id);
       updateReservationField(id, 'departed', departedNow);
       if (departedNow) {
+        // arrived を同時に false へ
+        updateReservationField(id, 'arrived', false);
         setCheckedArrivals(arr => arr.filter(x => x !== id)); // 到着解除
         return [...prev, id];
       } else {
