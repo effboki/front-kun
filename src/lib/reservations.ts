@@ -1,5 +1,5 @@
 import { db, getStoreId, ensureStoreStructure } from './firebase';
-import { enqueueOp } from './opsQueue';
+import { enqueueOp, flushQueuedOps } from './opsQueue';
 
 console.log('[reservations.ts] module loaded, storeId=', getStoreId());
 
@@ -69,6 +69,12 @@ export async function updateReservationFS(
       updatedAt: serverTimestamp(),
     });
     await waitForPendingWrites(db);
+    // オンライン復帰直後に保留キューを自動フラッシュ
+    try {
+      await flushQueuedOps();
+    } catch (e) {
+      console.warn('[updateReservationFS] flushQueuedOps failed:', e);
+    }
   } catch (err) {
     console.error('updateReservationFS failed:', err);
   }
@@ -175,6 +181,11 @@ export async function addReservationFS(data: any): Promise<void> {
   );
 
   await waitForPendingWrites(db);
+  try {
+    await flushQueuedOps();
+  } catch (e) {
+    console.warn('[addReservationFS] flushQueuedOps failed:', e);
+  }
 }
 
 /** 予約を 1 件削除 */

@@ -12,13 +12,12 @@ import { db } from '@/lib/firebase';
 import type { Reservation } from '@/types/reservation';
 
 /**
- * 「今日だけリアルタイム参加」用フック
+ * 今日の日付（YYYY-MM-DD）に該当する予約を
+ * /stores/{storeId}/reservations からリアルタイム購読するフック。
  * @param storeId Firestore の /stores/{storeId}
- * @param joined  参加ボタン ON/OFF
  */
 export function useRealtimeReservations(
-  storeId: string | undefined,
-  joined: boolean
+  storeId: string | undefined
 ): Reservation[] {
   // detach 用 unsubscribe を覚えておく
   const unsubRef = useRef<Unsubscribe | null>(null);
@@ -48,13 +47,9 @@ export function useRealtimeReservations(
   };
 
   useEffect(() => {
-    console.log('[RealtimeRes] storeId=', storeId, 'joined=', joined);
+    console.log('[RealtimeRes] storeId=', storeId);
     if (!storeId) {
       console.warn('[RealtimeRes] storeId is undefined, skipping listener');
-      return detach();
-    }
-    if (!joined) {
-      console.log('[RealtimeRes] joined flag is false; detaching listener');
       return detach();
     }
 
@@ -90,7 +85,7 @@ export function useRealtimeReservations(
       clearTimeout(timer);
       detach();
     };
-  }, [storeId, joined]);
+  }, [storeId]);
 
   return list;
 }

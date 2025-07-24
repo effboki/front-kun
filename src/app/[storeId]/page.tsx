@@ -167,16 +167,12 @@ const [pendingTables, setPendingTables] =
   useState<Record<string, { old: string; next: string }>>({});
 
 
-  // Firestore リアルタイム listener（オンライン時のみ接続）
-  const liveReservations = useRealtimeReservations(id, navigator.onLine);
+  // Firestore リアルタイム listener (常時購読)
+  const liveReservations = useRealtimeReservations(id);
+
+  // 🔄 スナップショットが来るたびに reservations を上書き
   useEffect(() => {
-    if (!liveReservations) return;
     setReservations(liveReservations as any);
-    const maxId = liveReservations.reduce(
-      (m: number, r: any) => (Number(r.id) > m ? Number(r.id) : m),
-      0
-    );
-    setNextResId((maxId + 1).toString());
   }, [liveReservations]);
 
   // ─── (先読み) localStorage の settings キャッシュをロード ─────────────
@@ -417,11 +413,20 @@ const [showTableStart, setShowTableStart] = useState<boolean>(true);
   // 会計チェック用 state
 const [checkedPayments, setCheckedPayments] = useState<string[]>([]);
 
-  // 🔽 reservations が更新されたら arrive/paid/departed のチェック配列を同期
+  // 🔽 reservations が更新されたら arrive / paid / departed のチェック配列を同期
   useEffect(() => {
-    setCheckedArrivals(reservations.filter(r => r.arrived).map(r => r.id));
-    setCheckedPayments(reservations.filter(r => r.paid).map(r => r.id));
-    setCheckedDepartures(reservations.filter(r => r.departed).map(r => r.id));
+    const toUniqueSorted = (arr: string[]) =>
+      Array.from(new Set(arr)).sort((a, b) => Number(a) - Number(b));
+
+    setCheckedArrivals(
+      toUniqueSorted(reservations.filter(r => r.arrived).map(r => r.id))
+    );
+    setCheckedPayments(
+      toUniqueSorted(reservations.filter(r => r.paid).map(r => r.id))
+    );
+    setCheckedDepartures(
+      toUniqueSorted(reservations.filter(r => r.departed).map(r => r.id))
+    );
   }, [reservations]);
 
 const togglePaymentChecked = (id: string) => {

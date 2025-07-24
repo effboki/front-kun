@@ -72,3 +72,41 @@ export function dequeueAll(): Op[] {
   }
   return cleaned;
 }
+
+/** Flush all queued operations to Firestore (used whenオンライン復帰や手動更新時) */
+export async function flushQueuedOps(): Promise<void> {
+  const ops = dequeueAll();
+  if (ops.length === 0) return;
+
+  // Firestore‑related helpers
+  const { saveStoreSettingsTx } = await import('./firebase');
+  // Reservation CRUD helpers
+  const {
+    addReservationFS,
+    updateReservationFS,
+    deleteReservationFS,
+  } = await import('./reservations');
+
+  for (const op of ops) {
+    try {
+      switch (op.type) {
+        case 'storeSettings':
+          await saveStoreSettingsTx(op.payload);
+          break;
+        case 'add':
+          await addReservationFS(op.payload);
+          break;
+        case 'update':
+          await updateReservationFS(op.id, { [op.field]: op.value });
+          break;
+        case 'delete':
+          await deleteReservationFS(op.id);
+          break;
+        default:
+          console.warn('[flushQueuedOps] 未知の op', op);
+      }
+    } catch (err) {
+      console.error('[flushQueuedOps] 失敗:', op, err);
+    }
+  }
+}
