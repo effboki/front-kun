@@ -1,4 +1,4 @@
-
+'use client';
 
 // src/hooks/useRealtimeStoreSettings.ts
 import { useEffect, useState } from 'react';

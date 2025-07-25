@@ -1,9 +1,5 @@
 /* ───── Loading Skeleton / Spinner ─────────────────────────── */
-const LoadingSpinner: React.FC = () => (
-  <div className="fixed inset-0 flex items-center justify-center bg-white/60 z-50">
-    <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent" />
-  </div>
-);
+
 'use client';
 export type NumPadField = 'table' | 'guests' | 'presetTable' | 'targetTable' | 'pendingTable';
 import React from 'react';
@@ -24,6 +20,12 @@ import { toast } from 'react-hot-toast';
 import { dequeueAll} from '@/lib/opsQueue';
 import { addReservationFS, updateReservationFS, deleteReservationFS, fetchAllReservationsOnce, deleteAllReservationsFS } from '@/lib/reservations';
 
+/* ───── Loading Skeleton / Spinner ─────────────────────────── */
+const LoadingSpinner: React.FC = () => (
+  <div className="fixed inset-0 flex items-center justify-center bg-white/60 z-50">
+    <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent" />
+  </div>
+);
 //
 // ───────────────────────────── ① TYPES ────────────────────────────────────────────
 //
