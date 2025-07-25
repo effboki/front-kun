@@ -47,6 +47,7 @@ type Reservation = {
   id: string;
   table: string;       // 卓番 (文字列で OK)
   time: string;        // "HH:MM"
+  date?: string;       // "YYYY-MM-DD"  ←追加
   course: string;      // コース名
     eat?: string;      // 食べ放題 (2文字)
   drink?: string;    // 飲み放題 (2文字)
@@ -1505,6 +1506,7 @@ const onNumPadConfirm = () => {
       id: nextResId,
       table: newResTable,
       time: newResTime,
+      date: new Date().toISOString().slice(0, 10), // ← 追加 今日の日付
       course: newResCourse,
         eat:   newResEat,
   　　　drink: newResDrink,
@@ -1613,6 +1615,7 @@ setNewResDrink('');
       | 'guests'
       | 'name'
       | 'notes'
+      | 'date'
       | 'table'
       | 'completed'
       | 'arrived'
