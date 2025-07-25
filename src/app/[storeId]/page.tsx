@@ -163,19 +163,7 @@ useEffect(() => {
   const [reservations, setReservations] = useState<Reservation[]>(loadReservations());
 
   // ── Early loading guard ───────────────────────────────
-  const loading =
-    !hydrated || storeSettings === null || reservations.length === 0;
-
-  if (loading) {
-    return (
-      <>
-        <header className="fixed top-0 left-0 w-full bg-white z-40 p-2 shadow">
-          <span className="text-lg font-bold">front‑kun</span>
-        </header>
-        <LoadingSpinner />
-      </>
-    );
-  }
+  const loading = !hydrated || storeSettings === null;
   const [nextResId, setNextResId] = useState<string>("1");
   // --- keep nextResId in sync with current reservation count ---
   useEffect(() => {
@@ -1681,6 +1669,7 @@ setNewResDrink('');
           ☰
         </button>
       </header>
+      {loading && <LoadingSpinner />}
       {/* Sidebar overlay */}
       {sidebarOpen && (
         <div className="fixed inset-0 z-50 flex">
