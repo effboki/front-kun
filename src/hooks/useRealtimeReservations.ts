@@ -6,6 +6,7 @@ import {
   query,
   where,
   orderBy,
+  getDocs,
   Unsubscribe
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
@@ -24,21 +25,6 @@ export function useRealtimeReservations(
 
   // 取得した予約をここに入れる
   const [list, setList] = useState<Reservation[]>([]);
-
-  /** 0:00 までの残りミリ秒を計算 */
-  const msUntilMidnight = () => {
-    const now = new Date();
-    const next = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate() + 1,
-      0,
-      0,
-      0,
-      0
-    );
-    return next.getTime() - now.getTime();
-  };
 
   /** listener の解除を安全に行う */
   const detach = () => {
@@ -67,6 +53,19 @@ export function useRealtimeReservations(
     console.log('[RealtimeRes] listening on collection:', 'stores', storeId, 'reservations');
     console.log('[RealtimeRes] query object:', q);
 
+    (async () => {
+      try {
+        const snap = await getDocs(q);
+        const initial = snap.docs.map((d) => {
+          const data = d.data() as Partial<Reservation>;
+          return { ...data, id: d.id } as Reservation;
+        });
+        setList(initial);
+      } catch (err) {
+        console.error('[RealtimeRes] initial getDocs failed', err);
+      }
+    })();
+
     unsubRef.current = onSnapshot(q, (snap) => {
       const arr = snap.docs.map((d) => {
         // Extract reservation data with id field
@@ -77,14 +76,8 @@ export function useRealtimeReservations(
       setList(arr);
     });
 
-    // 0:00 で自動 detach
-    const timer = setTimeout(detach, msUntilMidnight());
-
     // cleanup on unmount
-    return () => {
-      clearTimeout(timer);
-      detach();
-    };
+    return () => detach();
   }, [storeId]);
 
   return list;

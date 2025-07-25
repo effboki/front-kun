@@ -2,7 +2,7 @@
 
 // src/hooks/useRealtimeStoreSettings.ts
 import { useEffect, useState } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc } from 'firebase/firestore';
 import { db, DEFAULT_STORE_SETTINGS } from '@/lib/firebase';
 import type { StoreSettings } from '@/types/settings';
 
@@ -23,11 +23,24 @@ export const useRealtimeStoreSettings = (
   const [settings, setSettings] = useState<StoreSettings | null>(null);
 
   useEffect(() => {
-    if (!storeId || !navigator.onLine) {
-      return;
-    }
+    if (!storeId) return;   // オンライン判定を削除
 
     const ref = doc(db, 'stores', storeId, 'settings', 'config');
+
+    // ① 初期読み込み: getDoc で即座に現在値を取得
+    (async () => {
+      try {
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          const data = snap.data() as Partial<StoreSettings>;
+          setSettings({ ...DEFAULT_STORE_SETTINGS, ...data });
+        } else {
+          setSettings({ ...DEFAULT_STORE_SETTINGS });
+        }
+      } catch (err) {
+        console.error('[useRealtimeStoreSettings] getDoc failed', err);
+      }
+    })();
     const unsub = onSnapshot(ref, (snap) => {
       if (!snap.exists()) {
         // ドキュメント自体がまだ無い場合はデフォルトを返す

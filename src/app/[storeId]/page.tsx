@@ -1,3 +1,9 @@
+/* ───── Loading Skeleton / Spinner ─────────────────────────── */
+const LoadingSpinner: React.FC = () => (
+  <div className="fixed inset-0 flex items-center justify-center bg-white/60 z-50">
+    <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent" />
+  </div>
+);
 'use client';
 export type NumPadField = 'table' | 'guests' | 'presetTable' | 'targetTable' | 'pendingTable';
 import React from 'react';
@@ -154,12 +160,26 @@ useEffect(() => {
   // ─── 2.2 予約(来店) の状態管理 ────────────────────────────────────────────
   //
   const [reservations, setReservations] = useState<Reservation[]>(loadReservations());
+
+  // ── Early loading guard ───────────────────────────────
+  const loading =
+    !hydrated || storeSettings === null || reservations.length === 0;
+
+  if (loading) {
+    return (
+      <>
+        <header className="fixed top-0 left-0 w-full bg-white z-40 p-2 shadow">
+          <span className="text-lg font-bold">front‑kun</span>
+        </header>
+        <LoadingSpinner />
+      </>
+    );
+  }
   const [nextResId, setNextResId] = useState<string>("1");
   // --- keep nextResId in sync with current reservation count ---
   useEffect(() => {
     // 予約が 0 件なら必ず 1 から開始する
-    if (reservations.length === 0 && nextResId !== '1') {
-      setNextResId('1');
+    if (reservations.length === 0 && nextResId !== '1') {　  setNextResId('1');
     }
   }, [reservations]);
   // 予約ID → { old, next } を保持（卓番変更プレビュー用）
@@ -199,6 +219,24 @@ const [pendingTables, setPendingTables] =
   useEffect(() => {
     if (!storeSettings) return; // まだ取得前
 
+    // ① 既存キャッシュの timestamp を取得（無ければ 0）
+    let cachedAt = 0;
+    try {
+      const raw = localStorage.getItem(SETTINGS_CACHE_KEY);
+      if (raw) cachedAt = JSON.parse(raw).cachedAt ?? 0;
+    } catch { /* ignore */ }
+
+    // ② Firestore データの更新時刻を取得（無ければ 0）
+    //    Firestore 側で `updatedAt` (number: milliseconds) を持っている前提
+    const fsUpdated = (storeSettings as any).updatedAt ?? 0;
+
+    // ③ キャッシュが新しい場合は UI を上書きせずスキップ
+    if (cachedAt >= fsUpdated && fsUpdated !== 0) {
+      console.info('[page] skip firestore -> state (cache newer)');
+      return;
+    }
+
+    // ④ Firestore を優先して UI & localStorage を更新
     // eatOptions / drinkOptions
     setEatOptions(storeSettings.eatOptions ?? []);
     localStorage.setItem(`${ns}-eatOptions`, JSON.stringify(storeSettings.eatOptions ?? []));
@@ -228,8 +266,12 @@ const [pendingTables, setPendingTables] =
       `${ns}-tasksByPosition`,
       JSON.stringify(storeSettings.tasksByPosition ?? {})
     );
-    // settings 全体をまとめてキャッシュ（最新タイムスタンプ付き）
-    localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ cachedAt: Date.now(), data: storeSettings }));
+
+    // ⑤ キャッシュ更新
+    localStorage.setItem(
+      SETTINGS_CACHE_KEY,
+      JSON.stringify({ cachedAt: Date.now(), data: storeSettings })
+    );
   }, [storeSettings]);
 
 

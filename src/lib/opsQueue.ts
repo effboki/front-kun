@@ -110,3 +110,12 @@ export async function flushQueuedOps(): Promise<void> {
     }
   }
 }
+
+// ブラウザがオンラインに戻った瞬間にキューを自動フラッシュ
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    flushQueuedOps().catch(err =>
+      console.error('[opsQueue] auto flush on online failed:', err)
+    );
+  });
+}

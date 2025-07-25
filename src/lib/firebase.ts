@@ -61,9 +61,15 @@ export async function ensureStoreStructure(storeId: string): Promise<void> {
   // ② 設定ドキュメント (settings/config)
   try {
     const configRef = doc(db, 'stores', storeId, 'settings', 'config');
-    // 存在チェックをする/しないに関わらず、必ず DEFAULT を merge して
-    // 欠けているフィールドを穴埋めする（将来フィールドを追加しても自動補完される）
-    await setDoc(configRef, DEFAULT_STORE_SETTINGS, { merge: true });
+    const snap = await getDoc(configRef);
+
+    if (!snap.exists()) {
+      // ドキュメントが無い場合のみデフォルト設定で初期化
+      await setDoc(configRef, DEFAULT_STORE_SETTINGS);
+      console.info('[ensureStoreStructure] config created with DEFAULT');
+    } else {
+      console.info('[ensureStoreStructure] config exists → no overwrite');
+    }
   } catch (err) {
     console.warn('[ensureStoreStructure] failed:', err);
   }
@@ -220,6 +226,17 @@ export async function loadStoreSettings(): Promise<{
   return getStoreSettings();
 }
 
+/** settings(変更分) が prev(既存) と異なるフィールドを持つか判定 */
+function shallowDiffExists(
+  patch: Partial<StoreSettings>,
+  prev: Partial<StoreSettings>
+): boolean {
+  return Object.entries(patch).some(([k, v]) => {
+    const prevVal = (prev as any)[k];
+    return JSON.stringify(v) !== JSON.stringify(prevVal);
+  });
+}
+
 /**
  * 店舗設定をトランザクションで保存。
  * 同時編集を防ぐため、既存ドキュメントを読んで merge 更新。
@@ -235,7 +252,19 @@ export async function saveStoreSettingsTx(
     enqueueOp({ type: 'storeSettings', payload: settings });
     return;
   }
+
+  // ── 既存ドキュメントを先に取得して差分が無ければ書き込みスキップ ──
   const ref = doc(db, 'stores', getStoreId(), 'settings', 'config');
+  const snapPrev = await getDoc(ref);
+  const prevData: Partial<StoreSettings> = snapPrev.exists()
+    ? (snapPrev.data() as Partial<StoreSettings>)
+    : {};
+
+  if (!shallowDiffExists(settings, prevData)) {
+    console.info('[saveStoreSettingsTx] no diff, skip write');
+    return;
+  }
+
   await runTransaction(db, async (trx) => {
     const snap = await trx.get(ref);
     const prev = snap.exists()
