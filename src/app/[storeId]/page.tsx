@@ -1,7 +1,6 @@
-/* ───── Loading Skeleton / Spinner ─────────────────────────── */
-
 'use client';
 export type NumPadField = 'table' | 'guests' | 'presetTable' | 'targetTable' | 'pendingTable';
+
 import React from 'react';
 import { useParams } from 'next/navigation';
 import { toggleTaskComplete } from '@/lib/reservations';

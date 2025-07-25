@@ -1,5 +1,6 @@
-// src/hooks/useRealtimeReservations.ts
 'use client';
+
+// src/hooks/useRealtimeReservations.ts
 import { useEffect, useRef, useState } from 'react';
 import {
   onSnapshot,
