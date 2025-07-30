@@ -587,7 +587,12 @@ const togglePaymentChecked = (id: string) => {
     return stored ? JSON.parse(stored) : [];
   });
 
-  
+  // ⬇︎ keep “表示タスクフィルター” の選択状態を永続化
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(`${ns}-checkedTasks`, JSON.stringify(checkedTasks));
+  }, [checkedTasks]);
+
 
   // 新規予約入力用フィールド（卓番・時刻・コース・人数・氏名・備考）
   const [newResTable, setNewResTable] = useState<string>('');
@@ -658,6 +663,12 @@ useEffect(() => {
     const stored = localStorage.getItem(`${ns}-checkedTables`);
     return stored ? JSON.parse(stored) : [];
   });
+
+  // ⬇︎ “表示する卓” フィルターも常に永続化
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(`${ns}-checkedTables`, JSON.stringify(checkedTables));
+  }, [checkedTables]);
   // 卓リスト編集モード
   const [tableEditMode, setTableEditMode] = useState<boolean>(false);
   const [posSettingsOpen, setPosSettingsOpen] = useState<boolean>(false);
@@ -1401,6 +1412,10 @@ if (allowedTaskLabels.size > 0 && !allowedTaskLabels.has(t.label)) return;
     setNumPadState((prev) => {
       if (!prev) return null;
       let newVal = prev.value;
+      // Reflect typed digits immediately in the preset-table input
+      if (prev.field === 'presetTable') {
+        setNewTableTemp(newVal);
+      }
       if (char === '←') {
         newVal = newVal.slice(0, -1);
       } else if (char === 'C') {
@@ -1409,6 +1424,10 @@ if (allowedTaskLabels.size > 0 && !allowedTaskLabels.has(t.label)) return;
         if (newVal.length < 3) {
           newVal = newVal + char;
         }
+      }
+      // Reflect typed digits immediately in the preset-table input
+      if (prev.field === 'presetTable') {
+        setNewTableTemp(newVal);
       }
       return { ...prev, value: newVal };
     });
