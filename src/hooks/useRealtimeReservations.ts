@@ -58,10 +58,13 @@ export function useRealtimeReservations(
     (async () => {
       try {
         const snap = await getDocs(q);
-        const initial = snap.docs.map((d) => {
-          const data = d.data() as Partial<Reservation>;
-          return { ...data, id: d.id } as Reservation;
-        });
+        const initial = snap.docs.map(
+          (d) =>
+            ({
+              id: d.id,
+              ...(d.data() as Omit<Reservation, 'id'>),
+            } as Reservation)
+        );
         setList(initial);
       } catch (err) {
         console.error('[RealtimeRes] initial getDocs failed', err);
@@ -69,11 +72,13 @@ export function useRealtimeReservations(
     })();
 
     unsubRef.current = onSnapshot(q, (snap) => {
-      const arr = snap.docs.map((d) => {
-        // Extract reservation data with id field
-        const data = d.data() as Partial<Reservation>;
-        return { ...data, id: d.id } as Reservation;
-      });
+      const arr = snap.docs.map(
+        (d) =>
+          ({
+            id: d.id,
+            ...(d.data() as Omit<Reservation, 'id'>),
+          } as Reservation)
+      );
       console.log('[RealtimeRes] got docs:', arr);
       setList(arr);
     });

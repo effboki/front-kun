@@ -61,6 +61,8 @@ type Reservation = {
   arrived?: boolean;   // 来店ボタン
   paid?: boolean;      // 会計ボタン
   departed?: boolean;  // 退店ボタン
+  /** 個別タスクの時間シフト (label → ±分) */
+  timeShift?: { [label: string]: number };
 };
 
 // ===== LocalStorage helpers (namespace per URL storeId) =====
@@ -411,19 +413,66 @@ const toggleTableForMove = (id: string) => {
   };
   // ----------------------------------------------------------------------
   // ─────────────── 追加: コントロールバー用 state ───────────────
-  const [showCourseAll, setShowCourseAll] = useState<boolean>(true);
-  const [showGuestsAll, setShowGuestsAll] = useState<boolean>(true);
+  const [showCourseAll, setShowCourseAll] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true; // default: 表示ON
+    return localStorage.getItem(`${ns}-showCourseAll`) !== '0';
+  });
+  const [showGuestsAll, setShowGuestsAll] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true; // default: 表示ON
+    return localStorage.getItem(`${ns}-showGuestsAll`) !== '0';
+  });
   // 「コース開始時間表」でコース名を表示するかどうか
   const [showCourseStart, setShowCourseStart] = useState<boolean>(true);
   // 「コース開始時間表」で卓番を表示するかどうか
 const [showTableStart, setShowTableStart] = useState<boolean>(true);  
-  const [mergeSameTasks, setMergeSameTasks] = useState<boolean>(false);
+  const [mergeSameTasks, setMergeSameTasks] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false; // default: OFF
+    return localStorage.getItem(`${ns}-mergeSameTasks`) === '1';
+  });
   const [taskSort, setTaskSort] = useState<'table' | 'guests'>('table');
   const [filterCourse, setFilterCourse] = useState<string>('全体');
+
+  // ▼ Control Center toggles — persist to localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`${ns}-showCourseAll`, showCourseAll ? '1' : '0');
+    }
+  }, [showCourseAll]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`${ns}-showGuestsAll`, showGuestsAll ? '1' : '0');
+    }
+  }, [showGuestsAll]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`${ns}-mergeSameTasks`, mergeSameTasks ? '1' : '0');
+    }
+  }, [mergeSameTasks]);
 
   // タスク選択モード状態
   const [selectionModeTask, setSelectionModeTask] = useState<string | null>(null);
   const [selectedForComplete, setSelectedForComplete] = useState<string[]>([]);
+  // --- タスク時間調整モード ------------------------------
+  // shiftModeKey: `${timeKey}_${taskLabel}` が入る。null はモードオフ
+  const [shiftModeKey, setShiftModeKey] = useState<string | null>(null);
+  // shiftTargets: 時間シフトをかける reservation.id 配列
+  const [shiftTargets, setShiftTargets] = useState<string[]>([]);
+  // 一括時間調整（将来サーバ側バッチに差し替えやすい薄いラッパー）
+const batchAdjustTaskTime = (
+  ids: Array<number | string>,
+  taskLabel: string,
+  delta: number
+) => {
+  for (const id of ids) {
+    // id は number / string 両対応
+    // 既存の単体関数に順番に投げる（将来ここをまとめAPIに差し替え）
+    // @ts-ignore
+    adjustTaskTime(id as any, taskLabel, delta);
+  }
+};
+
 
   // 来店チェック用 state
   //
@@ -438,6 +487,15 @@ const [showTableStart, setShowTableStart] = useState<boolean>(true);
     const hh = Math.floor(minutes / 60);
     const mm = minutes % 60;
     return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  };
+  /** コースのオフセット + 個別 timeShift を考慮した絶対分 */
+  const calcTaskAbsMin = (
+    base: string,
+    offset: number,
+    label: string,
+    shift?: Record<string, number>
+  ): number => {
+    return parseTimeToMinutes(base) + offset + (shift?.[label] ?? 0);
   };
 
   const [checkedArrivals, setCheckedArrivals] = useState<string[]>([]);
@@ -669,6 +727,33 @@ useEffect(() => {
     if (typeof window === 'undefined') return;
     localStorage.setItem(`${ns}-checkedTables`, JSON.stringify(checkedTables));
   }, [checkedTables]);
+
+  // 「コース開始時間表」でポジション／卓フィルターを使うかどうか
+  const [courseStartFiltered, setCourseStartFiltered] = useState<boolean>(true);
+  // 営業前設定・タスクプレビュー用に表示中のコース
+  const [displayTaskCourse, setDisplayTaskCourse] = useState<string>(() => courses[0]?.name || '');
+  // ⏱ モード自動解除（ズレ防止）
+  // 画面切替・フィルター変更・データ更新が起きたら時間調整モードを終了して選択をクリア
+  useEffect(() => {
+    if (shiftModeKey !== null || shiftTargets.length > 0) {
+      setShiftModeKey(null);
+      setShiftTargets([]);
+    }
+  }, [
+    selectedMenu,          // タブ切替
+    filterCourse,          // コース絞り込み
+    checkedTables,         // 卓フィルタ
+    checkedTasks,          // タスク可視フィルタ（その他）
+    courseStartFiltered,   // コース開始時間表のフィルタ
+    displayTaskCourse,     // プレビュー用の表示コース
+    resOrder,              // 予約リストの並び順
+    mergeSameTasks,        // タスクまとめ表示
+    showCourseAll,
+    showGuestsAll,
+    showCourseStart,
+    showTableStart,
+    reservations           // データ更新（他端末/自端末）
+  ]);
   // 卓リスト編集モード
   const [tableEditMode, setTableEditMode] = useState<boolean>(false);
   const [posSettingsOpen, setPosSettingsOpen] = useState<boolean>(false);
@@ -898,14 +983,31 @@ useEffect(() => {
   // ─── 営業前設定タブのトグル state ───
   const [displayTablesOpen1, setDisplayTablesOpen1] = useState<boolean>(false);
   const [displayTablesOpen2, setDisplayTablesOpen2] = useState<boolean>(false);
-  // 「コース開始時間表」でポジション／卓フィルターを使うかどうか
-const [courseStartFiltered, setCourseStartFiltered] = useState<boolean>(true);
   // ─── 営業前設定：表示タスク用選択中ポジション ───
-  const [selectedDisplayPosition, setSelectedDisplayPosition] = useState<string>(
-    positions[0] || ''
-  );
+  const [selectedDisplayPosition, setSelectedDisplayPosition] = useState<string>(() => {
+    if (typeof window === 'undefined') return positions[0] || '';
+    const saved = localStorage.getItem(`${ns}-selectedDisplayPosition`);
+    return saved || (positions[0] || '');
+  });
+
+  // 永続化: 選択中ポジションが変わったら保存
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(`${ns}-selectedDisplayPosition`, selectedDisplayPosition);
+  }, [selectedDisplayPosition]);
+
+  // 位置リストが変わって、保存値が存在しない/不正になったら先頭へフォールバック
+  useEffect(() => {
+    if (!selectedDisplayPosition || !positions.includes(selectedDisplayPosition)) {
+      const fallback = positions[0] || '';
+      setSelectedDisplayPosition(fallback);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(`${ns}-selectedDisplayPosition`, fallback);
+      }
+    }
+  }, [positions]);
   // 営業前設定・タスクプレビュー用に表示中のコース
-  const [displayTaskCourse, setDisplayTaskCourse] = useState<string>(() => courses[0]?.name || '');
+  // const [displayTaskCourse, setDisplayTaskCourse] = useState<string>(() => courses[0]?.name || '');
 
   const timeOptions = useMemo(() => {
     const arr: string[] = [];
@@ -1334,24 +1436,23 @@ source.forEach((r) => {
     if (res.course === '未選択') return;
     const courseDef = courses.find((c) => c.name === res.course);
     if (!courseDef) return;
-    const baseMinutes = parseTimeToMinutes(res.time);
     courseDef.tasks.forEach((t) => {
-     // === 営業前設定の「表示するタスク」フィルター ===========================
-// 「その他」タブ (checkedTasks) ＋ 選択中ポジション × コース(tasksByPosition)
-// の両方を合算し、含まれないタスクは描画しない
-const allowedTaskLabels = (() => {
-  const set = new Set<string>();
-  // その他タブでチェックされたタスク
-  checkedTasks.forEach((l) => set.add(l));
-  // 選択中ポジション側
-  if (selectedDisplayPosition !== 'その他') {
-    const posObj = tasksByPosition[selectedDisplayPosition] || {};
-    (posObj[courseByPosition[selectedDisplayPosition]] || []).forEach((l) => set.add(l));
-  }
-  return set;
-})();
-if (allowedTaskLabels.size > 0 && !allowedTaskLabels.has(t.label)) return;
-      const slot = baseMinutes + t.timeOffset;
+      // === 営業前設定の「表示するタスク」フィルター ===========================
+      // 「その他」タブ (checkedTasks) ＋ 選択中ポジション × コース(tasksByPosition)
+      // の両方を合算し、含まれないタスクは描画しない
+      const allowedTaskLabels = (() => {
+        const set = new Set<string>();
+        // その他タブでチェックされたタスク
+        checkedTasks.forEach((l) => set.add(l));
+        // 選択中ポジション側
+        if (selectedDisplayPosition !== 'その他') {
+          const posObj = tasksByPosition[selectedDisplayPosition] || {};
+          (posObj[courseByPosition[selectedDisplayPosition]] || []).forEach((l) => set.add(l));
+        }
+        return set;
+      })();
+      if (allowedTaskLabels.size > 0 && !allowedTaskLabels.has(t.label)) return;
+      const slot = calcTaskAbsMin(res.time, t.timeOffset, t.label, res.timeShift);
       const timeKey = formatMinutesToTime(slot);
       if (!groupedTasks[timeKey]) groupedTasks[timeKey] = [];
       let taskGroup = groupedTasks[timeKey].find((g) => g.label === t.label);
@@ -1678,6 +1779,69 @@ setNewResDrink('');
     });
   };
   // ───────────────────────────────────────────────────────────
+
+  // --- 時間調整ハンドラ ---------------------------------------
+  // 引数: 予約ID, タスクラベル, シフト量(±分)
+  const adjustTaskTime = (resId: string, label: string, delta: number) => {
+    /* ① ローカル state & localStorage を即時更新 */
+    setReservations(prev => {
+      const next = prev.map(r => {
+        if (r.id !== resId) return r;
+        const currentShift = r.timeShift?.[label] ?? 0;
+        const updatedShift = currentShift + delta;
+        return {
+          ...r,
+          timeShift: { ...(r.timeShift || {}), [label]: updatedShift },
+        };
+      });
+      persistReservations(next);
+      return next;
+    });
+
+    /* ② Firestore へインクリメンタル更新（オンライン時のみ） */
+    if (navigator.onLine) {
+      updateReservationFS(resId, {}, { [label]: delta }).catch(err =>
+        console.error('updateReservationFS(timeShift) failed:', err)
+      );
+    }
+  };
+
+  // --- 時間調整：一括適用（将来バッチAPIに差し替えやすいように集約） ---
+  const adjustTaskTimeBulk = (ids: string[], label: string, delta: number) => {
+    if (!ids || ids.length === 0) return;
+
+    // 1) ローカル state を一括更新
+    setReservations(prev => {
+      const idSet = new Set(ids);
+      const next = prev.map(r => {
+        if (!idSet.has(r.id)) return r;
+        const currentShift = r.timeShift?.[label] ?? 0;
+        const updatedShift = currentShift + delta;
+        return {
+          ...r,
+          timeShift: { ...(r.timeShift || {}), [label]: updatedShift },
+        };
+      });
+      persistReservations(next);
+      return next;
+    });
+
+    // 2) Firestore 同期（当面は1件ずつ。後でまとめAPIに置換）
+    if (navigator.onLine) {
+      ids.forEach(resId => {
+        updateReservationFS(resId, {}, { [label]: delta }).catch(err =>
+          console.error('updateReservationFS(timeShift) failed:', err)
+        );
+      });
+    }
+  };
+
+  // 対象卓の選択トグル（時間調整モード用）
+  const toggleShiftTarget = (id: string) => {
+    setShiftTargets(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
 
   return (
     <>
@@ -2564,6 +2728,7 @@ setNewResDrink('');
                       a.label.localeCompare(b.label)
                     );
                     return collectArr.map((ct) => {
+                      
                       const allRes = ct.allReservations;
                       const selKey = `${timeKey}_${ct.label}`;
                       const sortedArr = taskSort === 'guests'
@@ -2663,12 +2828,88 @@ setNewResDrink('');
                 ) : (
                   // non-mergeSameTasks branch with selection UI
                   groupedTasks[timeKey].map((tg) => {
+                    {/* タスク見出し：ラベル + ⏱トグル */}
+<div className="flex items-center gap-2 mb-1">
+  <span className="font-semibold">{tg.label}</span>
+  <button
+    onClick={() => {
+      const key = `${timeKey}_${tg.label}`;
+      if (shiftModeKey === key) {
+        setShiftModeKey(null);
+        setShiftTargets([]);
+      } else {
+        setShiftModeKey(key);
+        setShiftTargets([]);
+      }
+    }}
+    className="ml-1 px-1 text-xs bg-gray-300 rounded"
+    aria-label="時間変更モード"
+  >
+    ⏱
+  </button>
+</div>
                     const selKey = `${timeKey}_${tg.label}`;
                     return (
                       <div key={tg.label} className={`p-2 rounded mb-2 ${tg.bgColor}`}>
                         {/* ── タスク行ヘッダ ──────────────────── */}
                         <div className="flex items-center justify-between mb-1">
                           <span className="font-bold">{tg.label}</span>
+                          <button
+                            onClick={() => {
+                              const key = `${timeKey}_${tg.label}`;
+                              if (shiftModeKey === key) {
+                                setShiftModeKey(null);
+                                setShiftTargets([]);
+                              } else {
+                                setShiftModeKey(key);
+                                setShiftTargets([]);
+                              }
+                            }}
+                            className="ml-1 px-1 text-xs bg-gray-300 rounded"
+                          >
+                            ⏱
+                          </button>
+                          {/* ── 調整ツールバー（調整モード時のみ表示） ── */}
+{shiftModeKey === `${timeKey}_${tg.label}` && (
+  <div className="flex items-center space-x-1 ml-2">
+    <button
+      onClick={() =>
+        setShiftTargets(
+          (tg.courseGroups ?? []).flatMap(g => g.reservations ?? []).map(r => r.id)
+        )
+      }
+      className="px-1 py-0.5 bg-gray-200 rounded text-xs"
+    >
+      全選択
+    </button>
+    <button
+      onClick={() => setShiftTargets([])}
+      className="px-1 py-0.5 bg-gray-200 rounded text-xs"
+    >
+      解除
+    </button>
+    <button
+      onClick={() => {
+        const allIds = (tg.courseGroups ?? []).flatMap(g => g.reservations ?? []).map(r => r.id);
+        const ids = shiftTargets.length > 0 ? shiftTargets : allIds;
+        batchAdjustTaskTime(ids, tg.label, -5);
+      }}
+      className="px-1 py-0.5 bg-gray-300 rounded text-xs"
+    >
+      −5
+    </button>
+    <button
+      onClick={() => {
+        const allIds = (tg.courseGroups ?? []).flatMap(g => g.reservations ?? []).map(r => r.id);
+        const ids = shiftTargets.length > 0 ? shiftTargets : allIds;
+        batchAdjustTaskTime(ids, tg.label, +5);
+      }}
+      className="px-1 py-0.5 bg-gray-300 rounded text-xs"
+    >
+      ＋5
+    </button>
+  </div>
+)}
 
                           {/* 右側の操作ボタン（既存のまま） */}
                           <div className="flex items-center">
@@ -3507,6 +3748,63 @@ setNewResDrink('');
                         <div key={ct.label} className={`p-2 rounded mb-2 ${ct.bgColor}`}>
                             <div className="flex items-center justify-between mb-1">
                               <span className="font-bold">{ct.label}</span>
+                              {/* 時間変更モードトグル */}
+                              <button
+                                onClick={() => {
+                                  const key = `${timeKey}_${ct.label}`;
+                                  if (shiftModeKey === key) {
+                                    // 既に時間調整モード中 → OFF
+                                    setShiftModeKey(null);
+                                    setShiftTargets([]);
+                                  } else {
+                                    // 時間調整モード開始（対象選択はこれから）
+                                    setShiftModeKey(key);
+                                    setShiftTargets([]);
+                                  }
+                                }}
+                                className="ml-1 px-1 text-xs bg-gray-300 rounded"
+                              >
+                                ⏱
+                              </button>
+                              {/* ── 調整ツールバー（調整モード時のみ表示） ── */}
+{shiftModeKey === `${timeKey}_${ct.label}` && (
+  <div className="flex items-center space-x-1 ml-2">
+    <button
+      onClick={() => setShiftTargets((ct.allReservations ?? []).map(r => r.id))}
+      className="px-1 py-0.5 bg-gray-200 rounded text-xs"
+    >
+      全選択
+    </button>
+    <button
+      onClick={() => setShiftTargets([])}
+      className="px-1 py-0.5 bg-gray-200 rounded text-xs"
+    >
+      解除
+    </button>
+    <button
+      onClick={() => {
+        const ids = (shiftTargets.length > 0
+          ? shiftTargets
+          : (ct.allReservations ?? []).map(r => r.id));
+        batchAdjustTaskTime(ids, ct.label, -5);
+      }}
+      className="px-1 py-0.5 bg-gray-300 rounded text-xs"
+    >
+      −5
+    </button>
+    <button
+      onClick={() => {
+        const ids = (shiftTargets.length > 0
+          ? shiftTargets
+          : (ct.allReservations ?? []).map(r => r.id));
+        batchAdjustTaskTime(ids, ct.label, +5);
+      }}
+      className="px-1 py-0.5 bg-gray-300 rounded text-xs"
+    >
+      ＋5
+    </button>
+  </div>
+)}
                               <div className="flex items-center">
                                 <button
                                   onClick={() => {
@@ -3567,7 +3865,16 @@ setNewResDrink('');
                                 <div
                                   key={r.id}
                                   onClick={() => {
-                                    if (selectionModeTask === keyForThisTask) {
+                                    const key = keyForThisTask; // `${timeKey}_${ct.label}`
+                                    // 1) 時間調整モード中は shiftTargets のトグルを最優先
+                                    if (shiftModeKey === key) {
+                                      setShiftTargets((prev) =>
+                                        prev.includes(r.id) ? prev.filter((x) => x !== r.id) : [...prev, r.id]
+                                      );
+                                      return; // 既存の selectionMode は実行しない
+                                    }
+                                    // 2) 既存の「完了登録」用の選択モード
+                                    if (selectionModeTask === key) {
                                       setSelectedForComplete((prev) =>
                                         prev.includes(r.id) ? prev.filter((id) => id !== r.id) : [...prev, r.id]
                                       );
@@ -3575,7 +3882,17 @@ setNewResDrink('');
                                   }}
                                   className={`border px-2 py-1 rounded text-xs ${
                                     previewDone ? 'opacity-50 line-through bg-gray-300' : ''
-                                  } ${selectionModeTask === keyForThisTask && selectedForComplete.includes(r.id) ? 'ring-2 ring-yellow-400' : ''} ${firstRotatingId[r.table] === r.id ? 'text-red-500' : ''}`}
+                                  } ${
+                                    // 時間調整の選択中は青いリング
+                                    shiftModeKey === keyForThisTask && shiftTargets.includes(r.id)
+                                      ? 'ring-2 ring-blue-400'
+                                      : ''
+                                  } ${
+                                    // 既存の完了選択中は黄色いリング
+                                    selectionModeTask === keyForThisTask && selectedForComplete.includes(r.id)
+                                      ? 'ring-2 ring-yellow-400'
+                                      : ''
+                                  } ${firstRotatingId[r.table] === r.id ? 'text-red-500' : ''}`}
                                 >
                                   {r.table}
                                   {showTableStart && showGuestsAll && <>({r.guests})</>}
@@ -3590,11 +3907,90 @@ setNewResDrink('');
                 ) : (
                   // まとめ表示 OFF のとき：従来のコース単位表示
                   groupedTasks[timeKey].map((tg) => {
+                     {/* タスク見出し：ラベル + ⏱トグル */}
+<div className="flex items-center gap-2 mb-1">
+  <span className="font-semibold">{tg.label}</span>
+  <button
+    onClick={() => {
+      const key = `${timeKey}_${tg.label}`;
+      if (shiftModeKey === key) {
+        setShiftModeKey(null);
+        setShiftTargets([]);
+      } else {
+        setShiftModeKey(key);
+        setShiftTargets([]);
+      }
+    }}
+    className="ml-1 px-1 text-xs bg-gray-300 rounded"
+    aria-label="時間変更モード"
+  >
+    ⏱
+  </button>
+</div>
                     const selKey = `${timeKey}_${tg.label}`;
                     return (
                       <div key={tg.label} className={`p-2 rounded mb-2 ${tg.bgColor}`}>
                         <div className="flex items-center justify-between mb-1">
                           <span className="font-bold">{tg.label}</span>
+                          {/* 時間変更モードトグル */}
+                          <button
+                            onClick={() => {
+                              const key = `${timeKey}_${tg.label}`;
+                              if (shiftModeKey === key) {
+                                // 既に時間調整モード中 → OFF
+                                setShiftModeKey(null);
+                                setShiftTargets([]);
+                              } else {
+                                // 時間調整モード開始（対象選択はこれから）
+                                setShiftModeKey(key);
+                                setShiftTargets([]);
+                              }
+                            }}
+                            className="ml-1 px-1 text-xs bg-gray-300 rounded"
+                          >
+                            ⏱
+                          </button>
+                         {/* ── 調整ツールバー（調整モード時のみ表示） ── */}
+{shiftModeKey === `${timeKey}_${tg.label}` && (
+  <div className="flex items-center space-x-1 ml-2">
+    <button
+      onClick={() =>
+        setShiftTargets(
+          (tg.courseGroups ?? []).flatMap(g => g.reservations ?? []).map(r => r.id)
+        )
+      }
+      className="px-1 py-0.5 bg-gray-200 rounded text-xs"
+    >
+      全選択
+    </button>
+    <button
+      onClick={() => setShiftTargets([])}
+      className="px-1 py-0.5 bg-gray-200 rounded text-xs"
+    >
+      解除
+    </button>
+    <button
+      onClick={() => {
+        const allIds = (tg.courseGroups ?? []).flatMap(g => g.reservations ?? []).map(r => r.id);
+        const ids = shiftTargets.length > 0 ? shiftTargets : allIds;
+        batchAdjustTaskTime(ids, tg.label, -5);
+      }}
+      className="px-1 py-0.5 bg-gray-300 rounded text-xs"
+    >
+      −5
+    </button>
+    <button
+      onClick={() => {
+        const allIds = (tg.courseGroups ?? []).flatMap(g => g.reservations ?? []).map(r => r.id);
+        const ids = shiftTargets.length > 0 ? shiftTargets : allIds;
+        batchAdjustTaskTime(ids, tg.label, +5);
+      }}
+      className="px-1 py-0.5 bg-gray-300 rounded text-xs"
+    >
+      ＋5
+    </button>
+  </div>
+)}
                           <div className="flex items-center">
                             <button
                               onClick={() => {
@@ -3664,7 +4060,16 @@ setNewResDrink('');
                                         <div
                                           key={r.id}
                                           onClick={() => {
-                                            if (selectionModeTask === keyForThisTask) {
+                                            const key = keyForThisTask; // `${timeKey}_${tg.label}`
+                                            // 1) 時間調整モード中は shiftTargets のトグルを最優先
+                                            if (shiftModeKey === key) {
+                                              setShiftTargets((prev) =>
+                                                prev.includes(r.id) ? prev.filter((x) => x !== r.id) : [...prev, r.id]
+                                              );
+                                              return; // 既存の selectionMode は実行しない
+                                            }
+                                            // 2) 既存の「完了登録」用の選択モード
+                                            if (selectionModeTask === key) {
                                               setSelectedForComplete((prev) =>
                                                 prev.includes(r.id) ? prev.filter((id) => id !== r.id) : [...prev, r.id]
                                               );
@@ -3672,7 +4077,17 @@ setNewResDrink('');
                                           }}
                                           className={`border px-2 py-1 rounded text-xs ${
                                             previewDone ? 'opacity-50 line-through bg-gray-300' : ''
-                                          } ${selectionModeTask === keyForThisTask && selectedForComplete.includes(r.id) ? 'ring-2 ring-yellow-400' : ''} ${firstRotatingId[r.table] === r.id ? 'text-red-500' : ''}`}
+                                          } ${
+                                            // 時間調整の選択中は青いリング
+                                            shiftModeKey === keyForThisTask && shiftTargets.includes(r.id)
+                                              ? 'ring-2 ring-blue-400'
+                                              : ''
+                                          } ${
+                                            // 既存の完了選択中は黄色いリング
+                                            selectionModeTask === keyForThisTask && selectedForComplete.includes(r.id)
+                                              ? 'ring-2 ring-yellow-400'
+                                              : ''
+                                          } ${firstRotatingId[r.table] === r.id ? 'text-red-500' : ''}`}
                                         >
                                           {showTableStart && r.table}
                                           {showGuestsAll && <>({r.guests})</>}  
@@ -3728,6 +4143,41 @@ setNewResDrink('');
                                       >
                                         完了登録
                                       </button>
+                                    )}
+                                    {/* ── 調整ツールバー（調整モード時のみ表示：allRes を対象） ── */}
+                                    {shiftModeKey === `${timeKey}_${tg.label}` && (
+                                      <div className="flex items-center space-x-1 ml-2">
+                                        <button
+                                          onClick={() => setShiftTargets(allRes.map(r => r.id))}
+                                          className="px-1 py-0.5 bg-gray-200 rounded text-xs"
+                                        >
+                                          全選択
+                                        </button>
+                                        <button
+                                          onClick={() => setShiftTargets([])}
+                                          className="px-1 py-0.5 bg-gray-200 rounded text-xs"
+                                        >
+                                          解除
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            const ids = (shiftTargets.length > 0 ? shiftTargets : allRes.map(r => r.id));
+                                            batchAdjustTaskTime(ids, tg.label, -5);
+                                          }}
+                                          className="px-1 py-0.5 bg-gray-300 rounded text-xs"
+                                        >
+                                          −5
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            const ids = (shiftTargets.length > 0 ? shiftTargets : allRes.map(r => r.id));
+                                            batchAdjustTaskTime(ids, tg.label, +5);
+                                          }}
+                                          className="px-1 py-0.5 bg-gray-300 rounded text-xs"
+                                        >
+                                          ＋5
+                                        </button>
+                                      </div>
                                     )}
                                     <div className="italic">(一括)</div>
                                   </div>

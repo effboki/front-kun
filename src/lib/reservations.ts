@@ -22,6 +22,7 @@ function ns(): string {
 export async function updateReservationFS(
   id: string,
   patch: Partial<any>,
+  timeShiftDelta?: Record<string, number>,          // ← new arg
   options?: { todayStr?: string }
 ) {
   if (!id) {
@@ -32,9 +33,22 @@ export async function updateReservationFS(
   const storeId = sanitizeSegment(rawStoreId);
   // オフライン時はキューに積んで終了
   if (!navigator.onLine) {
+    // normal patch fields
     Object.entries(patch).forEach(([field, value]) => {
       enqueueOp({ type: 'update', id: sanitizeSegment(String(id)), field, value });
     });
+
+    // timeShift delta fields
+    if (timeShiftDelta) {
+      Object.entries(timeShiftDelta).forEach(([label, delta]) => {
+        enqueueOp({
+          type: 'update',
+          id: sanitizeSegment(String(id)),
+          field: `timeShift.${label}`,
+          value: delta, // we will apply delta during flush
+        });
+      });
+    }
     // 併せて更新時刻を入れておく（オンライン復帰後に最新判定しやすい）
     enqueueOp({
       type: 'update',
@@ -62,9 +76,19 @@ export async function updateReservationFS(
 
     const docId = sanitizeSegment(String(id));
     const ref = doc(db, 'stores', storeId, 'reservations', docId);
+    // ── build incremental update for timeShift ──
+    let shiftPayload: Record<string, any> = {};
+    if (timeShiftDelta) {
+      Object.entries(timeShiftDelta).forEach(([label, delta]) => {
+        if (delta !== 0) {
+          shiftPayload[`timeShift.${label}`] = increment(delta);
+        }
+      });
+    }
     // version を +1、updatedAt をサーバー時刻で更新して他端末の並び順・競合検出を正確に
     await updateDoc(ref, {
       ...patch,
+      ...shiftPayload,
       version: increment(1),
       updatedAt: serverTimestamp(),
     });

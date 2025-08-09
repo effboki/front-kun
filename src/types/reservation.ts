@@ -44,4 +44,7 @@ export interface Reservation {
 
   /** ドキュメントの世代番号（1,2,3…） */
   version?: number;
+
+  /** タスクごとの時間シフト（分単位、負値 = 前倒し） */
+  timeShift?: Record<string, number>;
 }
