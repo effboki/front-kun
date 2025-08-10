@@ -6,7 +6,8 @@ import { useParams } from 'next/navigation';
 import { toggleTaskComplete } from '@/lib/reservations';
 import { renameCourseTx } from '@/lib/courses';
 import { loadStoreSettings, saveStoreSettingsTx, db } from '@/lib/firebase';
-import { flushQueuedOps } from '@/lib/firebase';
+import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
+import { flushQueuedOps } from '@/lib/opsQueue';
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-expressions */
 // 📌 ChatGPT からのテスト編集: 拡張機能連携確認済み
 
@@ -287,6 +288,24 @@ const [pendingTables, setPendingTables] =
       }
     })();
   }, []);
+  // ─── オンライン復帰時にキュー flush + 再取得 ───
+  useEffect(() => {
+    const flush = async () => {
+      try {
+        await flushQueuedOps();
+        // 念のため最新を 1 回だけ取得して UI を同期
+        const list = await fetchAllReservationsOnce();
+        if (list && Array.isArray(list)) {
+          setReservations(list as any);
+        }
+      } catch {
+        /* noop */
+      }
+    };
+    window.addEventListener('online', flush);
+    flush(); // マウント時にも一度
+    return () => window.removeEventListener('online', flush);
+  }, []);
   const hasLoadedStore = useRef(false); // 店舗設定を 1 回だけ取得
   const [selectedMenu, setSelectedMenu] = useState<string>('予約リスト×タスク表');
 /* ─────────────── 卓番変更用 ─────────────── */
@@ -487,6 +506,69 @@ const batchAdjustTaskTime = (
     const hh = Math.floor(minutes / 60);
     const mm = minutes % 60;
     return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  };
+
+  /** デバイスID（ローカル一意）を取得・生成 */
+  const getDeviceId = (): string => {
+    if (typeof window === 'undefined') return 'server';
+    const key = `${ns}-deviceId`;
+    let v = localStorage.getItem(key);
+    if (!v) {
+      v = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`);
+      localStorage.setItem(key, v);
+    }
+    return v;
+  };
+
+  /** 当日キー（YYYY-MM-DD） */
+  const todayKey = (): string => {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  /** 送信済み dedupeKey をローカルに蓄積（当日分のみ保持） */
+  const markSent = (k: string) => {
+    if (typeof window === 'undefined') return;
+    const storageKey = `${ns}-sentKeys-${todayKey()}`;
+    const raw = localStorage.getItem(storageKey);
+    const set = new Set<string>(raw ? JSON.parse(raw) : []);
+    set.add(k);
+    localStorage.setItem(storageKey, JSON.stringify(Array.from(set)));
+  };
+  const hasSent = (k: string): boolean => {
+    if (typeof window === 'undefined') return false;
+    const storageKey = `${ns}-sentKeys-${todayKey()}`;
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return false;
+    const set = new Set<string>(JSON.parse(raw));
+    return set.has(k);
+  };
+
+  /** taskEvents へ書き込む（失敗は握りつぶし） */
+  const sendTaskEvent = async (payload: {
+    storeId: string;
+    reservationId: string;
+    table: string;
+    course: string;
+    taskLabel: string;
+    timeKey: string; // "HH:MM"
+    date: string;    // "YYYY-MM-DD"
+    dedupeKey: string;
+    deviceId: string;
+  }) => {
+    try {
+      await addDoc(collection(db, 'taskEvents'), {
+        ...payload,
+        createdAt: serverTimestamp(),
+      } as any);
+    } catch (e) {
+      // オフライン時は SDK の内部キューに乗らないため、失敗しても何もしない
+      // Functions 側の onCreate を前提にしているため、ここでは再試行せずログのみ
+      console.warn('[taskEvents] addDoc failed (ignored):', e);
+    }
   };
   /** コースのオフセット + 個別 timeShift を考慮した絶対分 */
   const calcTaskAbsMin = (
@@ -1339,6 +1421,65 @@ const deleteCourse = async () => {
     return () => clearInterval(id);
   }, []);
 
+  // A) 毎分のローカルタスク判定 → taskEvents へ addDoc（重複防止つき）
+  useEffect(() => {
+    if (!remindersEnabled) return; // トグルOFFなら送信しない
+    if (!reservations || reservations.length === 0) return;
+
+    const nowKey = currentTime; // "HH:MM"
+    const nowMin = parseTimeToMinutes(nowKey);
+    const deviceId = getDeviceId();
+
+    // 対象となる予約を走査
+    reservations.forEach((res) => {
+      // 退店済みは対象外
+      if (checkedDepartures.includes(res.id)) return;
+      // コース未設定は対象外
+      if (!res.course || res.course === '未選択') return;
+
+      const cdef = courses.find((c) => c.name === res.course);
+      if (!cdef) return;
+
+      const baseMin = parseTimeToMinutes(res.time);
+
+      cdef.tasks.forEach((t) => {
+        // 営業前設定の表示タスクフィルターを尊重（非表示タスクは通知しない）
+        const allowed = (() => {
+          const set = new Set<string>();
+          checkedTasks.forEach((l) => set.add(l));
+          if (selectedDisplayPosition !== 'その他') {
+            const posObj = tasksByPosition[selectedDisplayPosition] || {};
+            (posObj[courseByPosition[selectedDisplayPosition]] || []).forEach((l) => set.add(l));
+          }
+          // set が空なら制約なし
+          return set.size === 0 || set.has(t.label);
+        })();
+        if (!allowed) return;
+
+        const absMin = baseMin + t.timeOffset + (res.timeShift?.[t.label] ?? 0);
+        if (absMin !== nowMin) return; // ちょうど今の分だけ通知
+
+        const dateStr = res.date || todayKey();
+        const dedupeKey = `${dateStr}_${res.id}_${t.label}_${res.course}_${res.time}`;
+        if (hasSent(dedupeKey)) return;
+
+        markSent(dedupeKey);
+        sendTaskEvent({
+          storeId: id,
+          reservationId: res.id,
+          table: res.table,
+          course: res.course,
+          taskLabel: t.label,
+          timeKey: nowKey,
+          date: dateStr,
+          dedupeKey,
+          deviceId,
+        });
+      });
+    });
+  // 依存には、時刻の他、予約・設定類を含める（重い場合は最小化してOK）
+  }, [currentTime, remindersEnabled, reservations, courses, checkedTasks, selectedDisplayPosition, tasksByPosition, courseByPosition, checkedDepartures]);
+
   /** 「これから来るタスク」を時刻キーごとにまとめた配列
    *  [{ timeKey: "18:15", tasks: ["コース説明", "カレー"] }, ... ]
    */
@@ -1647,13 +1788,12 @@ const onNumPadConfirm = () => {
       return (base + 1).toString();
     });
 
-    // 2) Firestore への書込みはオンライン時のみ実行
-    if (navigator.onLine) {
-      try {
-        await addReservationFS(newEntry as any);
-      } catch (err) {
-        console.error('addReservationFS failed:', err);
-      }
+    // 2) Firestore へは常に投げる（オフライン時は SDK が自動キュー）
+    try {
+      await addReservationFS(newEntry as any);
+    } catch (err) {
+      // オフラインや一時的なネットワークエラー時でも SDK がキューイングする
+      console.error('addReservationFS failed (queued if offline):', err);
     }
 
     // 3) 入力フォームリセット
@@ -1678,17 +1818,12 @@ setNewResDrink('');
       return next;
     });
 
-    // 2) Firestore からも削除
-    if (navigator.onLine) {
-      try {
-        await deleteReservationFS(id);
-        toast.success('予約を削除しました');
-      } catch (err) {
-        console.error('deleteReservationFS failed:', err);
-        toast.error('サーバへの削除が失敗しました');
-      }
-    } else {
-      // オフライン時はキュー投入済み
+    // 2) Firestore からも削除（オフライン時は SDK 側で自動キュー）
+    try {
+      await deleteReservationFS(id);
+      toast.success('予約を削除しました');
+    } catch (err) {
+      console.error('deleteReservationFS failed (queued if offline):', err);
       toast('オフラインのため後でサーバへ送信します', { icon: '📶' });
     }
   };
@@ -1766,14 +1901,13 @@ setNewResDrink('');
       });
       persistReservations(next);
 
-      // ── オンライン時は常に Firestore へ同期 ──
-      if (navigator.onLine) {
-        // 直前に読み取った version を baseVersion として取得
+      // ── Firestore へは常に投げる（オフライン時は SDK が自動キュー） ──
+      try {
         const baseVersion = (prev.find(r => r.id === id) as any)?.version ?? 0;
         updateReservationFS(id, { [field]: value } as any, baseVersion).catch(err =>
-          console.error('updateReservationFS failed:', err)
+          console.error('updateReservationFS failed (queued if offline):', err)
         );
-      }
+      } catch { /* noop */ }
 
       return next;
     });
@@ -1798,12 +1932,10 @@ setNewResDrink('');
       return next;
     });
 
-    /* ② Firestore へインクリメンタル更新（オンライン時のみ） */
-    if (navigator.onLine) {
-      updateReservationFS(resId, {}, { [label]: delta }).catch(err =>
-        console.error('updateReservationFS(timeShift) failed:', err)
-      );
-    }
+    /* ② Firestore へインクリメンタル更新（オフライン時は自動キュー） */
+    updateReservationFS(resId, {}, { [label]: delta }).catch(err =>
+      console.error('updateReservationFS(timeShift) failed (queued if offline):', err)
+    );
   };
 
   // --- 時間調整：一括適用（将来バッチAPIに差し替えやすいように集約） ---
@@ -1826,14 +1958,12 @@ setNewResDrink('');
       return next;
     });
 
-    // 2) Firestore 同期（当面は1件ずつ。後でまとめAPIに置換）
-    if (navigator.onLine) {
-      ids.forEach(resId => {
-        updateReservationFS(resId, {}, { [label]: delta }).catch(err =>
-          console.error('updateReservationFS(timeShift) failed:', err)
-        );
-      });
-    }
+    // 2) Firestore 同期（当面は1件ずつ。オフライン時は SDK が自動キュー）
+    ids.forEach(resId => {
+      updateReservationFS(resId, {}, { [label]: delta }).catch(err =>
+        console.error('updateReservationFS(timeShift) failed (queued if offline):', err)
+      );
+    });
   };
 
   // 対象卓の選択トグル（時間調整モード用）
@@ -1929,6 +2059,16 @@ setNewResDrink('');
                 >
                   予約リスト×コース開始時間表
                 </button>
+              </li>
+              <li className="mt-6 border-t border-gray-600 pt-4">
+                <label className="flex items-center space-x-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={remindersEnabled}
+                    onChange={(e) => setRemindersEnabled(e.target.checked)}
+                  />
+                  <span>通知（taskEvents 送信）を有効化</span>
+                </label>
               </li>
             </ul>
           </div>
