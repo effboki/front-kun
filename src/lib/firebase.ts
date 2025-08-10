@@ -318,23 +318,49 @@ export async function flushQueuedOps(): Promise<void> {
 }
 
 // ─────────────────────────────────────────────
-// オンライン復帰時に溜めた操作を一括処理
+// オンライン復帰時に SDK キュー ＋ 自前キューを確実にフラッシュ
 // ─────────────────────────────────────────────
-// if (typeof window !== 'undefined') {
-//   console.log(
-//     '[online event] navigator.onLine=',
-//     navigator.onLine,
-//     'queued ops=',
-//     localStorage.getItem(QUEUE_KEY)
-//   );
+let _onlineSyncStarted = false;
 
-//   // ページ読み込み時点でオンラインなら即座にキューを反映
-//   if (navigator.onLine) {
-//     _flushQueuedOps();
-//   }
+async function flushAllQueues() {
+  try {
+    // Firestore SDK 側のローカル書き込み（IndexedDB）の送信完了を待つ
+    await waitForPendingWrites(db);
+  } catch (e) {
+    // no-op: offline などではここで落ちる可能性があるが、自前キューの送信に進む
+  }
+  try {
+    await _flushQueuedOps();
+  } catch (e) {
+    console.warn('[flushAllQueues] opsQueue flush failed:', e);
+  }
+}
 
-//   // オンライン復帰時のみ再送
-//   window.addEventListener('online', async () => {
-//     await _flushQueuedOps();
-//   });
-// }
+export function ensureOnlineSyncStarted() {
+  if (_onlineSyncStarted || typeof window === 'undefined') return;
+  _onlineSyncStarted = true;
+
+  const trigger = () => {
+    // 何度呼ばれても安全（内部で waitForPendingWrites は短時間で解決/失敗）
+    void flushAllQueues();
+  };
+
+  // 1) 画面ロード時（初回）にも実行
+  //    setTimeout でイベントループを一周させてから実行することで初期化競合を避ける
+  setTimeout(trigger, 0);
+
+  // 2) オンライン復帰時に実行
+  window.addEventListener('online', trigger);
+
+  // 3) タブ復帰時にも実行（バックグラウンドで失敗していても回収できる）
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') trigger();
+    });
+  }
+}
+
+// ブラウザ環境なら即座にリスナーを立てる（SSR では動かない）
+if (typeof window !== 'undefined') {
+  ensureOnlineSyncStarted();
+}
