@@ -5,7 +5,6 @@
 
 import { initializeApp } from 'firebase/app';
 import { initializeFirestore, persistentLocalCache } from 'firebase/firestore';
-import { enableIndexedDbPersistence } from 'firebase/firestore';
 import {
   doc,
   getDoc,
@@ -117,17 +116,12 @@ const firebaseConfig = {
 
 // アプリ／DB を初期化＆エクスポート
 export const app = initializeApp(firebaseConfig);
+// NOTE: Firestore v9+ new SDK: `initializeFirestore` with `persistentLocalCache()`
+// already enables IndexedDB persistence. Do NOT also call `enableIndexedDbPersistence`,
+// or you will get "SDK cache is already specified" at runtime.
 export const db = initializeFirestore(app, {
   localCache: persistentLocalCache(),
 });
-
-// ---- Firestore offline persistence (queue & cache via IndexedDB) ----
-if (typeof window !== 'undefined') {
-  enableIndexedDbPersistence(db).catch((e: any) => {
-    // マルチタブや既に有効化済み、非対応ブラウザなどではリジェクトされる
-    console.info('[firebase] persistence skipped:', e?.code || e?.message);
-  });
-}
 
 // ─────────────────────────────────────────────
 // 既存ローカルストレージ版 API も引き継ぎ
