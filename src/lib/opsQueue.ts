@@ -1,121 +1,186 @@
-// src/lib/opsQueue.ts
+// src/lib/opsQueue.ts (hardened queue)
 
 import { getStoreId } from './firebase';
-import type { Reservation } from '../types/reservation';
-import type { StoreSettings } from '../types/settings';
 
-// 名前空間化した localStorage キー
+// =========================
+// Local storage key (per store)
+// =========================
 const ns = `front-kun-${getStoreId()}`;
 export const QUEUE_KEY = `${ns}-opsQueue`;
 
-// オペレーションの型定義
-export type Op =
-  | { type: 'add'; payload: Reservation }
-  | { type: 'update'; id: string; field: string; value: any }
-  | { type: 'delete'; id: string }
-  | { type: 'storeSettings'; payload: StoreSettings };
+// =========================
+// Op types (store-aware / dedupe-able)
+// =========================
+interface BaseOp {
+  storeId: string;
+  dedupeKey?: string; // optional: replace same-key op
+}
 
-/** キューに操作を追加する */
-export function enqueueOp(op: Op): void {
-  // ---- フィールド名マイグレーション -----------------------------
-  if (op.type === 'update' && op.field === 'updateTime') {
-    // 旧フィールド名を新フィールド名へ置換
-    op = { ...op, field: 'updatedAt' };
-  }
-  // --- ID を文字列に統一 (update/delete ops) ---
-  if (op.type === 'update' || op.type === 'delete') {
-    op = { ...op, id: String(op.id) };
-  }
-  // --- ADD: payload.id を文字列に統一 ---
-  if (op.type === 'add') {
-    op = {
-      ...op,
-      payload: {
-        ...op.payload,
-        id: String(op.payload.id),
-      } as Reservation,
-    };
-  }
-  // ---------------------------------------------
-  if (!navigator.onLine) {
-    const existing = localStorage.getItem(QUEUE_KEY);
-    const queue: Op[] = existing ? JSON.parse(existing) : [];
-    queue.push(op);
-    localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+export type Op =
+  | ({ type: 'add'; payload: any } & BaseOp)
+  | ({ type: 'update'; id: string; field: string; value: any } & BaseOp)
+  | ({ type: 'delete'; id: string } & BaseOp)
+  | ({ type: 'storeSettings'; payload: any } & BaseOp);
+
+// =========================
+// Helpers: load/save queue
+// =========================
+function loadQueue(): Op[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(QUEUE_KEY);
+    const arr: any[] = raw ? JSON.parse(raw) : [];
+    // 旧フォーマットのマイグレーション（storeId がない場合は現在の storeId を付与）
+    const sid = getStoreId();
+    return arr.map((op) => ({ storeId: sid, ...op })) as Op[];
+  } catch {
+    return [];
   }
 }
 
-/** キュー内のすべての操作を取り出し、空 ID エントリを除去して返す */
-export function dequeueAll(): Op[] {
-  const existing = localStorage.getItem(QUEUE_KEY);
-  const queue: Op[] = existing ? JSON.parse(existing) : [];
-
-  // 空 id エントリを除外
-  const cleaned = queue.filter(op => {
-    if (op.type === 'add') {
-      // payload.id が truthy なら残す
-      return op.payload?.id;
-    }
-    if (op.type === 'update' || op.type === 'delete') {
-      // id が truthy なら残す
-      return op.id;
-    }
-    // storeSettings などは常に残す
-    return true;
-  });
-
-  // クリアして、空でなければ掃除後キューを書き戻す
-  if (cleaned.length > 0) {
-    localStorage.setItem(QUEUE_KEY, JSON.stringify(cleaned));
-  } else {
-    localStorage.removeItem(QUEUE_KEY);
+function saveQueue(queue: Op[]) {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (queue.length === 0) localStorage.removeItem(QUEUE_KEY);
+    else localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+  } catch {
+    // no-op
   }
+}
+
+// =========================
+// Enqueue
+// =========================
+// Overload signatures (make TS happy at call sites)
+export function enqueueOp(op: { type: 'add'; payload: any; storeId?: string; dedupeKey?: string }): void;
+export function enqueueOp(op: { type: 'update'; id: string; field: string; value: any; storeId?: string; dedupeKey?: string }): void;
+export function enqueueOp(op: { type: 'delete'; id: string; storeId?: string; dedupeKey?: string }): void;
+export function enqueueOp(op: { type: 'storeSettings'; payload: any; storeId?: string; dedupeKey?: string }): void;
+
+// Implementation
+export function enqueueOp(op: any): void {
+  const storeId = op.storeId || getStoreId();
+  let normalized: Op;
+
+  // ---- フィールド名マイグレーション ----
+  if (op?.type === 'update' && op.field === 'updateTime') {
+    op = { ...op, field: 'updatedAt' };
+  }
+
+  // ---- ID を文字列に統一 ----
+  if (op?.type === 'update') {
+    op.id = String(op.id);
+  }
+  if (op?.type === 'delete') {
+    op.id = String(op.id);
+  }
+  if (op?.type === 'add') {
+    op.payload = { ...(op.payload || {}), id: String(op.payload?.id ?? '') };
+  }
+
+  normalized = { ...(op as any), storeId } as Op;
+
+  // 既存キューを読み取り
+  const queue = loadQueue();
+
+  // dedupeKey があれば置き換え（最後の状態のみ保持）
+  if (normalized.dedupeKey) {
+    const idx = queue.findIndex((q) => q.dedupeKey === normalized.dedupeKey);
+    if (idx >= 0) {
+      queue[idx] = normalized;
+    } else {
+      queue.push(normalized);
+    }
+  } else {
+    queue.push(normalized);
+  }
+
+  // 直ちに永続化
+  saveQueue(queue);
+}
+
+// 互換関数（呼び出し側の利用を考慮して残す）
+export function dequeueAll(): Op[] {
+  const q = loadQueue();
+  // 空 ID を除去
+  const cleaned = q.filter((op) => {
+    if (op.type === 'add') return Boolean(op.payload?.id);
+    if (op.type === 'update' || op.type === 'delete') return Boolean(op.id);
+    return true; // storeSettings は残す
+  });
+  saveQueue(cleaned);
   return cleaned;
 }
 
-/** Flush all queued operations to Firestore (used whenオンライン復帰や手動更新時) */
+// =========================
+// Flush (fails are re-queued)
+// =========================
+let _flushing = false;
+
 export async function flushQueuedOps(): Promise<void> {
-  const ops = dequeueAll();
-  if (ops.length === 0) return;
+  if (_flushing) return; // 再入防止
+  _flushing = true;
+  try {
+    const currentStore = getStoreId();
+    const all = loadQueue();
+    const toProcess = all.filter((op) => op.storeId === currentStore);
+    const keepOthers = all.filter((op) => op.storeId !== currentStore);
 
-  // Firestore‑related helpers
-  const { saveStoreSettingsTx } = await import('./firebase');
-  // Reservation CRUD helpers
-  const {
-    addReservationFS,
-    updateReservationFS,
-    deleteReservationFS,
-  } = await import('./reservations');
-
-  for (const op of ops) {
-    try {
-      switch (op.type) {
-        case 'storeSettings':
-          await saveStoreSettingsTx(op.payload);
-          break;
-        case 'add':
-          await addReservationFS(op.payload);
-          break;
-        case 'update':
-          await updateReservationFS(op.id, { [op.field]: op.value });
-          break;
-        case 'delete':
-          await deleteReservationFS(op.id);
-          break;
-        default:
-          console.warn('[flushQueuedOps] 未知の op', op);
-      }
-    } catch (err) {
-      console.error('[flushQueuedOps] 失敗:', op, err);
+    if (toProcess.length === 0) {
+      // 他店舗のキューだけならそのまま保持
+      saveQueue(keepOthers);
+      return;
     }
+
+    // Firestore helpers
+    const { saveStoreSettingsTx } = await import('./firebase');
+    const { addReservationFS, updateReservationFS, deleteReservationFS } = await import('./reservations');
+
+    const failed: Op[] = [];
+
+    for (const op of toProcess) {
+      try {
+        switch (op.type) {
+          case 'storeSettings':
+            await saveStoreSettingsTx(op.payload);
+            break;
+          case 'add':
+            await addReservationFS(op.payload);
+            break;
+          case 'update': {
+            // timeShift.* は差分インクリメントとして扱う
+            const m = op.field.match(/^timeShift\.(.+)$/);
+            if (m) {
+              const label = m[1];
+              const delta = Number(op.value) || 0;
+              await updateReservationFS(op.id, {}, { [label]: delta });
+            } else {
+              await updateReservationFS(op.id, { [op.field]: op.value });
+            }
+            break;
+          }
+          case 'delete':
+            await deleteReservationFS(op.id);
+            break;
+          default:
+            console.warn('[flushQueuedOps] Unknown op', op);
+        }
+      } catch (err) {
+        console.error('[flushQueuedOps] failed:', op, err);
+        failed.push(op); // 失敗は戻し入れ
+      }
+    }
+
+    // 失敗分 + 他店舗分を戻す
+    saveQueue(keepOthers.concat(failed));
+  } finally {
+    _flushing = false;
   }
 }
 
-// ブラウザがオンラインに戻った瞬間にキューを自動フラッシュ
+// 自動フラッシュ（オンライン復帰）
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => {
-    flushQueuedOps().catch(err =>
-      console.error('[opsQueue] auto flush on online failed:', err)
-    );
+    flushQueuedOps().catch((err) => console.error('[opsQueue] auto flush on online failed:', err));
   });
 }

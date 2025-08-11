@@ -22,7 +22,7 @@ function ns(): string {
 export async function updateReservationFS(
   id: string,
   patch: Partial<any>,
-  timeShiftDelta?: Record<string, number>,          // ← new arg
+  timeShiftDelta?: Record<string, number>,
   options?: { todayStr?: string }
 ) {
   if (!id) {
@@ -31,76 +31,77 @@ export async function updateReservationFS(
   }
   const rawStoreId = getStoreId();
   const storeId = sanitizeSegment(rawStoreId);
-  // オフライン時はキューに積んで終了
-  if (!navigator.onLine) {
-    // normal patch fields
-    Object.entries(patch).forEach(([field, value]) => {
-      enqueueOp({ type: 'update', id: sanitizeSegment(String(id)), field, value });
-    });
+  const docId = sanitizeSegment(String(id));
 
-    // timeShift delta fields
-    if (timeShiftDelta) {
-      Object.entries(timeShiftDelta).forEach(([label, delta]) => {
-        enqueueOp({
-          type: 'update',
-          id: sanitizeSegment(String(id)),
-          field: `timeShift.${label}`,
-          value: delta, // we will apply delta during flush
+  // オフライン時は即キュー退避
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    try {
+      Object.entries(patch || {}).forEach(([field, value]) => {
+        enqueueOp({ type: 'update', id: docId, field, value });
+      });
+      if (timeShiftDelta) {
+        Object.entries(timeShiftDelta).forEach(([label, delta]) => {
+          if (delta) enqueueOp({ type: 'update', id: docId, field: `timeShift.${label}`, value: delta });
         });
-      });
+      }
+      enqueueOp({ type: 'update', id: docId, field: 'updatedAt', value: Date.now() });
+    } finally {
+      return;
     }
-    // 併せて更新時刻を入れておく（オンライン復帰後に最新判定しやすい）
-    enqueueOp({
-      type: 'update',
-      id: sanitizeSegment(String(id)),
-      field: 'updatedAt',
-      value: Date.now(), // クライアントタイムで暫定
-    });
-    return;
   }
-  // 確実に親ドキュメントと設定ドキュメントを生成
-  try {
-    await ensureStoreStructure(storeId);
-  } catch (e) {
-    console.warn(`[updateReservationFS] ensureStoreStructure failed for ${storeId}:`, e);
-  }
-  try {
-    // Firestore 動的 import
-    const {
-      doc,
-      updateDoc,
-      waitForPendingWrites,
-      serverTimestamp,
-      increment,
-    } = await import('firebase/firestore');
 
-    const docId = sanitizeSegment(String(id));
+  // オンライン: まずは通常の Firestore 更新を試みる
+  try {
+    try {
+      await ensureStoreStructure(storeId);
+    } catch (e) {
+      console.warn(`[updateReservationFS] ensureStoreStructure failed for ${storeId}:`, e);
+    }
+
+    const { doc, updateDoc, waitForPendingWrites, serverTimestamp, increment } =
+      await import('firebase/firestore');
+
     const ref = doc(db, 'stores', storeId, 'reservations', docId);
-    // ── build incremental update for timeShift ──
-    let shiftPayload: Record<string, any> = {};
+
+    // timeShift はインクリメント更新に変換
+    const shiftPayload: Record<string, any> = {};
     if (timeShiftDelta) {
       Object.entries(timeShiftDelta).forEach(([label, delta]) => {
-        if (delta !== 0) {
-          shiftPayload[`timeShift.${label}`] = increment(delta);
-        }
+        if (delta) shiftPayload[`timeShift.${label}`] = increment(delta);
       });
     }
-    // version を +1、updatedAt をサーバー時刻で更新して他端末の並び順・競合検出を正確に
+
     await updateDoc(ref, {
-      ...patch,
+      ...(patch || {}),
       ...shiftPayload,
       version: increment(1),
       updatedAt: serverTimestamp(),
     });
+
     await waitForPendingWrites(db);
-    // オンライン復帰直後に保留キューを自動フラッシュ
+
+    // 念のため自前キューも flush（オフライン→復帰の境目でも回収）
     try {
       await flushQueuedOps();
     } catch (e) {
       console.warn('[updateReservationFS] flushQueuedOps failed:', e);
     }
   } catch (err) {
-    console.error('updateReservationFS failed:', err);
+    console.error('[updateReservationFS] online update failed, enqueueing fallback:', err);
+    // 失敗時は必ずキューに退避（オフライン時と同じ扱い）
+    try {
+      Object.entries(patch || {}).forEach(([field, value]) => {
+        enqueueOp({ type: 'update', id: docId, field, value });
+      });
+      if (timeShiftDelta) {
+        Object.entries(timeShiftDelta).forEach(([label, delta]) => {
+          if (delta) enqueueOp({ type: 'update', id: docId, field: `timeShift.${label}`, value: delta });
+        });
+      }
+      enqueueOp({ type: 'update', id: docId, field: 'updatedAt', value: Date.now() });
+    } catch (e2) {
+      console.error('[updateReservationFS] enqueue fallback failed:', e2);
+    }
   }
 }
 
@@ -156,8 +157,7 @@ export async function toggleTaskComplete(
 
 /** 予約を 1 件追加 */
 export async function addReservationFS(data: any): Promise<void> {
-  // ガード: 空 ID なら予約を送信しない
-  if (!data.id) {
+  if (!data?.id) {
     console.warn('[addReservationFS] called with empty id, abort');
     return;
   }
@@ -167,48 +167,48 @@ export async function addReservationFS(data: any): Promise<void> {
     console.warn('[addReservationFS] empty storeId, abort');
     return;
   }
-  // オフライン時はキューに積んで終了
-  if (!navigator.onLine) {
-    enqueueOp({ type: 'add', payload: data });
+
+  const docId = sanitizeSegment(String(data.id));
+
+  // オフラインは即キュー
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    enqueueOp({ type: 'add', payload: { ...data } });
     return;
   }
 
-  console.log(`[addReservationFS] online; ensuring store structure for storeId=${storeId}`);
-  // --- 親ドキュメントと設定ドキュメントを自動生成 -----------------
   try {
-    await ensureStoreStructure(storeId);
-    console.log(`[addReservationFS] ensureStoreStructure succeeded for ${storeId}`);
-  } catch (e) {
-    console.warn(`[addReservationFS] ensureStoreStructure failed for ${storeId}:`, e);
-  }
-  // ----------------------------------------------------------------
+    try {
+      await ensureStoreStructure(storeId);
+    } catch (e) {
+      console.warn(`[addReservationFS] ensureStoreStructure failed for ${storeId}:`, e);
+    }
 
-  const {
-    doc,
-    setDoc,
-    waitForPendingWrites,
-    serverTimestamp,
-  } = await import('firebase/firestore');
+    const { doc, setDoc, waitForPendingWrites, serverTimestamp } = await import('firebase/firestore');
+    const ref = doc(db, 'stores', storeId, 'reservations', docId);
 
-  // UI が管理する連番 / 文字列 ID をそのままドキュメント ID に使う
-  const docId = sanitizeSegment(String(data.id));
-  const ref = doc(db, 'stores', storeId, 'reservations', docId);
+    await setDoc(
+      ref,
+      {
+        ...data,
+        version: (typeof data.version === 'number' ? data.version : 0) + 1,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
 
-  await setDoc(
-    ref,
-    {
-      ...data,
-      version: 1,
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true } // 既にあっても上書きできるように
-  );
-
-  await waitForPendingWrites(db);
-  try {
-    await flushQueuedOps();
-  } catch (e) {
-    console.warn('[addReservationFS] flushQueuedOps failed:', e);
+    await waitForPendingWrites(db);
+    try {
+      await flushQueuedOps();
+    } catch (e) {
+      console.warn('[addReservationFS] flushQueuedOps failed:', e);
+    }
+  } catch (err) {
+    console.error('[addReservationFS] online add failed, enqueueing fallback:', err);
+    try {
+      enqueueOp({ type: 'add', payload: { ...data } });
+    } catch (e2) {
+      console.error('[addReservationFS] enqueue fallback failed:', e2);
+    }
   }
 }
 
@@ -220,29 +220,33 @@ export async function deleteReservationFS(id: string): Promise<void> {
   }
   const rawStoreId = getStoreId();
   const storeId = sanitizeSegment(rawStoreId);
-  // 親ドキュメントと設定ドキュメントを生成（存在しない場合のみ）
-  try {
-    await ensureStoreStructure(storeId);
-  } catch (e) {
-    console.warn(`[deleteReservationFS] ensureStoreStructure failed for ${storeId}:`, e);
-  }
+  const docId = sanitizeSegment(id);
 
-  // オフライン時はキューに積んで終了
-  if (!navigator.onLine) {
-    enqueueOp({ type: 'delete', id: sanitizeSegment(id) });
+  // オフラインは即キュー
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    enqueueOp({ type: 'delete', id: docId });
     return;
   }
 
-  const {
-    doc,
-    deleteDoc,
-    waitForPendingWrites,
-  } = await import('firebase/firestore');
+  try {
+    try {
+      await ensureStoreStructure(storeId);
+    } catch (e) {
+      console.warn(`[deleteReservationFS] ensureStoreStructure failed for ${storeId}:`, e);
+    }
 
-  const docId = sanitizeSegment(id);
-  const ref = doc(db, 'stores', storeId, 'reservations', docId);
-  await deleteDoc(ref);
-  await waitForPendingWrites(db);
+    const { doc, deleteDoc, waitForPendingWrites } = await import('firebase/firestore');
+    const ref = doc(db, 'stores', storeId, 'reservations', docId);
+    await deleteDoc(ref);
+    await waitForPendingWrites(db);
+  } catch (err) {
+    console.error('[deleteReservationFS] online delete failed, enqueueing fallback:', err);
+    try {
+      enqueueOp({ type: 'delete', id: docId });
+    } catch (e2) {
+      console.error('[deleteReservationFS] enqueue fallback failed:', e2);
+    }
+  }
 }
 
 /** 予約を 1 回だけ全件取得（初回キャッシュ用） */

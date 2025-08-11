@@ -34,6 +34,17 @@ export function useRealtimeReservations(
     unsubRef.current = null;
   };
 
+  /**
+   * Local timezone YYYY-MM-DD (avoids UTC off-by-one on .toISOString())
+   */
+  const ymdTodayLocal = () => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
   useEffect(() => {
     console.log('[RealtimeRes] storeId=', storeId);
     if (!storeId) {
@@ -42,7 +53,7 @@ export function useRealtimeReservations(
     }
 
     // 今日の日付（"YYYY-MM-DD"）
-    const today = new Date().toISOString().slice(0, 10);
+    const today = ymdTodayLocal();
 
     // listen 先コレクション: /stores/{id}/reservations, フィルタ: date === today, 時間順
     const reservationsCol = collection(db, 'stores', storeId, 'reservations');
@@ -71,17 +82,25 @@ export function useRealtimeReservations(
       }
     })();
 
-    unsubRef.current = onSnapshot(q, (snap) => {
-      const arr = snap.docs.map(
-        (d) =>
-          ({
-            id: d.id,
-            ...(d.data() as Omit<Reservation, 'id'>),
-          } as Reservation)
-      );
-      console.log('[RealtimeRes] got docs:', arr);
-      setList(arr);
-    });
+    unsubRef.current = onSnapshot(
+      q,
+      { includeMetadataChanges: true },
+      (snap) => {
+        const arr = snap.docs.map(
+          (d) =>
+            ({
+              id: d.id,
+              ...(d.data() as Omit<Reservation, 'id'>),
+            } as Reservation)
+        );
+        const { fromCache, hasPendingWrites } = snap.metadata;
+        console.log('[RealtimeRes] got docs:', { count: arr.length, fromCache, hasPendingWrites });
+        setList(arr);
+      },
+      (err) => {
+        console.error('[RealtimeRes] onSnapshot error', err);
+      }
+    );
 
     // cleanup on unmount
     return () => detach();
