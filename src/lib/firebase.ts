@@ -108,10 +108,14 @@ const RES_KEY = `${ns}-reservations`;
 const STORE_KEY = `${ns}-storeSettings`;
 
 // Firebase config は .env.local (NEXT_PUBLIC_*) から取得
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID, // optional
 };
 
 // アプリ／DB を初期化＆エクスポート
@@ -119,8 +123,11 @@ export const app = initializeApp(firebaseConfig);
 // NOTE: Firestore v9+ new SDK: `initializeFirestore` with `persistentLocalCache()`
 // already enables IndexedDB persistence. Do NOT also call `enableIndexedDbPersistence`,
 // or you will get "SDK cache is already specified" at runtime.
+// NOTE: SDK v11+ removed useFetchStreams; experimentalForceLongPolling is sufficient for most setups.
 export const db = initializeFirestore(app, {
   localCache: persistentLocalCache(),
+  // 接続安定化オプション（ローカルや一部ネットワークでの backend 到達不可対策）
+  experimentalForceLongPolling: true,
 });
 
 // ─────────────────────────────────────────────

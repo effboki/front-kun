@@ -1,0 +1,284 @@
+[debug] [2025-08-16T06:37:27.172Z] ----------------------------------------------------------------------
+[debug] [2025-08-16T06:37:27.173Z] Command:       /usr/local/bin/node /Users/nagi/.npm/_npx/ba4f1959e38407b5/node_modules/.bin/firebase deploy --only functions --project front-kun-project --config ./firebase.json --debug
+[debug] [2025-08-16T06:37:27.173Z] CLI Version:   14.12.1
+[debug] [2025-08-16T06:37:27.173Z] Platform:      darwin
+[debug] [2025-08-16T06:37:27.173Z] Node Version:  v22.16.0
+[debug] [2025-08-16T06:37:27.174Z] Time:          Sat Aug 16 2025 15:37:27 GMT+0900 (Japan Standard Time)
+[debug] [2025-08-16T06:37:27.174Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2025-08-16T06:37:27.242Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-08-16T06:37:27.242Z] > authorizing via signed-in user (effboki.lab@gmail.com)
+[debug] [2025-08-16T06:37:27.242Z] [iam] checking project front-kun-project for permissions ["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]
+[debug] [2025-08-16T06:37:27.242Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:27.243Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:27.243Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project:testIamPermissions [none]
+[debug] [2025-08-16T06:37:27.243Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project:testIamPermissions x-goog-quota-user=projects/front-kun-project
+[debug] [2025-08-16T06:37:27.243Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]}
+[debug] [2025-08-16T06:37:28.189Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project:testIamPermissions 200
+[debug] [2025-08-16T06:37:28.190Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]}
+[debug] [2025-08-16T06:37:28.190Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:28.190Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:28.190Z] >>> [apiv2][query] POST https://iam.googleapis.com/v1/projects/front-kun-project/serviceAccounts/front-kun-project@appspot.gserviceaccount.com:testIamPermissions [none]
+[debug] [2025-08-16T06:37:28.190Z] >>> [apiv2][body] POST https://iam.googleapis.com/v1/projects/front-kun-project/serviceAccounts/front-kun-project@appspot.gserviceaccount.com:testIamPermissions {"permissions":["iam.serviceAccounts.actAs"]}
+[debug] [2025-08-16T06:37:29.307Z] <<< [apiv2][status] POST https://iam.googleapis.com/v1/projects/front-kun-project/serviceAccounts/front-kun-project@appspot.gserviceaccount.com:testIamPermissions 200
+[debug] [2025-08-16T06:37:29.307Z] <<< [apiv2][body] POST https://iam.googleapis.com/v1/projects/front-kun-project/serviceAccounts/front-kun-project@appspot.gserviceaccount.com:testIamPermissions {"permissions":["iam.serviceAccounts.actAs"]}
+[info] 
+[info] === Deploying to 'front-kun-project'...
+[info] 
+[info] i  deploying functions 
+[debug] [2025-08-16T06:37:29.309Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:29.309Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:29.309Z] >>> [apiv2][query] GET https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project [none]
+[debug] [2025-08-16T06:37:29.541Z] <<< [apiv2][status] GET https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project 200
+[debug] [2025-08-16T06:37:29.542Z] <<< [apiv2][body] GET https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project {"projectNumber":"931867395204","projectId":"front-kun-project","lifecycleState":"ACTIVE","name":"front-kun-project","labels":{"firebase":"enabled","firebase-core":"disabled"},"createTime":"2025-06-02T05:55:24.976860Z"}
+[info] i  functions: preparing codebase default for deployment 
+[info] i  functions: ensuring required API cloudfunctions.googleapis.com is enabled... 
+[info] i  functions: ensuring required API cloudbuild.googleapis.com is enabled... 
+[info] i  artifactregistry: ensuring required API artifactregistry.googleapis.com is enabled... 
+[debug] [2025-08-16T06:37:29.543Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:29.543Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:29.543Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/front-kun-project/adminSdkConfig [none]
+[debug] [2025-08-16T06:37:30.024Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/front-kun-project/adminSdkConfig 200
+[debug] [2025-08-16T06:37:30.024Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/front-kun-project/adminSdkConfig {"projectId":"front-kun-project","storageBucket":"front-kun-project.firebasestorage.app"}
+[debug] [2025-08-16T06:37:30.024Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:30.024Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:30.024Z] >>> [apiv2][query] GET https://runtimeconfig.googleapis.com/v1beta1/projects/front-kun-project/configs [none]
+[debug] [2025-08-16T06:37:30.505Z] <<< [apiv2][status] GET https://runtimeconfig.googleapis.com/v1beta1/projects/front-kun-project/configs 200
+[debug] [2025-08-16T06:37:30.506Z] <<< [apiv2][body] GET https://runtimeconfig.googleapis.com/v1beta1/projects/front-kun-project/configs {}
+[debug] [2025-08-16T06:37:30.508Z] Validating nodejs source
+[warn] ⚠  functions: package.json indicates an outdated version of firebase-functions. Please upgrade using npm install --save firebase-functions@latest in your functions directory. 
+[warn] ⚠  functions: Please note that there will be breaking changes when you upgrade. 
+[debug] [2025-08-16T06:37:30.927Z] > [functions] package.json contents: {
+  "name": "front-kun-functions",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib"
+  ],
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "serve": "npm run build && firebase emulators:start --only functions,firestore",
+    "deploy": "npm run build && firebase deploy --only functions"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "firebase-functions": "^5.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
+[debug] [2025-08-16T06:37:30.927Z] Building nodejs source
+[info] i  functions: Loading and analyzing source code for codebase default to determine what to deploy 
+[debug] [2025-08-16T06:37:30.928Z] Could not find functions.yaml. Must use http discovery
+[debug] [2025-08-16T06:37:30.933Z] Found firebase-functions binary at '/Users/nagi/front-kun/functions/node_modules/.bin/firebase-functions'
+[info] Serving at port 8126
+
+[debug] [2025-08-16T06:37:31.151Z] Got response from /__/functions.yaml {"endpoints":{"onTaskEventCreated":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":null,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"eventTrigger":{"eventType":"google.cloud.firestore.document.v1.created","eventFilters":{"database":"(default)","namespace":"(default)"},"eventFilterPathPatterns":{"document":"taskEvents/{id}"},"retry":false},"entryPoint":"onTaskEventCreated"}},"specVersion":"v1alpha1","requiredAPIs":[],"extensions":{}}
+[info] i  extensions: ensuring required API firebaseextensions.googleapis.com is enabled... 
+[debug] [2025-08-16T06:37:35.174Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-08-16T06:37:35.174Z] > authorizing via signed-in user (effboki.lab@gmail.com)
+[debug] [2025-08-16T06:37:35.174Z] [iam] checking project front-kun-project for permissions ["firebase.projects.get","firebaseextensions.instances.list"]
+[debug] [2025-08-16T06:37:35.175Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:35.175Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:35.175Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project:testIamPermissions [none]
+[debug] [2025-08-16T06:37:35.175Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project:testIamPermissions x-goog-quota-user=projects/front-kun-project
+[debug] [2025-08-16T06:37:35.175Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project:testIamPermissions {"permissions":["firebase.projects.get","firebaseextensions.instances.list"]}
+[debug] [2025-08-16T06:37:35.998Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project:testIamPermissions 200
+[debug] [2025-08-16T06:37:35.998Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project:testIamPermissions {"permissions":["firebase.projects.get","firebaseextensions.instances.list"]}
+[debug] [2025-08-16T06:37:35.999Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:35.999Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:35.999Z] >>> [apiv2][query] GET https://firebaseextensions.googleapis.com/v1beta/projects/front-kun-project/instances pageSize=100&pageToken=
+[debug] [2025-08-16T06:37:37.009Z] <<< [apiv2][status] GET https://firebaseextensions.googleapis.com/v1beta/projects/front-kun-project/instances 200
+[debug] [2025-08-16T06:37:37.009Z] <<< [apiv2][body] GET https://firebaseextensions.googleapis.com/v1beta/projects/front-kun-project/instances {}
+[info] i  functions: preparing functions directory for uploading... 
+[info] i  functions: packaged /Users/nagi/front-kun/functions (32.64 KB) for uploading 
+[debug] [2025-08-16T06:37:37.040Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:37.040Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:37.040Z] >>> [apiv2][query] GET https://cloudfunctions.googleapis.com/v1/projects/front-kun-project/locations/-/functions [none]
+[debug] [2025-08-16T06:37:38.171Z] <<< [apiv2][status] GET https://cloudfunctions.googleapis.com/v1/projects/front-kun-project/locations/-/functions 200
+[debug] [2025-08-16T06:37:38.172Z] <<< [apiv2][body] GET https://cloudfunctions.googleapis.com/v1/projects/front-kun-project/locations/-/functions {}
+[debug] [2025-08-16T06:37:38.172Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:38.172Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:38.172Z] >>> [apiv2][query] GET https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/-/functions filter=environment%3D%22GEN_2%22
+[debug] [2025-08-16T06:37:39.540Z] <<< [apiv2][status] GET https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/-/functions 200
+[debug] [2025-08-16T06:37:39.540Z] <<< [apiv2][body] GET https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/-/functions {}
+[debug] [2025-08-16T06:37:39.541Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:39.541Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:39.541Z] >>> [apiv2][query] GET https://firestore.googleapis.com/v1/projects/front-kun-project/databases/(default) [none]
+[debug] [2025-08-16T06:37:39.875Z] <<< [apiv2][status] GET https://firestore.googleapis.com/v1/projects/front-kun-project/databases/(default) 200
+[debug] [2025-08-16T06:37:39.875Z] <<< [apiv2][body] GET https://firestore.googleapis.com/v1/projects/front-kun-project/databases/(default) {"name":"projects/front-kun-project/databases/(default)","uid":"cab6e2f6-5295-46a4-8f6c-263689c41d59","createTime":"2025-06-02T06:01:21.338339Z","updateTime":"2025-06-02T06:01:21.338339Z","locationId":"asia-northeast1","type":"FIRESTORE_NATIVE","concurrencyMode":"PESSIMISTIC","versionRetentionPeriod":"3600s","earliestVersionTime":"2025-08-16T05:37:39.850779Z","appEngineIntegrationMode":"DISABLED","keyPrefix":"b","pointInTimeRecoveryEnablement":"POINT_IN_TIME_RECOVERY_DISABLED","deleteProtectionState":"DELETE_PROTECTION_DISABLED","databaseEdition":"STANDARD","freeTier":true,"etag":"IIzZu/Hbjo8DMMvUxcvr2Y0D"}
+[info] i  functions: ensuring required API run.googleapis.com is enabled... 
+[info] i  functions: ensuring required API eventarc.googleapis.com is enabled... 
+[info] i  functions: ensuring required API pubsub.googleapis.com is enabled... 
+[info] i  functions: ensuring required API storage.googleapis.com is enabled... 
+[info] i  functions: generating the service identity for pubsub.googleapis.com... 
+[debug] [2025-08-16T06:37:39.878Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:39.878Z] Checked if tokens are valid: true, expires at: 1755329227505
+[info] i  functions: generating the service identity for eventarc.googleapis.com... 
+[debug] [2025-08-16T06:37:39.878Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:39.878Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:39.878Z] >>> [apiv2][query] POST https://serviceusage.googleapis.com/v1beta1/projects/931867395204/services/pubsub.googleapis.com:generateServiceIdentity [none]
+[debug] [2025-08-16T06:37:39.878Z] >>> [apiv2][(partial)header] POST https://serviceusage.googleapis.com/v1beta1/projects/931867395204/services/pubsub.googleapis.com:generateServiceIdentity x-goog-quota-user=projects/931867395204
+[debug] [2025-08-16T06:37:39.878Z] >>> [apiv2][body] POST https://serviceusage.googleapis.com/v1beta1/projects/931867395204/services/pubsub.googleapis.com:generateServiceIdentity {}
+[debug] [2025-08-16T06:37:39.880Z] >>> [apiv2][query] POST https://serviceusage.googleapis.com/v1beta1/projects/931867395204/services/eventarc.googleapis.com:generateServiceIdentity [none]
+[debug] [2025-08-16T06:37:39.881Z] >>> [apiv2][(partial)header] POST https://serviceusage.googleapis.com/v1beta1/projects/931867395204/services/eventarc.googleapis.com:generateServiceIdentity x-goog-quota-user=projects/931867395204
+[debug] [2025-08-16T06:37:39.881Z] >>> [apiv2][body] POST https://serviceusage.googleapis.com/v1beta1/projects/931867395204/services/eventarc.googleapis.com:generateServiceIdentity {}
+[debug] [2025-08-16T06:37:41.057Z] <<< [apiv2][status] POST https://serviceusage.googleapis.com/v1beta1/projects/931867395204/services/eventarc.googleapis.com:generateServiceIdentity 200
+[debug] [2025-08-16T06:37:41.057Z] <<< [apiv2][body] POST https://serviceusage.googleapis.com/v1beta1/projects/931867395204/services/eventarc.googleapis.com:generateServiceIdentity {"name":"operations/finished.DONE_OPERATION","done":true,"response":{"@type":"type.googleapis.com/google.api.serviceusage.v1beta1.ServiceIdentity","email":"service-931867395204@gcp-sa-eventarc.iam.gserviceaccount.com","uniqueId":"111275832923543873251"}}
+[debug] [2025-08-16T06:37:41.085Z] <<< [apiv2][status] POST https://serviceusage.googleapis.com/v1beta1/projects/931867395204/services/pubsub.googleapis.com:generateServiceIdentity 200
+[debug] [2025-08-16T06:37:41.085Z] <<< [apiv2][body] POST https://serviceusage.googleapis.com/v1beta1/projects/931867395204/services/pubsub.googleapis.com:generateServiceIdentity {"name":"operations/finished.DONE_OPERATION","done":true,"response":{"@type":"type.googleapis.com/google.api.serviceusage.v1beta1.ServiceIdentity","email":"service-931867395204@gcp-sa-pubsub.iam.gserviceaccount.com","uniqueId":"115086646317467143910"}}
+[debug] [2025-08-16T06:37:41.087Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:41.087Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:41.087Z] >>> [apiv2][query] GET https://compute.googleapis.com/compute/v1/projects/931867395204 [none]
+[debug] [2025-08-16T06:37:41.501Z] <<< [apiv2][status] GET https://compute.googleapis.com/compute/v1/projects/931867395204 403
+[debug] [2025-08-16T06:37:41.501Z] <<< [apiv2][body] GET https://compute.googleapis.com/compute/v1/projects/931867395204 {"error":{"code":403,"message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.","errors":[{"message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.","domain":"usageLimits","reason":"accessNotConfigured","extendedHelp":"https://console.developers.google.com"}],"status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SERVICE_DISABLED","domain":"googleapis.com","metadata":{"serviceTitle":"Compute Engine API","containerInfo":"931867395204","activationUrl":"https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204","consumer":"projects/931867395204","service":"compute.googleapis.com"}},{"@type":"type.googleapis.com/google.rpc.LocalizedMessage","locale":"en-US","message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry."},{"@type":"type.googleapis.com/google.rpc.Help","links":[{"description":"Google developers console API activation","url":"https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204"}]}]}}
+[debug] [2025-08-16T06:37:41.502Z] unable to look up default compute service account. Falling back to 931867395204-compute@developer.gserviceaccount.com. Error: {"name":"FirebaseError","children":[],"context":{"body":{"error":{"code":403,"message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.","errors":[{"message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.","domain":"usageLimits","reason":"accessNotConfigured","extendedHelp":"https://console.developers.google.com"}],"status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SERVICE_DISABLED","domain":"googleapis.com","metadata":{"serviceTitle":"Compute Engine API","containerInfo":"931867395204","activationUrl":"https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204","consumer":"projects/931867395204","service":"compute.googleapis.com"}},{"@type":"type.googleapis.com/google.rpc.LocalizedMessage","locale":"en-US","message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry."},{"@type":"type.googleapis.com/google.rpc.Help","links":[{"description":"Google developers console API activation","url":"https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204"}]}]}},"response":{"statusCode":403}},"exit":1,"message":"Request to https://compute.googleapis.com/compute/v1/projects/931867395204 had HTTP Error: 403, Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.","status":403}
+[debug] [2025-08-16T06:37:41.503Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:41.503Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:41.503Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/931867395204:getIamPolicy [none]
+[debug] [2025-08-16T06:37:42.413Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/931867395204:getIamPolicy 200
+[debug] [2025-08-16T06:37:42.413Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/931867395204:getIamPolicy {"version":1,"etag":"BwY8dbqgM4E=","bindings":[{"role":"roles/cloudbuild.builds.builder","members":["serviceAccount:931867395204@cloudbuild.gserviceaccount.com"]},{"role":"roles/cloudbuild.serviceAgent","members":["serviceAccount:service-931867395204@gcp-sa-cloudbuild.iam.gserviceaccount.com"]},{"role":"roles/cloudfunctions.serviceAgent","members":["serviceAccount:service-931867395204@gcf-admin-robot.iam.gserviceaccount.com"]},{"role":"roles/containerregistry.ServiceAgent","members":["serviceAccount:service-931867395204@containerregistry.iam.gserviceaccount.com"]},{"role":"roles/editor","members":["serviceAccount:931867395204@cloudservices.gserviceaccount.com","serviceAccount:front-kun-project@appspot.gserviceaccount.com","serviceAccount:931867395204-compute@developer.gserviceaccount.com"]},{"role":"roles/firebase.managementServiceAgent","members":["serviceAccount:service-931867395204@gcp-sa-firebase.iam.gserviceaccount.com"]},{"role":"roles/firebase.sdkAdminServiceAgent","members":["serviceAccount:firebase-adminsdk-fbsvc@front-kun-project.iam.gserviceaccount.com"]},{"role":"roles/firebasemods.serviceAgent","members":["serviceAccount:service-931867395204@gcp-sa-firebasemods.iam.gserviceaccount.com"]},{"role":"roles/firebaserules.system","members":["serviceAccount:service-931867395204@firebase-rules.iam.gserviceaccount.com"]},{"role":"roles/firestore.serviceAgent","members":["serviceAccount:service-931867395204@gcp-sa-firestore.iam.gserviceaccount.com"]},{"role":"roles/iam.serviceAccountTokenCreator","members":["serviceAccount:firebase-adminsdk-fbsvc@front-kun-project.iam.gserviceaccount.com"]},{"role":"roles/owner","members":["user:effboki.lab@gmail.com"]},{"role":"roles/run.serviceAgent","members":["serviceAccount:service-931867395204@serverless-robot-prod.iam.gserviceaccount.com"]}]}
+[debug] [2025-08-16T06:37:42.413Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:42.414Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:42.414Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/931867395204:setIamPolicy [none]
+[debug] [2025-08-16T06:37:42.414Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/931867395204:setIamPolicy {"policy":{"version":1,"etag":"BwY8dbqgM4E=","bindings":[{"role":"roles/cloudbuild.builds.builder","members":["serviceAccount:931867395204@cloudbuild.gserviceaccount.com"]},{"role":"roles/cloudbuild.serviceAgent","members":["serviceAccount:service-931867395204@gcp-sa-cloudbuild.iam.gserviceaccount.com"]},{"role":"roles/cloudfunctions.serviceAgent","members":["serviceAccount:service-931867395204@gcf-admin-robot.iam.gserviceaccount.com"]},{"role":"roles/containerregistry.ServiceAgent","members":["serviceAccount:service-931867395204@containerregistry.iam.gserviceaccount.com"]},{"role":"roles/editor","members":["serviceAccount:931867395204@cloudservices.gserviceaccount.com","serviceAccount:front-kun-project@appspot.gserviceaccount.com","serviceAccount:931867395204-compute@developer.gserviceaccount.com"]},{"role":"roles/firebase.managementServiceAgent","members":["serviceAccount:service-931867395204@gcp-sa-firebase.iam.gserviceaccount.com"]},{"role":"roles/firebase.sdkAdminServiceAgent","members":["serviceAccount:firebase-adminsdk-fbsvc@front-kun-project.iam.gserviceaccount.com"]},{"role":"roles/firebasemods.serviceAgent","members":["serviceAccount:service-931867395204@gcp-sa-firebasemods.iam.gserviceaccount.com"]},{"role":"roles/firebaserules.system","members":["serviceAccount:service-931867395204@firebase-rules.iam.gserviceaccount.com"]},{"role":"roles/firestore.serviceAgent","members":["serviceAccount:service-931867395204@gcp-sa-firestore.iam.gserviceaccount.com"]},{"role":"roles/iam.serviceAccountTokenCreator","members":["serviceAccount:firebase-adminsdk-fbsvc@front-kun-project.iam.gserviceaccount.com","serviceAccount:service-931867395204@gcp-sa-pubsub.iam.gserviceaccount.com"]},{"role":"roles/owner","members":["user:effboki.lab@gmail.com"]},{"role":"roles/run.serviceAgent","members":["serviceAccount:service-931867395204@serverless-robot-prod.iam.gserviceaccount.com"]},{"role":"roles/run.invoker","members":["serviceAccount:931867395204-compute@developer.gserviceaccount.com"]},{"role":"roles/eventarc.eventReceiver","members":["serviceAccount:931867395204-compute@developer.gserviceaccount.com"]}]},"updateMask":"bindings"}
+[debug] [2025-08-16T06:37:43.379Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/931867395204:setIamPolicy 200
+[debug] [2025-08-16T06:37:43.379Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/931867395204:setIamPolicy {"version":1,"etag":"BwY8db5jUxA=","bindings":[{"role":"roles/cloudbuild.builds.builder","members":["serviceAccount:931867395204@cloudbuild.gserviceaccount.com"]},{"role":"roles/cloudbuild.serviceAgent","members":["serviceAccount:service-931867395204@gcp-sa-cloudbuild.iam.gserviceaccount.com"]},{"role":"roles/cloudfunctions.serviceAgent","members":["serviceAccount:service-931867395204@gcf-admin-robot.iam.gserviceaccount.com"]},{"role":"roles/containerregistry.ServiceAgent","members":["serviceAccount:service-931867395204@containerregistry.iam.gserviceaccount.com"]},{"role":"roles/editor","members":["serviceAccount:931867395204-compute@developer.gserviceaccount.com","serviceAccount:931867395204@cloudservices.gserviceaccount.com","serviceAccount:front-kun-project@appspot.gserviceaccount.com"]},{"role":"roles/eventarc.eventReceiver","members":["serviceAccount:931867395204-compute@developer.gserviceaccount.com"]},{"role":"roles/firebase.managementServiceAgent","members":["serviceAccount:service-931867395204@gcp-sa-firebase.iam.gserviceaccount.com"]},{"role":"roles/firebase.sdkAdminServiceAgent","members":["serviceAccount:firebase-adminsdk-fbsvc@front-kun-project.iam.gserviceaccount.com"]},{"role":"roles/firebasemods.serviceAgent","members":["serviceAccount:service-931867395204@gcp-sa-firebasemods.iam.gserviceaccount.com"]},{"role":"roles/firebaserules.system","members":["serviceAccount:service-931867395204@firebase-rules.iam.gserviceaccount.com"]},{"role":"roles/firestore.serviceAgent","members":["serviceAccount:service-931867395204@gcp-sa-firestore.iam.gserviceaccount.com"]},{"role":"roles/iam.serviceAccountTokenCreator","members":["serviceAccount:firebase-adminsdk-fbsvc@front-kun-project.iam.gserviceaccount.com","serviceAccount:service-931867395204@gcp-sa-pubsub.iam.gserviceaccount.com"]},{"role":"roles/owner","members":["user:effboki.lab@gmail.com"]},{"role":"roles/run.invoker","members":["serviceAccount:931867395204-compute@developer.gserviceaccount.com"]},{"role":"roles/run.serviceAgent","members":["serviceAccount:service-931867395204@serverless-robot-prod.iam.gserviceaccount.com"]}]}
+[debug] [2025-08-16T06:37:43.380Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:43.380Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:43.381Z] >>> [apiv2][query] GET https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project [none]
+[debug] [2025-08-16T06:37:43.607Z] <<< [apiv2][status] GET https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project 200
+[debug] [2025-08-16T06:37:43.608Z] <<< [apiv2][body] GET https://cloudresourcemanager.googleapis.com/v1/projects/front-kun-project {"projectNumber":"931867395204","projectId":"front-kun-project","lifecycleState":"ACTIVE","name":"front-kun-project","labels":{"firebase":"enabled","firebase-core":"disabled"},"createTime":"2025-06-02T05:55:24.976860Z"}
+[debug] [2025-08-16T06:37:43.608Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:43.608Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:43.608Z] >>> [apiv2][query] GET https://compute.googleapis.com/compute/v1/projects/931867395204 [none]
+[debug] [2025-08-16T06:37:43.869Z] <<< [apiv2][status] GET https://compute.googleapis.com/compute/v1/projects/931867395204 403
+[debug] [2025-08-16T06:37:43.870Z] <<< [apiv2][body] GET https://compute.googleapis.com/compute/v1/projects/931867395204 {"error":{"code":403,"message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.","errors":[{"message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.","domain":"usageLimits","reason":"accessNotConfigured","extendedHelp":"https://console.developers.google.com"}],"status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SERVICE_DISABLED","domain":"googleapis.com","metadata":{"consumer":"projects/931867395204","activationUrl":"https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204","serviceTitle":"Compute Engine API","service":"compute.googleapis.com","containerInfo":"931867395204"}},{"@type":"type.googleapis.com/google.rpc.LocalizedMessage","locale":"en-US","message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry."},{"@type":"type.googleapis.com/google.rpc.Help","links":[{"description":"Google developers console API activation","url":"https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204"}]}]}}
+[debug] [2025-08-16T06:37:43.870Z] unable to look up default compute service account. Falling back to 931867395204-compute@developer.gserviceaccount.com. Error: {"name":"FirebaseError","children":[],"context":{"body":{"error":{"code":403,"message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.","errors":[{"message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.","domain":"usageLimits","reason":"accessNotConfigured","extendedHelp":"https://console.developers.google.com"}],"status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SERVICE_DISABLED","domain":"googleapis.com","metadata":{"consumer":"projects/931867395204","activationUrl":"https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204","serviceTitle":"Compute Engine API","service":"compute.googleapis.com","containerInfo":"931867395204"}},{"@type":"type.googleapis.com/google.rpc.LocalizedMessage","locale":"en-US","message":"Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry."},{"@type":"type.googleapis.com/google.rpc.Help","links":[{"description":"Google developers console API activation","url":"https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204"}]}]}},"response":{"statusCode":403}},"exit":1,"message":"Request to https://compute.googleapis.com/compute/v1/projects/931867395204 had HTTP Error: 403, Compute Engine API has not been used in project 931867395204 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/compute.googleapis.com/overview?project=931867395204 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.","status":403}
+[debug] [2025-08-16T06:37:43.872Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:43.872Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:43.872Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/front-kun-project/billingInfo [none]
+[debug] [2025-08-16T06:37:45.182Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/front-kun-project/billingInfo 200
+[debug] [2025-08-16T06:37:45.182Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/front-kun-project/billingInfo {"name":"projects/front-kun-project/billingInfo","projectId":"front-kun-project","billingAccountName":"billingAccounts/0110FD-67D132-292DBD","billingEnabled":true}
+[debug] [2025-08-16T06:37:45.185Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:45.185Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:45.185Z] >>> [apiv2][query] POST https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/us-central1/functions:generateUploadUrl [none]
+[debug] [2025-08-16T06:37:47.541Z] <<< [apiv2][status] POST https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/us-central1/functions:generateUploadUrl 200
+[debug] [2025-08-16T06:37:47.541Z] <<< [apiv2][body] POST https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/us-central1/functions:generateUploadUrl {"uploadUrl":"https://storage.googleapis.com/gcf-v2-uploads-931867395204.us-central1.cloudfunctions.appspot.com/943f0ef5-f8b0-43d9-8bb2-4962cb219b2e.zip?GoogleAccessId=service-931867395204@gcf-admin-robot.iam.gserviceaccount.com&Expires=1755328067&Signature=X%2F%2FZSWcEDHhFByIjD73DE%2B0jLbj7w3w6cJNcbZJzTXmlkAro1Ctn3GHpa311I2f9OXNV7Bmuh9Ratg7%2Bi7fOALFFYdkBQWaioIEUblZ8tOXdGcw2FV9j1eGjGKPfqNMTZXVZfwWJ9%2BWIUuS%2Fm1KgQ05xedn6F0R0jwcgqBt8uRhCPWNAzKF6dAUlXtsVuCC%2B%2F3rn5wkc6zv0QpnccjO1OaORVqLsAaO2b4d76HTaXzp1OJLTpcp2ORnlUOKh2RKn9ixGF1ZbqbRR5pX%2Brd4ljK3z0T6F21dIcm4jqOHfN5QBPQ9BVGZAWdvYZVB5sx5PKmFMGouYk2b8iS6%2Bf%2BQtZQ%3D%3D","storageSource":{"bucket":"gcf-v2-uploads-931867395204.us-central1.cloudfunctions.appspot.com","object":"943f0ef5-f8b0-43d9-8bb2-4962cb219b2e.zip"}}
+[debug] [2025-08-16T06:37:47.542Z] >>> [apiv2][query] PUT https://storage.googleapis.com/gcf-v2-uploads-931867395204.us-central1.cloudfunctions.appspot.com/943f0ef5-f8b0-43d9-8bb2-4962cb219b2e.zip GoogleAccessId=service-931867395204%40gcf-admin-robot.iam.gserviceaccount.com&Expires=1755328067&Signature=X%2F%2FZSWcEDHhFByIjD73DE%2B0jLbj7w3w6cJNcbZJzTXmlkAro1Ctn3GHpa311I2f9OXNV7Bmuh9Ratg7%2Bi7fOALFFYdkBQWaioIEUblZ8tOXdGcw2FV9j1eGjGKPfqNMTZXVZfwWJ9%2BWIUuS%2Fm1KgQ05xedn6F0R0jwcgqBt8uRhCPWNAzKF6dAUlXtsVuCC%2B%2F3rn5wkc6zv0QpnccjO1OaORVqLsAaO2b4d76HTaXzp1OJLTpcp2ORnlUOKh2RKn9ixGF1ZbqbRR5pX%2Brd4ljK3z0T6F21dIcm4jqOHfN5QBPQ9BVGZAWdvYZVB5sx5PKmFMGouYk2b8iS6%2Bf%2BQtZQ%3D%3D
+[debug] [2025-08-16T06:37:47.543Z] >>> [apiv2][body] PUT https://storage.googleapis.com/gcf-v2-uploads-931867395204.us-central1.cloudfunctions.appspot.com/943f0ef5-f8b0-43d9-8bb2-4962cb219b2e.zip [stream]
+[debug] [2025-08-16T06:37:48.261Z] <<< [apiv2][status] PUT https://storage.googleapis.com/gcf-v2-uploads-931867395204.us-central1.cloudfunctions.appspot.com/943f0ef5-f8b0-43d9-8bb2-4962cb219b2e.zip 200
+[debug] [2025-08-16T06:37:48.262Z] <<< [apiv2][body] PUT https://storage.googleapis.com/gcf-v2-uploads-931867395204.us-central1.cloudfunctions.appspot.com/943f0ef5-f8b0-43d9-8bb2-4962cb219b2e.zip [omitted]
+[info] ✔  functions: functions folder uploaded successfully 
+[info] i  functions: creating Node.js 20 (2nd Gen) function onTaskEventCreated(us-central1)... 
+[debug] [2025-08-16T06:37:48.268Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:48.268Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:37:48.268Z] >>> [apiv2][query] POST https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/us-central1/functions functionId=onTaskEventCreated
+[debug] [2025-08-16T06:37:48.268Z] >>> [apiv2][body] POST https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/us-central1/functions {"name":"projects/front-kun-project/locations/us-central1/functions/onTaskEventCreated","buildConfig":{"runtime":"nodejs20","entryPoint":"onTaskEventCreated","source":{"storageSource":{"bucket":"gcf-v2-uploads-931867395204.us-central1.cloudfunctions.appspot.com","object":"943f0ef5-f8b0-43d9-8bb2-4962cb219b2e.zip"}},"environmentVariables":{"GOOGLE_NODE_RUN_SCRIPTS":""}},"serviceConfig":{"environmentVariables":{"FIREBASE_CONFIG":"{\"projectId\":\"front-kun-project\",\"storageBucket\":\"front-kun-project.firebasestorage.app\"}","GCLOUD_PROJECT":"front-kun-project","EVENTARC_CLOUD_EVENT_SOURCE":"projects/front-kun-project/locations/us-central1/services/onTaskEventCreated","FUNCTION_SIGNATURE_TYPE":"cloudevent","FUNCTION_TARGET":"onTaskEventCreated","LOG_EXECUTION_ID":"true"},"ingressSettings":null,"timeoutSeconds":null,"serviceAccountEmail":null,"availableMemory":"256Mi","minInstanceCount":null,"maxInstanceCount":null,"maxInstanceRequestConcurrency":80,"availableCpu":"1","vpcConnector":null,"vpcConnectorEgressSettings":null},"labels":{"deployment-tool":"cli-firebase","firebase-functions-hash":"f92ae2c271a5412d5cb8ac2d9513fa0fafb9207a"},"eventTrigger":{"eventType":"google.cloud.firestore.document.v1.created","retryPolicy":"RETRY_POLICY_DO_NOT_RETRY","eventFilters":[{"attribute":"database","value":"(default)"},{"attribute":"namespace","value":"(default)"},{"attribute":"document","value":"taskEvents/{id}","operator":"match-path-pattern"}],"triggerRegion":"asia-northeast1"}}
+[debug] [2025-08-16T06:38:06.051Z] <<< [apiv2][status] POST https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/us-central1/functions 400
+[debug] [2025-08-16T06:38:06.051Z] <<< [apiv2][body] POST https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/us-central1/functions {"error":{"code":400,"message":"Validation failed for trigger projects/front-kun-project/locations/asia-northeast1/triggers/ontaskeventcreated-544314: Invalid resource state for \"\": Permission denied while using the Eventarc Service Agent. If you recently started to use Eventarc, it may take a few minutes before all necessary permissions are propagated to the Service Agent. Otherwise, verify that it has Eventarc Service Agent role.","status":"FAILED_PRECONDITION"}}
+[warn] ⚠  functions: Request to https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/us-central1/functions?functionId=onTaskEventCreated had HTTP Error: 400, Validation failed for trigger projects/front-kun-project/locations/asia-northeast1/triggers/ontaskeventcreated-544314: Invalid resource state for "": Permission denied while using the Eventarc Service Agent. If you recently started to use Eventarc, it may take a few minutes before all necessary permissions are propagated to the Service Agent. Otherwise, verify that it has Eventarc Service Agent role. 
+[warn] ⚠  functions: Since this is your first time using 2nd gen functions, we need a little bit longer to finish setting everything up. Retry the deployment in a few minutes. 
+[warn] ⚠  functions:  failed to create function projects/front-kun-project/locations/us-central1/functions/onTaskEventCreated 
+[error] Failed to create function projects/front-kun-project/locations/us-central1/functions/onTaskEventCreated
+[debug] [2025-08-16T06:38:06.057Z] Total Function Deployment time: 17788
+[debug] [2025-08-16T06:38:06.057Z] 1 Functions Deployed
+[debug] [2025-08-16T06:38:06.057Z] 1 Functions Errored
+[debug] [2025-08-16T06:38:06.057Z] 0 Function Deployments Aborted
+[debug] [2025-08-16T06:38:06.058Z] Average Function Deployment time: 17787
+[info] 
+[info] Functions deploy had errors with the following functions:
+	onTaskEventCreated(us-central1)
+[debug] [2025-08-16T06:38:06.317Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:38:06.317Z] Checked if tokens are valid: true, expires at: 1755329227505
+[debug] [2025-08-16T06:38:06.317Z] >>> [apiv2][query] GET https://artifactregistry.googleapis.com/v1/projects/front-kun-project/locations/us-central1/repositories/gcf-artifacts [none]
+[debug] [2025-08-16T06:38:07.606Z] <<< [apiv2][status] GET https://artifactregistry.googleapis.com/v1/projects/front-kun-project/locations/us-central1/repositories/gcf-artifacts 404
+[debug] [2025-08-16T06:38:07.607Z] <<< [apiv2][body] GET https://artifactregistry.googleapis.com/v1/projects/front-kun-project/locations/us-central1/repositories/gcf-artifacts {"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}
+[debug] [2025-08-16T06:38:07.607Z] Failed to check artifact cleanup policy for region us-central1: Request to https://artifactregistry.googleapis.com/v1/projects/front-kun-project/locations/us-central1/repositories/gcf-artifacts had HTTP Error: 404, Requested entity was not found. {"name":"FirebaseError","children":[],"context":{"body":{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}},"response":{"statusCode":404}},"exit":1,"message":"Request to https://artifactregistry.googleapis.com/v1/projects/front-kun-project/locations/us-central1/repositories/gcf-artifacts had HTTP Error: 404, Requested entity was not found.","status":404}
+[debug] [2025-08-16T06:38:07.608Z] Functions deploy failed.
+[debug] [2025-08-16T06:38:07.608Z] {
+  "endpoint": {
+    "id": "onTaskEventCreated",
+    "project": "front-kun-project",
+    "region": "us-central1",
+    "entryPoint": "onTaskEventCreated",
+    "platform": "gcfv2",
+    "runtime": "nodejs20",
+    "eventTrigger": {
+      "eventType": "google.cloud.firestore.document.v1.created",
+      "retry": false,
+      "eventFilters": {
+        "database": "(default)",
+        "namespace": "(default)"
+      },
+      "eventFilterPathPatterns": {
+        "document": "taskEvents/{id}"
+      },
+      "region": "asia-northeast1"
+    },
+    "labels": {
+      "deployment-tool": "cli-firebase"
+    },
+    "serviceAccount": null,
+    "ingressSettings": null,
+    "availableMemoryMb": null,
+    "timeoutSeconds": null,
+    "maxInstances": null,
+    "minInstances": null,
+    "concurrency": 80,
+    "vpc": null,
+    "environmentVariables": {
+      "FIREBASE_CONFIG": "{\"projectId\":\"front-kun-project\",\"storageBucket\":\"front-kun-project.firebasestorage.app\"}",
+      "GCLOUD_PROJECT": "front-kun-project",
+      "EVENTARC_CLOUD_EVENT_SOURCE": "projects/front-kun-project/locations/us-central1/services/onTaskEventCreated"
+    },
+    "codebase": "default",
+    "cpu": 1,
+    "targetedByOnly": false,
+    "hash": "f92ae2c271a5412d5cb8ac2d9513fa0fafb9207a"
+  },
+  "op": "create",
+  "original": {
+    "name": "FirebaseError",
+    "children": [],
+    "context": {
+      "function": "projects/front-kun-project/locations/us-central1/functions/onTaskEventCreated"
+    },
+    "exit": 1,
+    "message": "Failed to create function projects/front-kun-project/locations/us-central1/functions/onTaskEventCreated",
+    "original": {
+      "name": "FirebaseError",
+      "children": [],
+      "context": {
+        "body": {
+          "error": {
+            "code": 400,
+            "message": "Validation failed for trigger projects/front-kun-project/locations/asia-northeast1/triggers/ontaskeventcreated-544314: Invalid resource state for \"\": Permission denied while using the Eventarc Service Agent. If you recently started to use Eventarc, it may take a few minutes before all necessary permissions are propagated to the Service Agent. Otherwise, verify that it has Eventarc Service Agent role.",
+            "status": "FAILED_PRECONDITION"
+          }
+        },
+        "response": {
+          "statusCode": 400
+        }
+      },
+      "exit": 1,
+      "message": "Request to https://cloudfunctions.googleapis.com/v2/projects/front-kun-project/locations/us-central1/functions?functionId=onTaskEventCreated had HTTP Error: 400, Validation failed for trigger projects/front-kun-project/locations/asia-northeast1/triggers/ontaskeventcreated-544314: Invalid resource state for \"\": Permission denied while using the Eventarc Service Agent. If you recently started to use Eventarc, it may take a few minutes before all necessary permissions are propagated to the Service Agent. Otherwise, verify that it has Eventarc Service Agent role.",
+      "status": 400
+    },
+    "status": 400,
+    "code": 400
+  }
+}
+[debug] [2025-08-16T06:38:07.714Z] Error: Failed to create function onTaskEventCreated in region us-central1
+    at /Users/nagi/.npm/_npx/ba4f1959e38407b5/node_modules/firebase-tools/lib/deploy/functions/release/fabricator.js:294:27
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async Fabricator.createV2Function (/Users/nagi/.npm/_npx/ba4f1959e38407b5/node_modules/firebase-tools/lib/deploy/functions/release/fabricator.js:278:30)
+    at async Fabricator.createEndpoint (/Users/nagi/.npm/_npx/ba4f1959e38407b5/node_modules/firebase-tools/lib/deploy/functions/release/fabricator.js:137:13)
+    at async handle (/Users/nagi/.npm/_npx/ba4f1959e38407b5/node_modules/firebase-tools/lib/deploy/functions/release/fabricator.js:89:17)
+[error] 
+[error] Error: There was an error deploying functions

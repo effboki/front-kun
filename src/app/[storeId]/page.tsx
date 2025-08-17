@@ -14,6 +14,11 @@ import { flushQueuedOps } from '@/lib/opsQueue';
 import type { StoreSettings } from '@/types/settings';
 
 import { useState, ChangeEvent, FormEvent, useMemo, useEffect, useRef } from 'react';
+import {
+  ensureServiceWorkerRegistered,
+  requestPermissionAndGetToken,
+  ensureFcmRegistered,
+} from "@/lib/firebase-messaging";
 import { useRealtimeReservations } from '@/hooks/useRealtimeReservations';
 import { useRealtimeStoreSettings } from '@/hooks/useRealtimeStoreSettings';
 import { toast } from 'react-hot-toast';
@@ -1404,6 +1409,43 @@ const deleteCourse = async () => {
   // 通知の ON/OFF
   const [remindersEnabled, setRemindersEnabled] = useState<boolean>(false);
 
+  // 通知有効化の進行状態 & トグル処理
+  const [notiBusy, setNotiBusy] = useState(false);
+  const handleRemindersToggle = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const checked = e.target.checked;
+    setRemindersEnabled(checked);
+
+    if (!checked) {
+      // OFF 時の追加処理があればここに（現状は何もしない）
+      return;
+    }
+
+    setNotiBusy(true);
+    try {
+      // ① SW 登録（未登録なら登録）
+      await ensureServiceWorkerRegistered();
+
+      // ② 許可 → FCM トークン取得
+      const token = await requestPermissionAndGetToken();
+      if (!token) {
+        // 許可拒否 or 失敗のときは UI を元に戻す
+        setRemindersEnabled(false);
+        return;
+      }
+
+      // ③ 任意：Firestore に保存（既存の ensureFcmRegistered を活用）
+      // deviceId は内部生成でも OK。ここでは簡易な固定名/自動生成のどちらでも可。
+       const deviceId = getDeviceId();
+ await ensureFcmRegistered(deviceId, id as string);
+      console.log("[FCM] 通知の有効化が完了しました。");
+    } catch (err) {
+      console.error("[FCM] 通知の有効化に失敗:", err);
+      setRemindersEnabled(false);
+    } finally {
+      setNotiBusy(false);
+    }
+  };
+
   // 現在時刻 "HH:MM"
   const [currentTime, setCurrentTime] = useState<string>(() => {
     const now = new Date();
@@ -1769,8 +1811,8 @@ const onNumPadConfirm = () => {
       time: newResTime,
       date: new Date().toISOString().slice(0, 10), // ← 追加 今日の日付
       course: newResCourse,
-        eat:   newResEat,
-  　　　drink: newResDrink,
+      eat: newResEat,
+drink: newResDrink,
       guests: Number(newResGuests),
       name: newResName.trim(),
       notes: newResNotes.trim(),
@@ -2065,9 +2107,11 @@ setNewResDrink('');
                   <input
                     type="checkbox"
                     checked={remindersEnabled}
-                    onChange={(e) => setRemindersEnabled(e.target.checked)}
+                    onChange={handleRemindersToggle}
+                    disabled={notiBusy}
                   />
                   <span>通知（taskEvents 送信）を有効化</span>
+                  {notiBusy && <span className="ml-2 opacity-70">設定中...</span>}
                 </label>
               </li>
             </ul>
