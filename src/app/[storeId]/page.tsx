@@ -780,11 +780,19 @@ useEffect(() => {
 // ─────────────────────────────────────────────────────────────
   // 来店入力: 人数列を表示するかどうか
   const [showGuestsCol, setShowGuestsCol] = useState<boolean>(true);
-  // 表示順選択 (table/time)
-  const [resOrder, setResOrder] = useState<'table' | 'time'>(() => {
+  // 表示順選択 (table/time/created)
+  const [resOrder, setResOrder] = useState<'table' | 'time' | 'created'>(() => {
     if (typeof window === 'undefined') return 'table';
-    return (localStorage.getItem(`${ns}-resOrder`) as 'table' | 'time') || 'table';
+    const saved = localStorage.getItem(`${ns}-resOrder`);
+    if (saved === 'table' || saved === 'time' || saved === 'created') return saved;
+    return 'table';
   });
+  // 並び順セレクタの変更をlocalStorageに保存
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`${ns}-resOrder`, resOrder);
+    }
+  }, [resOrder]);
 
   //
   // ─── 2.3 「店舗設定」関連の state ───────────────────────────────────────────
@@ -1390,8 +1398,13 @@ const deleteCourse = async () => {
     });
   }, [reservations]);
 
+  const sortedByCreated = useMemo(() => {
+    return [...reservations].sort((a, b) => Number(a.id) - Number(b.id));
+  }, [reservations]);
+
   // 表示順決定
-  const sortedReservations = resOrder === 'time' ? sortedByTime : sortedByTable;
+  const sortedReservations =
+    resOrder === 'time' ? sortedByTime : resOrder === 'created' ? sortedByCreated : sortedByTable;
 
   // “事前設定テーブル” で選ばれたもののみ表示＋コース絞り込み
   const filteredReservations = useMemo(() => {
@@ -2125,6 +2138,20 @@ setNewResDrink('');
       )}
       <main className="pt-12 p-4 space-y-6">
         
+      {/* 並び順セレクター */}
+      <div className="flex items-center gap-2 text-sm">
+        <label htmlFor="resOrder">予約の並び順:</label>
+        <select
+          id="resOrder"
+          className="border px-2 py-1 rounded"
+          value={resOrder}
+          onChange={(e) => setResOrder(e.target.value as 'table' | 'time' | 'created')}
+        >
+          <option value="table">卓番号順</option>
+          <option value="time">時間順</option>
+          <option value="created">追加順</option>
+        </select>
+      </div>
       {/* ─────────────── 店舗設定セクション ─────────────── */}
       {selectedMenu === '店舗設定画面' && (
         <section>
@@ -2230,12 +2257,16 @@ setNewResDrink('');
                     type="text"
                     value={task.label}
                     onChange={(e) => {
+                      const oldLabel = task.label;
                       const newLabel = e.target.value;
+                      if (!newLabel) return;
+
+                      // 1) courses 内の該当ラベルを置換（既存処理）
                       setCourses((prev) => {
                         const next = prev.map((c) => {
                           if (c.name !== selectedCourse) return c;
                           const updatedTasks = c.tasks.map((t) =>
-                            t.timeOffset === task.timeOffset && t.label === task.label
+                            t.timeOffset === task.timeOffset && t.label === oldLabel
                               ? { ...t, label: newLabel }
                               : t
                           );
@@ -2244,6 +2275,56 @@ setNewResDrink('');
                         localStorage.setItem(`${ns}-courses`, JSON.stringify(next));
                         return next;
                       });
+
+                      // 2) “表示タスクフィルター” の保存値（checkedTasks）を置換
+                      setCheckedTasks((prev) => {
+                        const next = prev.map((l) => (l === oldLabel ? newLabel : l));
+                        try { localStorage.setItem(`${ns}-checkedTasks`, JSON.stringify(next)); } catch {}
+                        return next;
+                      });
+
+                      // 3) tasksByPosition（ポジション×コースの表示タスク配列）内の該当ラベルを置換
+                      setTasksByPosition((prev) => {
+                        const next: Record<string, Record<string, string[]>> = {};
+                        Object.entries(prev).forEach(([pos, courseMap]) => {
+                          const newCourseMap: Record<string, string[]> = {};
+                          Object.entries(courseMap || {}).forEach(([courseName, labels]) => {
+                            newCourseMap[courseName] = (labels || []).map((l) => (l === oldLabel ? newLabel : l));
+                          });
+                          next[pos] = newCourseMap;
+                        });
+                        try { localStorage.setItem(`${ns}-tasksByPosition`, JSON.stringify(next)); } catch {}
+                        return next;
+                      });
+
+                      // 4) 予約データ内の timeShift キーと completed キーを置換
+                      setReservations((prev) => {
+                        const next = prev.map((r) => {
+                          // timeShift: { [label]: offset }
+                          let newTimeShift = r.timeShift;
+                          if (newTimeShift && Object.prototype.hasOwnProperty.call(newTimeShift, oldLabel)) {
+                            const { [oldLabel]: oldVal, ...rest } = newTimeShift;
+                            newTimeShift = { ...rest, [newLabel]: oldVal };
+                          }
+
+                          // completed: { `${label}_${course}`: boolean }
+                          const newCompleted: Record<string, boolean> = {};
+                          Object.entries(r.completed || {}).forEach(([key, done]) => {
+                            if (key.startsWith(`${oldLabel}_`)) {
+                              const replaced = key.replace(new RegExp(`^${oldLabel}_`), `${newLabel}_`);
+                              newCompleted[replaced] = done;
+                            } else {
+                              newCompleted[key] = done;
+                            }
+                          });
+
+                          return { ...r, timeShift: newTimeShift, completed: newCompleted };
+                        });
+                        persistReservations(next);
+                        return next;
+                      });
+
+                      // 5) 編集中ラベルを更新
                       setEditingTask({ offset: task.timeOffset, label: newLabel });
                     }}
                     className="border px-2 py-1 rounded flex-1 text-sm"
