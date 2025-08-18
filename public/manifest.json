@@ -2,39 +2,30 @@
   "name": "フロント君",
   "short_name": "フロント君",
   "description": "予約・タスクの共有アプリ",
-  "theme_color": "#ffffff",
+  "theme_color": "#0ea5e9",
   "background_color": "#ffffff",
   "display": "standalone",
   "orientation": "portrait",
   "scope": "/",
   "start_url": "/?source=pwa",
   "icons": [
-  {
-    "src": "/icons/icon-192.png",
-    "sizes": "192x192",
-    "type": "image/png"
-  },
-  {
-    "src": "/icons/icon-512.png",
-    "sizes": "512x512",
-    "type": "image/png"
-  },
-  {
-    "src": "/icons/icon-192-maskable.png",
-    "sizes": "192x192",
-    "type": "image/png",
-    "purpose": "maskable"
-  },
-  {
-    "src": "/icons/icon-512-maskable.png",
-    "sizes": "512x512",
-    "type": "image/png",
-    "purpose": "maskable"
-  },
-  {
-    "src": "/icons/apple-touch-icon-180.png",
-    "sizes": "180x180",
-    "type": "image/png"
-  }
-]
+    {
+      "src": "/icons/icon-180x180.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
 }
