@@ -32,6 +32,16 @@ export default function RootLayout({
 
   return (
     <html lang="ja">
+      <head>
+        <link rel="manifest" href="/manifest.json" />
+        {/* iOS ホーム画面用アイコン（複数サイズ用意できれば複数行でOK） */}
+        <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon-180.png" />
+        {/* iOS でアドレスバー無しの全画面化 */}
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+        {/* PWA テーマカラー */}
+        <meta name="theme-color" content="#0ea5e9" />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
