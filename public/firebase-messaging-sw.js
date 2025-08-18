@@ -1,5 +1,3 @@
-
-
 // firebase-messaging-sw.js
 
 importScripts("https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js");
@@ -27,7 +25,7 @@ messaging.onBackgroundMessage((payload) => {
   const notificationTitle = payload.notification?.title || "通知があります";
   const notificationOptions = {
     body: payload.notification?.body,
-    icon: "/icons/file.svg", // 任意のアイコンに変更できます
+    icon: "/icons/icon-192.png", // PWA用PNGに合わせる（存在するPNGに合わせてください）
   };
   const clickAction =
     payload?.fcmOptions?.link ||
