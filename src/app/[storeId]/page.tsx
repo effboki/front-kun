@@ -1198,37 +1198,47 @@ useEffect(() => {
       return next;
     });
 
-    // 2) 表示タスクフィルター（その他タブ）
+    // 2) 表示タスクフィルター（その他タブ）は「旧ラベルを残しつつ新ラベルを追加」。
+    //    ※ 他コースで同名タスクがあるケースで非表示にならないよう、置換はしない。
     setCheckedTasks(prev => {
-      const next = prev.map(l => (l === oldLabel ? newLabel : l));
-      try { localStorage.setItem(`${ns}-checkedTasks`, JSON.stringify(next)); } catch {}
-      return next;
+      const hasOld = prev.includes(oldLabel);
+      const hasNew = prev.includes(newLabel);
+      if (hasOld && !hasNew) {
+        const next = [...prev, newLabel];
+        try { localStorage.setItem(`${ns}-checkedTasks`, JSON.stringify(next)); } catch {}
+        return next;
+      }
+      return prev;
     });
 
-    // 3) ポジション × コースのタスク表示設定
+    // 3) ポジション × コースのタスク表示設定は「選択中コースに限定して」ラベルを置換。
+    //    他コースの選択は触らない（外れてしまう不具合の原因だったため）。
     setTasksByPosition(prev => {
-      const next: Record<string, Record<string, string[]>> = {};
+      const next: Record<string, Record<string, string[]>> = { ...prev };
       Object.entries(prev || {}).forEach(([pos, cmap]) => {
-        const newCmap: Record<string, string[]> = {};
-        Object.entries(cmap || {}).forEach(([courseName, labels]) => {
-          newCmap[courseName] = (labels || []).map(l => (l === oldLabel ? newLabel : l));
-        });
-        next[pos] = newCmap;
+        const current = cmap?.[selectedCourse];
+        if (Array.isArray(current) && current.includes(oldLabel)) {
+          const replaced = current.map(l => (l === oldLabel ? newLabel : l));
+          next[pos] = { ...(cmap || {}), [selectedCourse]: replaced };
+        }
       });
       try { localStorage.setItem(`${ns}-tasksByPosition`, JSON.stringify(next)); } catch {}
       return next;
     });
 
-    // 4) 予約データの timeShift / completed キーを置換
+    // 4) 予約データの timeShift / completed キーも「選択中コースの予約のみ」置換。
     setReservations(prev => {
       const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp(`^${escape(oldLabel)}_`);
       const next = prev.map(r => {
+        if (r.course !== selectedCourse) return r; // ← 他コースは触らない
+
         let newTimeShift = r.timeShift;
         if (newTimeShift && Object.prototype.hasOwnProperty.call(newTimeShift, oldLabel)) {
           const { [oldLabel]: oldVal, ...rest } = newTimeShift;
           newTimeShift = { ...rest, [newLabel]: oldVal };
         }
+
         const newCompleted: Record<string, boolean> = {};
         Object.entries(r.completed || {}).forEach(([key, done]) => {
           if (re.test(key)) {
@@ -1237,6 +1247,7 @@ useEffect(() => {
             newCompleted[key] = done;
           }
         });
+
         return { ...r, timeShift: newTimeShift, completed: newCompleted };
       });
       persistReservations(next);
