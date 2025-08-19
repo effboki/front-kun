@@ -1243,6 +1243,42 @@ useEffect(() => {
       return next;
     });
   };
+  /** ラベル一覧に存在しないフィルタ値を自動クリーンアップ（courses 変化時） */
+  useEffect(() => {
+    // いま存在している全ラベルをセット化
+    const all = new Set<string>();
+    courses.forEach(c => c.tasks.forEach(t => all.add(t.label)));
+
+    // ① “その他”タブのチェックリストを掃除
+    setCheckedTasks(prev => {
+      const next = prev.filter(l => all.has(l));
+      if (next.length !== prev.length) {
+        try { localStorage.setItem(`${ns}-checkedTasks`, JSON.stringify(next)); } catch {}
+        return next;
+      }
+      return prev;
+    });
+
+    // ② ポジション×コースの表示リストを掃除
+    setTasksByPosition(prev => {
+      let changed = false;
+      const next: Record<string, Record<string, string[]>> = {};
+      Object.entries(prev || {}).forEach(([pos, cmap]) => {
+        const newMap: Record<string, string[]> = {};
+        Object.entries(cmap || {}).forEach(([courseName, labels]) => {
+          const filtered = (labels || []).filter(l => all.has(l));
+          if (filtered.length !== (labels || []).length) changed = true;
+          newMap[courseName] = filtered;
+        });
+        next[pos] = newMap;
+      });
+      if (changed) {
+        try { localStorage.setItem(`${ns}-tasksByPosition`, JSON.stringify(next)); } catch {}
+        return next;
+      }
+      return prev;
+    });
+  }, [courses]);
   // 新規タスクをコースに追加
   const addTaskToCourse = (label: string, offset: number) => {
     setCourses((prev) => {
