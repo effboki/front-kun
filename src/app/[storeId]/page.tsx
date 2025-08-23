@@ -4564,7 +4564,7 @@ const updateReservationField = (
 {/* ─────────────── テーブル管理セクション ─────────────── */}
 
  {/* ─ BottomTab: 予約リスト / タスク表 / コース開始時間表 ─ */}
-<footer className="fixed bottom-0 inset-x-0 z-40 border-t bg-white">
+<footer className="fixed bottom-12 inset-x-0 z-40 border-t bg-white">
   <div className="max-w-6xl mx-auto grid grid-cols-3">
     <button
       type="button"
