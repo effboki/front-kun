@@ -51,7 +51,7 @@ const replaceLabelNorm = (arr: string[], oldLabel: string, newLabel: string) =>
 
 /* ───── Loading Skeleton / Spinner ─────────────────────────── */
 const LoadingSpinner: React.FC = () => (
-  <div className="fixed inset-0 flex items-center justify-center bg-white/60 z-50">
+  <div suppressHydrationWarning className="fixed inset-0 flex items-center justify-center bg-white/60 z-50">
     <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent" />
   </div>
 );
@@ -109,7 +109,22 @@ const calcNextResIdFrom = (list: Reservation[] | any[]): string => {
 // ───────────────────────────── ② MAIN コンポーネント ─────────────────────────────────
 //
 
+// ───────────────────────────── Hydration Gate (wrapper) ─────────────────────────────
 export default function Home() {
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => { setHydrated(true); }, []);
+  if (!hydrated) {
+    return (
+      <main className="p-4" suppressHydrationWarning>
+        <LoadingSpinner />
+      </main>
+    );
+  }
+  return <HomeBody />;
+}
+// ────────────────────────────────────────────────────────────────────────────────────
+
+function HomeBody() {
   // ── Bottom tabs: 予約リスト / タスク表 / コース開始時間表
 const [bottomTab, setBottomTab] =
   useState<'reservations' | 'tasks' | 'courseStart'>('reservations');
@@ -261,11 +276,6 @@ const handleBottomTabClick = (tab: 'reservations' | 'tasks' | 'courseStart') => 
   // 卓番変更モード用のステートを追加
   const [editTableMode, setEditTableMode] = useState<boolean>(false);
 
-  // Hydration guard
-  const [hydrated, setHydrated] = useState<boolean>(false);
-  useEffect(() => {
-    setHydrated(true);
-  }, []);
   // 店舗設定（eatOptions / drinkOptions / positions …）をリアルタイム購読
   const storeSettings = useRealtimeStoreSettings(id);
   //
@@ -296,7 +306,7 @@ useEffect(() => {
   const [reservations, setReservations] = useState<Reservation[]>(loadReservations());
 
   // ── Early loading guard ───────────────────────────────
-  const loading = !hydrated || storeSettings === null;
+  const loading = storeSettings === null;
   const [nextResId, setNextResId] = useState<string>("1");
   // --- keep nextResId monotonic & unique relative to current reservations ---
   useEffect(() => {
@@ -1918,8 +1928,12 @@ const deleteCourse = async () => {
   }, [sortedReservations, checkedTables, filterCourse, checkedDepartures]);
 
   /* ─── 2.x リマインド機能 state & ロジック ───────────────────────── */
-  // 通知の ON/OFF
-  const [remindersEnabled, setRemindersEnabled] = useState<boolean>(false);
+  // 通知の ON/OFF（永続化：localStorage に保存 / 復元）
+  const [remindersEnabled, setRemindersEnabled] = useState<boolean>(() => nsGetStr('remindersEnabled', '0') === '1');
+  // 値が変わるたびに永続化
+  useEffect(() => {
+    try { nsSetStr('remindersEnabled', remindersEnabled ? '1' : '0'); } catch {}
+  }, [remindersEnabled]);
 
   // 通知有効化の進行状態 & トグル処理
   const [notiBusy, setNotiBusy] = useState(false);
@@ -2034,12 +2048,14 @@ const deleteCourse = async () => {
     const map: Record<string, Set<string>> = {};
 
     filteredReservations.forEach((res) => {
+      // 除外: 既に退店済みの予約
+      if (checkedDepartures.includes(res.id)) return;
       const courseDef = courses.find((c) => c.name === res.course);
       if (!courseDef) return;
       const baseMin = parseTimeToMinutes(res.time);
 
       courseDef.tasks.forEach((t) => {
-        const absMin = baseMin + t.timeOffset;
+        const absMin = calcTaskAbsMin(res.time, t.timeOffset, t.label, res.timeShift);
         // ---------- 表示タスクフィルター ----------
         if (!isTaskAllowed(res.course, t.label)) return; // 表示フィルター非対象はスキップ
         // ------------------------------------------
@@ -2054,7 +2070,7 @@ const deleteCourse = async () => {
     return Object.entries(map)
       .sort((a, b) => parseTimeToMinutes(a[0]) - parseTimeToMinutes(b[0]))
       .map(([timeKey, set]) => ({ timeKey, tasks: Array.from(set) }));
-  }, [filteredReservations, courses, currentTime]);
+  }, [filteredReservations, courses, currentTime, checkedDepartures]);
 
   // 回転テーブル判定: 同じ卓番号が複数予約されている場合、その卓は回転中とみなす
   const tableCounts: Record<string, number> = {};
@@ -2550,8 +2566,14 @@ const updateReservationField = (
 
   return (
     <>
+      {/* iOS Safe Area (Status Bar) cover: paint top inset with the same color */}
+      <div
+        aria-hidden
+        className="fixed inset-x-0 top-0 z-50 bg-slate-600"
+        style={{ height: 'env(safe-area-inset-top)' }}
+      />
       {/* Header with hamburger */}
-      <header className="fixed top-0 left-0 w-full bg-slate-600 z-40 p-2 shadow">
+      <header className="fixed top-0 left-0 w-full bg-slate-600 text-white z-50 p-2 shadow">
         <button
           onClick={() => setSidebarOpen(true)}
           aria-label="Open menu"
@@ -3423,7 +3445,6 @@ const updateReservationField = (
                   </thead>
                   <tbody>
                    {filteredReservations.map((r, idx) => {
-                    
                      // highlight when a later reservation has the same table (前回転)
                      const hasLaterRotation = filteredReservations
                        .slice(idx + 1)
@@ -3431,224 +3452,217 @@ const updateReservationField = (
 
                      const prev = filteredReservations[idx - 1];
                      const borderClass = !prev || prev.time !== r.time
-                       ? 'border-t-2 border-gray-300' // 時刻が変わる行 → 太線
-                       : 'border-b border-gray-300';  // 同時刻の行 → 細線
+                       ? 'border-t-2 border-gray-300'
+                       : 'border-b border-gray-300';
 
                      return (
-                      <tr
-  key={r.id}
-  className={`${
-    checkedArrivals.includes(r.id) ? 'bg-green-100 ' : ''
-  }${
-    checkedDepartures.includes(r.id) ? 'bg-gray-300 text-gray-400 ' : ''
-  }${borderClass} text-center ${
-    firstRotatingId[r.table] === r.id ? 'text-red-500' : ''
-  }`}
->
-                        {/* 来店時刻セル */}
-                        <td className="border px-1 py-1">
-                          <select
-                            value={r.time}
-                            onChange={(e) => updateReservationField(r.id, 'time', e.target.value)}
-                            className="border px-1 py-0.5 rounded text-sm"
-                          >
-                            {timeOptions.map((t) => (
-                              <option key={t} value={t}>
-                                {t}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        {/* 卓番セル */}
-<td>
-  <input
-    type="text"
-    readOnly
-    value={editTableMode && pendingTables[r.id] ? pendingTables[r.id].next : r.table}
-    onClick={() => {
-      if (editTableMode) {
-        if (!tablesForMove.includes(r.id)) {
-          // プレビュー用エントリを追加
-          setPendingTables(prev => ({
-            ...prev,
-            [r.id]: { old: r.table, next: r.table },
-          }));
-        } else {
-          // プレビュー用エントリを削除
-          setPendingTables(prev => {
-            const next = { ...prev };
-            delete next[r.id];
-            return next;
-          });
-        }
-        toggleTableForMove(r.id);
-        // すぐに NumPad を開く
-        setNumPadState({
-          id: r.id,
-          field: 'targetTable',
-          value: pendingTables[r.id]?.next ?? r.table,
-        });
-      } else {
-        // 通常モードでの卓番号編集
-        setNumPadState({ id: r.id, field: 'table', value: r.table });
-      }
-    }}
-    className={`border px-1 py-0.5 rounded text-sm w-full text-center ${
-      editTableMode && tablesForMove.includes(r.id) ? 'border-4 border-blue-500' : ''
-    }`}
-  />
-</td>
-                        {/* 氏名セル (タブレット表示) */}
-                        {showNameCol && (
-                          <td className="border px-1 py-1 hidden sm:table-cell">
-                            <input
-                              type="text"
-                              value={r.name ?? ''}
-                              onChange={(e) => {
-                                const newValue = e.target.value;
-                                setReservations((prev) =>
-                                  prev.map((x) => (x.id === r.id ? { ...x, name: newValue } : x))
-                                );
-                                updateReservationField(r.id, 'name', newValue);
-                              }}
-                              placeholder="氏名"
-                              className="border px-1 py-0.5 w-full rounded text-sm text-center"
-                            />
-                          </td>
-                        )}
-                        {/* コースセル */}
-                        <td className="border px-1 py-1">
-                          <select
-                            value={r.course}
-                            onChange={(e) => updateReservationField(r.id, 'course', e.target.value)}
-                            className="border px-1 py-0.5 rounded text-sm"
-                          >
-                            {courses.map((c) => (
-                              <option key={c.name} value={c.name}>
-                                {c.name}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        {/* 食・飲 列 */}
-{showEatCol && (
-  <td className="border px-1 py-0.5 text-center">
-    <select
-      value={r.eat || ''}
-      onChange={(e) => updateReservationField(r.id, 'eat', e.target.value)}
-      className="border px-1 py-0.5 w-14 text-xs rounded"
-    >
-      <option value=""></option>
-      {eatOptions.map((opt) => (
-        <option key={opt} value={opt}>
-          {opt}
-        </option>
-      ))}
-    </select>
-  </td>
-)}
-{showDrinkCol && (
-  <td className="border px-1 py-0.5 text-center">
-    <select
-      value={r.drink || ''}
-      onChange={(e) => updateReservationField(r.id, 'drink', e.target.value)}
-      className="border px-1 py-0.5 w-14 text-xs rounded"
-    >
-      <option value=""></option>
-      {drinkOptions.map((opt) => (
-        <option key={opt} value={opt}>
-          {opt}
-        </option>
-      ))}
-    </select>
-  </td>
-)}
-                        {/* 人数セル */}
-                        <td className="border px-1 py-1">
-                        <input
-                          type="text"
-                          value={r.guests}
-                          readOnly
-                          onClick={() =>
-                            setNumPadState({ id: r.id, field: 'guests', value: r.guests.toString() })
-                          }
-                          className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
-                        />
-                        </td>
-                        {/* 備考セル (タブレット表示) */}
-                        {showNotesCol && (
-                          <td className="border px-1 py-1 hidden sm:table-cell">
-                            <input
-                              type="text"
-                              value={r.notes ?? ''}
-                              onChange={(e) => {
-                                const newValue = e.target.value;
-                                setReservations((prev) =>
-                                  prev.map((x) => (x.id === r.id ? { ...x, notes: newValue } : x))
-                                );
-                                updateReservationField(r.id, 'notes', newValue);
-                              }}
-                              placeholder="備考"
-                              className="border px-1 py-0.5 w-full rounded text-sm text-center"
-                            />
-                          </td>
-                        )}
-                        {/* 来店チェックセル (タブレット表示) */}
-                        <td className="border px-1 py-1 hidden sm:table-cell">
-                          <button
-                            onClick={() => toggleArrivalChecked(r.id)}
-                               className={`px-2 py-0.5 rounded text-sm ${
-     // 退店済みなら最優先で濃いグレー＆白文字
-     checkedDepartures.includes(r.id)
-       ? 'bg-gray-500 text-white'
-       // それ以外で来店チェック済みなら緑＆白文字
-       : checkedArrivals.includes(r.id)
-         ? 'bg-green-500 text-white'
-         // 通常は薄いグレー＆黒文字
-         : 'bg-gray-200 text-black'
-   }`}
-                          >
-                            来
-                          </button>
-                        </td>
-                        {/* 会計チェックセル (タブレット表示) */}
-                        <td className="hidden sm:table-cell px-1">
-  <button
-    onClick={() => togglePaymentChecked(r.id)}
-    className={`px-2 py-0.5 rounded text-sm ${
-  checkedDepartures.includes(r.id)          /* 退店済みなら最優先で濃いグレー＆白文字 */
-    ? 'bg-gray-500 text-white'
-    : checkedPayments.includes(r.id)        /* 会計チェック時だけ青 */
-    ? 'bg-blue-500 text-white'
-    : 'bg-gray-200 text-black'
-}`}
-  >
-    会
-  </button>
-</td>
-                        {/* 退店チェックセル (タブレット表示) */}
-                        <td className="border px-1 py-1 hidden sm:table-cell">
-                          <button
-                            onClick={() => toggleDepartureChecked(r.id)}
-                            className={`px-2 py-0.5 rounded text-sm ${
-                              checkedDepartures.includes(r.id) ? 'bg-gray-500 text-white' : 'bg-gray-200 text-black'
-                            }`}
-                          >
-                            退
-                          </button>
-                        </td>
-                        {/* 削除セル */}
-                        <td className="border px-1 py-1">
-                          <button
-                            onClick={() => deleteReservation(r.id)}
-                            className="bg-red-500 text-white px-2 py-0.5 rounded text-sm"
-                          >
-                            ×
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                       <tr
+                         key={r.id}
+                         className={`${
+                           checkedArrivals.includes(r.id) ? 'bg-green-100 ' : ''
+                         }${
+                           checkedDepartures.includes(r.id) ? 'bg-gray-300 text-gray-400 ' : ''
+                         }${borderClass} text-center ${
+                           firstRotatingId[r.table] === r.id ? 'text-red-500' : ''
+                         }`}
+                       >
+                         {/* 来店時刻セル */}
+                         <td className="border px-1 py-1">
+                           <select
+                             value={r.time}
+                             onChange={(e) => updateReservationField(r.id, 'time', e.target.value)}
+                             className="border px-1 py-0.5 rounded text-sm"
+                           >
+                             {timeOptions.map((t) => (
+                               <option key={t} value={t}>
+                                 {t}
+                               </option>
+                             ))}
+                           </select>
+                         </td>
+                         {/* 卓番セル */}
+                         <td>
+                           <input
+                             type="text"
+                             readOnly
+                             value={editTableMode && pendingTables[r.id] ? pendingTables[r.id].next : r.table}
+                             onClick={() => {
+                               if (editTableMode) {
+                                 if (!tablesForMove.includes(r.id)) {
+                                   setPendingTables(prev => ({
+                                     ...prev,
+                                     [r.id]: { old: r.table, next: r.table },
+                                   }));
+                                 } else {
+                                   setPendingTables(prev => {
+                                     const next = { ...prev };
+                                     delete next[r.id];
+                                     return next;
+                                   });
+                                 }
+                                 toggleTableForMove(r.id);
+                                 setNumPadState({
+                                   id: r.id,
+                                   field: 'targetTable',
+                                   value: pendingTables[r.id]?.next ?? r.table,
+                                 });
+                               } else {
+                                 setNumPadState({ id: r.id, field: 'table', value: r.table });
+                               }
+                             }}
+                             className={`border px-1 py-0.5 rounded text-sm w-full text-center ${
+                               editTableMode && tablesForMove.includes(r.id) ? 'border-4 border-blue-500' : ''
+                             }`}
+                           />
+                         </td>
+                         {/* 氏名セル (タブレット表示) */}
+                         {showNameCol && (
+                           <td className="border px-1 py-1 hidden sm:table-cell">
+                             <input
+                               type="text"
+                               value={r.name ?? ''}
+                               onChange={(e) => {
+                                 const newValue = e.target.value;
+                                 setReservations((prev) =>
+                                   prev.map((x) => (x.id === r.id ? { ...x, name: newValue } : x))
+                                 );
+                                 updateReservationField(r.id, 'name', newValue);
+                               }}
+                               placeholder="氏名"
+                               className="border px-1 py-0.5 w-full rounded text-sm text-center"
+                             />
+                           </td>
+                         )}
+                         {/* コースセル */}
+                         <td className="border px-1 py-1">
+                           <select
+                             value={r.course}
+                             onChange={(e) => updateReservationField(r.id, 'course', e.target.value)}
+                             className="border px-1 py-0.5 rounded text-sm"
+                           >
+                             {courses.map((c) => (
+                               <option key={c.name} value={c.name}>
+                                 {c.name}
+                               </option>
+                             ))}
+                           </select>
+                         </td>
+                         {/* 食・飲 列 */}
+                         {showEatCol && (
+                           <td className="border px-1 py-0.5 text-center">
+                             <select
+                               value={r.eat || ''}
+                               onChange={(e) => updateReservationField(r.id, 'eat', e.target.value)}
+                               className="border px-1 py-0.5 w-14 text-xs rounded"
+                             >
+                               <option value=""></option>
+                               {eatOptions.map((opt) => (
+                                 <option key={opt} value={opt}>
+                                   {opt}
+                                 </option>
+                               ))}
+                             </select>
+                           </td>
+                         )}
+                         {showDrinkCol && (
+                           <td className="border px-1 py-0.5 text-center">
+                             <select
+                               value={r.drink || ''}
+                               onChange={(e) => updateReservationField(r.id, 'drink', e.target.value)}
+                               className="border px-1 py-0.5 w-14 text-xs rounded"
+                             >
+                               <option value=""></option>
+                               {drinkOptions.map((opt) => (
+                                 <option key={opt} value={opt}>
+                                   {opt}
+                                 </option>
+                               ))}
+                             </select>
+                           </td>
+                         )}
+                         {/* 人数セル */}
+                         <td className="border px-1 py-1">
+                           <input
+                             type="text"
+                             value={r.guests}
+                             readOnly
+                             onClick={() =>
+                               setNumPadState({ id: r.id, field: 'guests', value: r.guests.toString() })
+                             }
+                             className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
+                           />
+                         </td>
+                         {/* 備考セル (タブレット表示) */}
+                         {showNotesCol && (
+                           <td className="border px-1 py-1 hidden sm:table-cell">
+                             <input
+                               type="text"
+                               value={r.notes ?? ''}
+                               onChange={(e) => {
+                                 const newValue = e.target.value;
+                                 setReservations((prev) =>
+                                   prev.map((x) => (x.id === r.id ? { ...x, notes: newValue } : x))
+                                 );
+                                 updateReservationField(r.id, 'notes', newValue);
+                               }}
+                               placeholder="備考"
+                               className="border px-1 py-0.5 w-full rounded text-sm text-center"
+                             />
+                           </td>
+                         )}
+                         {/* 来店チェックセル (タブレット表示) */}
+                         <td className="border px-1 py-1 hidden sm:table-cell">
+                           <button
+                             onClick={() => toggleArrivalChecked(r.id)}
+                             className={`px-2 py-0.5 rounded text-sm ${
+                               checkedDepartures.includes(r.id)
+                                 ? 'bg-gray-500 text-white'
+                                 : checkedArrivals.includes(r.id)
+                                 ? 'bg-green-500 text-white'
+                                 : 'bg-gray-200 text-black'
+                             }`}
+                           >
+                             来
+                           </button>
+                         </td>
+                         {/* 会計チェックセル (タブレット表示) */}
+                         <td className="hidden sm:table-cell px-1">
+                           <button
+                             onClick={() => togglePaymentChecked(r.id)}
+                             className={`px-2 py-0.5 rounded text-sm ${
+                               checkedDepartures.includes(r.id)
+                                 ? 'bg-gray-500 text-white'
+                                 : checkedPayments.includes(r.id)
+                                 ? 'bg-blue-500 text-white'
+                                 : 'bg-gray-200 text-black'
+                             }`}
+                           >
+                             会
+                           </button>
+                         </td>
+                         {/* 退店チェックセル (タブレット表示) */}
+                         <td className="border px-1 py-1 hidden sm:table-cell">
+                           <button
+                             onClick={() => toggleDepartureChecked(r.id)}
+                             className={`px-2 py-0.5 rounded text-sm ${
+                               checkedDepartures.includes(r.id) ? 'bg-gray-500 text-white' : 'bg-gray-200 text-black'
+                             }`}
+                           >
+                             退
+                           </button>
+                         </td>
+                         {/* 削除セル */}
+                         <td className="border px-1 py-1">
+                           <button
+                             onClick={() => deleteReservation(r.id)}
+                             className="bg-red-500 text-white px-2 py-0.5 rounded text-sm"
+                           >
+                             ×
+                           </button>
+                         </td>
+                       </tr>
+                     );
+                   })}
 
                     {/* 追加入力行 */}
                     <tr className="bg-gray-50">
@@ -3868,7 +3882,7 @@ const updateReservationField = (
  {/* タスク表示セクション（タスク表本体スタート） */}
           <section className="space-y-4 text-sm">
             {/* ...existing タスク表示 JSX unchanged... */}
-            {hydrated && sortedTimeKeys.map((timeKey) => (
+            {sortedTimeKeys.map((timeKey) => (
               <div key={timeKey} className="border-b pb-2">
                 <div className="font-bold text-base mb-1">{timeKey}</div>
                 {mergeSameTasks ? (

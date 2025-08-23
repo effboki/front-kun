@@ -47,9 +47,10 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-title" content="フロント君" />
         {/* iOS でアドレスバー無しの全画面化 */}
         <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         {/* PWA テーマカラー */}
-        <meta name="theme-color" content="#0ea5e9" />
+        <meta name="theme-color" content="#475569" />
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
