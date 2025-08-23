@@ -2551,7 +2551,7 @@ const updateReservationField = (
   return (
     <>
       {/* Header with hamburger */}
-      <header className="fixed top-0 left-0 w-full bg-white z-40 p-2 shadow">
+      <header className="fixed top-0 left-0 w-full bg-slate-600 z-40 p-2 shadow">
         <button
           onClick={() => setSidebarOpen(true)}
           aria-label="Open menu"
@@ -2565,7 +2565,7 @@ const updateReservationField = (
       {sidebarOpen && (
         <div className="fixed inset-0 z-50 flex">
           {/* Sidebar panel */}
-          <div className="w-64 bg-gray-800 text-white p-4">
+          <div className="w-64 bg-gray-600 text-white p-4">
             <button
               onClick={() => setSidebarOpen(false)}
               aria-label="Close menu"
