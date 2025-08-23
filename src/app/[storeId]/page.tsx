@@ -49,12 +49,6 @@ const removeIfExistsNorm = (arr: string[], target: string) =>
 const replaceLabelNorm = (arr: string[], oldLabel: string, newLabel: string) =>
   arr.map((l) => (normEq(l, oldLabel) ? newLabel : l));
 
-/* ───── Loading Skeleton / Spinner ─────────────────────────── */
-const LoadingSpinner: React.FC = () => (
-  <div suppressHydrationWarning className="fixed inset-0 flex items-center justify-center bg-white/60 z-50">
-    <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent" />
-  </div>
-);
 //
 // ───────────────────────────── ① TYPES ────────────────────────────────────────────
 //
@@ -109,6 +103,13 @@ const calcNextResIdFrom = (list: Reservation[] | any[]): string => {
 // ───────────────────────────── ② MAIN コンポーネント ─────────────────────────────────
 //
 
+// --- LoadingSpinner (表示専用) -------------------------------
+const LoadingSpinner: React.FC = () => (
+  <div suppressHydrationWarning className="fixed inset-0 flex items-center justify-center bg-white/60 z-50">
+    <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent" />
+  </div>
+);
+// -------------------------------------------------------------
 // ───────────────────────────── Hydration Gate (wrapper) ─────────────────────────────
 export default function Home() {
   const [hydrated, setHydrated] = useState(false);
