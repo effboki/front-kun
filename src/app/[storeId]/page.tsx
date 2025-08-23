@@ -26,6 +26,10 @@ import { dequeueAll} from '@/lib/opsQueue';
 
 import { addReservationFS, updateReservationFS, deleteReservationFS, fetchAllReservationsOnce, deleteAllReservationsFS } from '@/lib/reservations';
 
+import LoadingSpinner from './_components/LoadingSpinner';
+import ResOrderControls from './_components/ResOrderControls';
+
+
 /** ラベル比較の正規化（前後空白 / 全角半角 / 大文字小文字の揺れを吸収） */
 const normalizeLabel = (s: string): string =>
   (s ?? '')
@@ -103,13 +107,6 @@ const calcNextResIdFrom = (list: Reservation[] | any[]): string => {
 // ───────────────────────────── ② MAIN コンポーネント ─────────────────────────────────
 //
 
-// --- LoadingSpinner (表示専用) -------------------------------
-const LoadingSpinner: React.FC = () => (
-  <div suppressHydrationWarning className="fixed inset-0 flex items-center justify-center bg-white/60 z-50">
-    <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent" />
-  </div>
-);
-// -------------------------------------------------------------
 // ───────────────────────────── Hydration Gate (wrapper) ─────────────────────────────
 export default function Home() {
   const [hydrated, setHydrated] = useState(false);
@@ -923,36 +920,6 @@ useEffect(() => {
       : 'table';
   });
 
-  // ─── 共通コンポーネント: 予約リストの表示順トグル ───
-  const ResOrderControls: React.FC<{
-    value: 'table' | 'time' | 'created';
-    onChange: (v: 'table' | 'time' | 'created') => void;
-  }> = ({ value, onChange }) => {
-    const Btn = (v: 'table' | 'time' | 'created', label: string) => (
-      <button
-        type="button"
-        onClick={() => onChange(v)}
-        className={[
-          'px-2 py-1 text-sm',
-          value === v ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-100',
-        ].join(' ')}
-        aria-pressed={value === v}
-      >
-        {label}
-      </button>
-    );
-  
-    return (
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-gray-500">表示順</span>
-        <div className="inline-flex rounded-md border overflow-hidden">
-          {Btn('time', '時間順')}
-          {Btn('table', '卓順')}
-          {Btn('created', '追加順')}
-        </div>
-      </div>
-    );
-  };
   // 並び順セレクタの変更をlocalStorageに保存
   useEffect(() => {
     if (typeof window !== 'undefined') {
