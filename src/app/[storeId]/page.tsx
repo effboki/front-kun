@@ -4564,7 +4564,15 @@ const updateReservationField = (
 {/* ─────────────── テーブル管理セクション ─────────────── */}
 
  {/* ─ BottomTab: 予約リスト / タスク表 / コース開始時間表 ─ */}
-<footer className="fixed bottom-8 inset-x-0 z-40 border-t bg-white">
+ {/* 下部固定タブぶんの余白を確保（高さはタブ＋下余白に合わせて調整OK） */}
+<div aria-hidden className="h-24" />
+{/* 画面下の余白を白で塗りつぶす（タブを上げたぶん透け防止） */}
+<div
+  aria-hidden
+  className="fixed inset-x-0 bottom-0 bg-white z-30"
+  style={{ height: '2rem' }} // ← ここを footer の bottom-* と同じ高さに合わせる
+/>
+<footer className="fixed bottom-7 inset-x-0 z-40 border-t bg-white">
   <div className="max-w-6xl mx-auto grid grid-cols-3">
     <button
       type="button"
