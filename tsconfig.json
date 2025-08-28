@@ -1,4 +1,4 @@
-  {
+{
     "compilerOptions": {
       "target": "ES2017",
       "lib": ["dom", "dom.iterable", "esnext"],
@@ -20,6 +20,7 @@
       ],
       "paths": {
         "@/*": ["./src/*"],
+        "@/types": ["./src/types"],
         "@/types/*": ["./src/types/*"]
       }
     },
@@ -29,6 +30,6 @@
       "**/*.tsx",
       "src/types/**/*.d.ts",
       ".next/types/**/*.ts"
-  , "src/app/table-management/page.tsx.backup", "src/components/TableManagement.tsx.backup "  ],
+    ],
     "exclude": ["node_modules"]
   }

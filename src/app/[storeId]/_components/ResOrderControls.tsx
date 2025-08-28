@@ -1,9 +1,9 @@
 
 
 'use client';
-import React from 'react';
+import React, { memo } from 'react';
+import type { ResOrder } from '@/types';
 
-export type ResOrder = 'time' | 'table' | 'created';
 
 type Props = {
   value: ResOrder;
@@ -50,4 +50,4 @@ const ResOrderControls: React.FC<Props> = ({ value, onChange, className }) => {
   );
 };
 
-export default ResOrderControls;
+export default memo(ResOrderControls);
