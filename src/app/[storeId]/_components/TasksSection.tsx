@@ -330,7 +330,7 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
       {/* ───────── コントロールバー ───────── */}
       <div
         id="tasks-toolbar"
-        className="sticky top-0 inset-x-0 z-40 bg-white/95 supports-[backdrop-filter]:bg-white/70 backdrop-blur border-b-2 border-gray-200/80 shadow px-3 pt-2 pb-2"
+        className="sticky top-0 inset-x-0 z-40 bg-white/95 supports-[backdrop-filter]:bg-white/70 backdrop-blur border-b-2 border-gray-200/80 shadow px-3 pt-3 pb-3"
       >
         <div className="max-w-full">
           {/* 表示：コース表示／人数表示（1段目） */}
@@ -380,7 +380,7 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
           </div>
 
           {/* 並び替え：左／ コース：右寄せ（同じ行） */}
-          <div className="mt-2 flex items-center justify-between gap-2 whitespace-nowrap">
+          <div className="mt-3 flex items-center justify-between gap-2 whitespace-nowrap">
             <div className="flex items-center gap-2 whitespace-nowrap">
               <span className="text-[11px] text-gray-600 shrink-0">並び替え：</span>
               <div className="inline-flex rounded border overflow-hidden">
@@ -424,7 +424,7 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
         </div>
       </div>
       {/* ───────── スペーサー（sticky直後のかぶり防止） ───────── */}
-      <div className="h-2" />
+      <div className="h-3" />
 
       {/* ───────── タスク表本体 ───────── */}
         <section className="space-y-4 text-sm touch-pan-y">

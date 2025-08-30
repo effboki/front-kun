@@ -9,35 +9,39 @@ import {
   where,
   orderBy,
   getDocs,
-  Unsubscribe
+  Unsubscribe,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import type { Reservation } from '@/types/reservation';
 
+export type RealtimeResState = {
+  data: Reservation[];
+  initialized: boolean; // 最初の「サーバ由来」のスナップショットを受信したら true（空でも true）
+  error: Error | null;
+};
+
 /**
- * 今日の日付（YYYY-MM-DD）に該当する予約を
- * /stores/{storeId}/reservations からリアルタイム購読するフック。
- * @param storeId Firestore の /stores/{storeId}
+ * 今日（ローカル日付）の予約を /stores/{storeId}/reservations から購読。
+ * 返り値は `{ data, initialized, error }`。
+ * - 初回の「キャッシュ起点の空スナップショット」は無視
+ * - 最初の「サーバ由来」が到着したら `initialized=true`（空でも true）
+ * - 以降は空配列もそのまま流す
  */
 export function useRealtimeReservations(
   storeId: string | undefined
-): Reservation[] {
-  // detach 用 unsubscribe を覚えておく
+): RealtimeResState {
   const unsubRef = useRef<Unsubscribe | null>(null);
-  const gotServerRef = useRef(false);
+  const sawServerRef = useRef(false); // サーバ由来を一度でも受け取ったか
 
-  // 取得した予約をここに入れる
-  const [list, setList] = useState<Reservation[]>([]);
+  const [data, setData] = useState<Reservation[]>([]);
+  const [initialized, setInitialized] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
 
-  /** listener の解除を安全に行う */
   const detach = () => {
     unsubRef.current?.();
     unsubRef.current = null;
   };
 
-  /**
-   * Local timezone YYYY-MM-DD (avoids UTC off-by-one on .toISOString())
-   */
   const ymdTodayLocal = () => {
     const d = new Date();
     const y = d.getFullYear();
@@ -47,39 +51,35 @@ export function useRealtimeReservations(
   };
 
   useEffect(() => {
-    console.log('[RealtimeRes] storeId=', storeId);
     if (!storeId) {
-      console.warn('[RealtimeRes] storeId is undefined, skipping listener');
-      return detach();
+      detach();
+      setData([]);
+      setInitialized(false);
+      setError(null);
+      sawServerRef.current = false;
+      return;
     }
 
-    // 今日の日付（"YYYY-MM-DD"）
+    let canceled = false;
+
     const today = ymdTodayLocal();
+    const col = collection(db, 'stores', storeId, 'reservations');
+    const q = query(col, where('date', '==', today), orderBy('time', 'asc'));
 
-    // listen 先コレクション: /stores/{id}/reservations, フィルタ: date === today, 時間順
-    const reservationsCol = collection(db, 'stores', storeId, 'reservations');
-    const q = query(
-      reservationsCol,
-      where('date', '==', today),
-      orderBy('time', 'asc')
-    );
-
-    console.log('[RealtimeRes] listening on collection:', 'stores', storeId, 'reservations');
-    console.log('[RealtimeRes] query object:', q);
-
+    // 初回の描画体験改善: 一度だけ getDocs() でキャッシュ/サーバのどちらかを拾って即時描画
+    // （サーバからの onSnapshot が来たらそちらを優先。ここでは initialized は決めない）
     (async () => {
       try {
         const snap = await getDocs(q);
-        const initial = snap.docs.map(
-          (d) =>
-            ({
-              id: d.id,
-              ...(d.data() as Omit<Reservation, 'id'>),
-            } as Reservation)
+        const arr = snap.docs.map(
+          (d) => ({ id: d.id, ...(d.data() as Omit<Reservation, 'id'>) } as Reservation)
         );
-        setList(initial);
-      } catch (err) {
-        console.error('[RealtimeRes] initial getDocs failed', err);
+        if (canceled) return;
+        setData(arr);
+      } catch (e: any) {
+        if (canceled) return;
+        console.error('[RealtimeRes] initial getDocs failed', e);
+        setError(e instanceof Error ? e : new Error(String(e)));
       }
     })();
 
@@ -90,33 +90,37 @@ export function useRealtimeReservations(
         const { fromCache, hasPendingWrites } = snap.metadata;
         const isEmpty = snap.empty;
 
-        // 初回の「キャッシュ起点の空スナップショット」は無視（サーバ応答を待つ）
-        if (!gotServerRef.current && fromCache && !hasPendingWrites && isEmpty) {
-          console.log('[RealtimeRes] skip first cache-empty snapshot');
+        // 初回の「キャッシュ＆空」は無視（サーバ応答を待つ）
+        if (!sawServerRef.current && fromCache && !hasPendingWrites && isEmpty) {
+          // console.log('[RealtimeRes] skip first cache-empty snapshot');
           return;
         }
+
         if (!fromCache) {
-          gotServerRef.current = true; // サーバ由来を受信
+          sawServerRef.current = true; // サーバ由来を受信
+          setInitialized(true);        // 空でも true にする（状態に依存しない）
         }
 
         const arr = snap.docs.map(
-          (d) =>
-            ({
-              id: d.id,
-              ...(d.data() as Omit<Reservation, 'id'>),
-            } as Reservation)
+          (d) => ({ id: d.id, ...(d.data() as Omit<Reservation, 'id'>) } as Reservation)
         );
-        console.log('[RealtimeRes] got docs:', { count: arr.length, fromCache, hasPendingWrites });
-        setList(arr);
+        setData(arr);
       },
-      (err) => {
-        console.error('[RealtimeRes] onSnapshot error', err);
+      (e) => {
+        console.error('[RealtimeRes] onSnapshot error', e);
+        setError(e instanceof Error ? e : new Error(String(e)));
       }
     );
 
-    // cleanup on unmount
-    return () => detach();
+    return () => {
+      canceled = true;
+      detach();
+      // 次の storeId へ切り替える準備
+      setInitialized(false);
+      setError(null);
+      sawServerRef.current = false;
+    };
   }, [storeId]);
 
-  return list;
+  return { data, initialized, error };
 }

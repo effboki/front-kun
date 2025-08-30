@@ -139,6 +139,68 @@ const ReservationsSection: React.FC<Props> = ({
   setNewResNotes,
   addReservation,
 }) => {
+  // NEW判定（直後ドット用のローカル検知）
+  const NEW_THRESHOLD = 15 * 60 * 1000; // 15分
+  const initialRenderRef = React.useRef(true);
+  const seenRef = React.useRef<Set<string>>(new Set());
+  const localNewRef = React.useRef<Map<string, number>>(new Map());
+
+  React.useEffect(() => {
+    if (initialRenderRef.current) {
+      // 初回レンダでは既存分を「既知」として登録（ドットは付けない）
+      reservations.forEach((r) => seenRef.current.add(r.id));
+      initialRenderRef.current = false;
+      return;
+    }
+    // 新しく現れたIDのみローカルで「NEW打刻」
+    reservations.forEach((r) => {
+      if (!seenRef.current.has(r.id)) {
+        seenRef.current.add(r.id);
+        localNewRef.current.set(r.id, Date.now());
+      }
+    });
+  }, [reservations]);
+
+  // === 新規追加のデフォ時刻を「前回選んだ時刻」にする ===
+  const LAST_TIME_KEY = 'frontkun:lastNewResTime';
+  const appliedSavedTimeRef = React.useRef(false);
+  const prevCountRef = React.useRef(reservations.length);
+
+  // 1) 初回だけ、保存されている最終選択時刻があれば適用
+  React.useEffect(() => {
+    if (appliedSavedTimeRef.current) return;
+    appliedSavedTimeRef.current = true;
+    try {
+      const saved = localStorage.getItem(LAST_TIME_KEY);
+      if (saved && timeOptions.includes(saved) && newResTime !== saved) {
+        setNewResTime(saved);
+      }
+    } catch {}
+  }, []);
+
+  // 2) ユーザーが新規行の来店時刻を変更したら保存
+  React.useEffect(() => {
+    try {
+      if (newResTime && timeOptions.includes(newResTime)) {
+        localStorage.setItem(LAST_TIME_KEY, newResTime);
+      }
+    } catch {}
+  }, [newResTime, timeOptions]);
+
+  // 3) 予約が増減したら（＝追加・削除後）、保存してある時刻を再適用
+  //    → 親で newResTime が初期値に戻っても、直後に前回時刻へ戻す
+  React.useEffect(() => {
+    const prev = prevCountRef.current;
+    if (reservations.length !== prev) {
+      prevCountRef.current = reservations.length;
+      try {
+        const saved = localStorage.getItem(LAST_TIME_KEY);
+        if (saved && timeOptions.includes(saved) && newResTime !== saved) {
+          setNewResTime(saved);
+        }
+      } catch {}
+    }
+  }, [reservations.length, timeOptions, newResTime, setNewResTime]);
   // 並び替えヘルパー
   const parseTimeToMinutes = (t: string) => {
     const [hh, mm] = (t || '').split(':').map((n) => parseInt(n, 10));
@@ -172,12 +234,36 @@ const ReservationsSection: React.FC<Props> = ({
       const ta = (r: any) => Number((r.pendingTable ?? r.table) || 0);
       arr.sort((a, b) => ta(a) - ta(b));
     } else if (resOrder === 'created') {
-      // 追加順：新しい順（降順）。必要なら asc に変更可。
-      arr.sort((a, b) => getCreatedAtMs(b) - getCreatedAtMs(a));
+      // 追加順：古い順（昇順）→ 新しい予約が下に来る
+      // createdAt が未反映の直後は localNewRef の打刻をフォールバックに使う
+      const key = (x: any) => {
+        const s = getCreatedAtMs(x);
+        const l = localNewRef.current.get(x.id) ?? 0;
+        return s || l || 0;
+      };
+      arr.sort((a, b) => {
+        const ka = key(a);
+        const kb = key(b);
+        if (ka !== kb) return ka - kb;
+        // タイブレーク（安定ソート用）
+        return String(a.id).localeCompare(String(b.id));
+      });
     }
     return arr;
   }, [reservations, resOrder]);
 
+  // 卓番変更モード：初回だけ小さなガイドを出す（2.5秒）
+  const [tableChangeHint, setTableChangeHint] = React.useState(false);
+  const tableChangeHintShownRef = React.useRef(false);
+  React.useEffect(() => {
+    if (editTableMode && !tableChangeHintShownRef.current) {
+      setTableChangeHint(true);
+      tableChangeHintShownRef.current = true;
+      const t = setTimeout(() => setTableChangeHint(false), 2500);
+      return () => clearTimeout(t);
+    }
+    if (!editTableMode) setTableChangeHint(false);
+  }, [editTableMode]);
   // ペンディングの重複（同じ next に複数割当）を検知
   const hasPendingConflict = React.useMemo(() => {
     const counts = new Map<string, number>();
@@ -276,92 +362,130 @@ const ReservationsSection: React.FC<Props> = ({
           {/* ── 予約リスト ヘッダー ───────────────────── */}
           <div className="flex flex-col space-y-2">
             {/* 下段：卓番変更 & 全リセット & 予約確定 */}
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center gap-2">
               <button
                 onClick={onToggleEditTableMode}
-                className={`px-2 py-0.5 rounded text-sm ${
-                  editTableMode ? 'bg-green-500 text-white' : 'bg-gray-300'
+                className={`px-3 py-1 rounded text-sm font-semibold ${
+                  editTableMode
+                    ? 'bg-green-600 text-white'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
                 }`}
+                aria-pressed={editTableMode}
+                title={editTableMode ? '卓番変更モード：ON' : '卓番変更モードを開始'}
               >
-                卓番変更
+                {editTableMode ? (
+                  <>
+                    卓番変更中
+                    <span className="ml-2 text-[10px] px-1 py-0.5 rounded bg-white/20">ON</span>
+                  </>
+                ) : (
+                  '卓番変更'
+                )}
               </button>
 
-              <button onClick={resetAllReservations} className="px-3 py-1 bg-red-500 text-white rounded text-sm">
-                全リセット
-              </button>
+              <div className="ml-auto">
+                <button
+                  onClick={resetAllReservations}
+                  className="px-3 py-1 rounded text-sm bg-red-600 text-white hover:bg-red-700"
+                  title="すべての変更をリセット"
+                >
+                  全リセット
+                </button>
+              </div>
             </div>
           </div>
           {/* ── 卓番変更モード用の固定ツールバー ───────────────── */}
           {editTableMode && (
-            <div className="flex items-center justify-between gap-3 px-3 py-2 bg-gray-50 border rounded">
-              <div className="text-sm">
-                <span className="font-medium">卓番変更モード</span>
-                <span className="ml-3 text-xs text-gray-600">選択中: {tablesForMove.length}件</span>
-                {hasPendingConflict && (
-                  <span className="ml-2 text-xs text-red-600">※ 重複する卓番号があります</span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    // 選択解除
-                    if (Array.isArray(tablesForMove) && tablesForMove.length) {
-                      tablesForMove.forEach((id) => toggleTableForMove(id));
-                    }
-                    // ペンディングをクリア
-                    setPendingTables({});
-                    // モード終了
-                    onToggleEditTableMode();
-                  }}
-                  className="px-2 py-1 text-sm rounded border bg-white hover:bg-gray-50"
-                >
-                  キャンセル
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (hasPendingConflict) return;
-                    commitTableMoves();
-                    // モード終了（必要に応じて継続にしたい場合はこの行を外す）
-                    onToggleEditTableMode();
-                  }}
-                  disabled={hasPendingConflict}
-                  className={`px-3 py-1 text-sm rounded text-white ${
-                    hasPendingConflict ? 'bg-gray-300 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
-                  }`}
-                >
-                  適用
-                </button>
-              </div>
-            </div>
+            <>
+              {(() => {
+                const pendingCount = Object.keys(pendingTables || {}).length;
+                return (
+                  <div className="sticky top-[48px] z-40 bg-blue-600 text-white px-3 py-2 flex items-center gap-1 sm:gap-2 shadow flex-nowrap">
+                    <span className="font-semibold">卓番変更モード</span>
+                    <span className="text-xs bg-white/20 px-1.5 py-0.5 rounded">変更予定 {pendingCount} 件</span>
+                    {hasPendingConflict && (
+                      <span className="text-xs bg-red-500/30 px-1.5 py-0.5 rounded">重複あり</span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (hasPendingConflict || pendingCount === 0) return;
+                        commitTableMoves();
+                        onToggleEditTableMode();
+                      }}
+                      disabled={hasPendingConflict || pendingCount === 0}
+                      title={hasPendingConflict ? '重複があります' : (pendingCount === 0 ? '変更がありません' : '変更を適用')}
+                      className={`ml-auto px-3 py-1 text-sm rounded font-semibold shrink-0 ${
+                        hasPendingConflict || pendingCount === 0
+                          ? 'bg-white/30 text-white/70 cursor-not-allowed'
+                          : 'bg-white text-blue-700 hover:bg-blue-50'
+                      }`}
+                    >
+                      適用
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // 選択解除
+                        if (Array.isArray(tablesForMove) && tablesForMove.length) {
+                          tablesForMove.forEach((id) => toggleTableForMove(id));
+                        }
+                        // ペンディングをクリア
+                        setPendingTables({});
+                        // モード終了
+                        onToggleEditTableMode();
+                      }}
+                      className="px-2 py-1 text-sm rounded bg-white/15 hover:bg-white/25"
+                      aria-label="キャンセル"
+                      title="キャンセル"
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })()}
+              {tableChangeHint && (
+                <div className="mx-3 mt-2 text-[11px] text-blue-700 bg-blue-50 border border-blue-200 rounded px-2 py-1">
+                  ① 変更したい卓をタップで選択／② 数字を入力／③「適用」
+                </div>
+              )}
+            </>
           )}
 
           {/* 卓番編集の保留キュー */}
           {editTableMode && Object.keys(pendingTables).length > 0 && (
             <div className="mt-2 space-y-1">
               {Object.entries(pendingTables).map(([id, tbl]) => (
-                <div key={id} className="px-2 py-1 bg-yellow-50 border rounded text-sm flex justify-between">
-                  <span>
-                    {tbl.old}卓 → {tbl.next}卓
+                <div
+                  key={id}
+                  className="px-2 py-1 bg-blue-50 border border-blue-200 rounded-md text-xs sm:text-sm text-blue-800 flex items-center justify-between"
+                >
+                  <span className="tabular-nums">
+                    <span className="text-gray-500">{tbl.old}</span>卓
+                    <span className="mx-1 font-semibold">→</span>
+                    <span className="font-semibold">{tbl.next}</span>卓
                   </span>
                   <button
-                    onClick={() =>
+                    onClick={() => {
                       setPendingTables((prev) => {
-                        const next = { ...prev };
-                        delete (next as any)[id];
+                        const next = { ...prev } as any;
+                        delete next[id];
                         return next;
-                      })
-                    }
-                    className="text-red-500 text-xs ml-4"
+                      });
+                      if (tablesForMove.includes(id)) {
+                        toggleTableForMove(id);
+                      }
+                    }}
+                    className="ml-3 inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded border border-blue-300 bg-white text-blue-700 hover:bg-red-50 hover:border-red-300 hover:text-red-600"
+                    aria-label="この変更を取り消す"
+                    title="この変更を取り消す"
                   >
-                    ×
+                    <span className="text-[10px] leading-none">↺</span>
+                    <span>取消</span>
                   </button>
                 </div>
               ))}
-              <button onClick={commitTableMoves} className="mt-2 px-4 py-1 bg-green-600 text-white rounded text-sm">
-                変更を完了する
-              </button>
+              {/* Apply button removed here; use the top sticky bar's 「適用」 instead */}
             </div>
           )}
 
@@ -390,7 +514,8 @@ const ReservationsSection: React.FC<Props> = ({
                 const isBlockStart = !prev || prev.time !== r.time;
                 const padY = isBlockStart ? 'py-1.5' : 'py-1';
                 const createdMsRow = getCreatedAtMs(r);
-                const isNew = Date.now() - createdMsRow <= 15 * 60 * 1000; // 直近15分をNEW判定
+                const localNewMs = localNewRef.current.get(r.id) ?? 0;
+                const isNew = (Date.now() - createdMsRow <= NEW_THRESHOLD) || (Date.now() - localNewMs <= NEW_THRESHOLD);
                 const borderClass =
                   !prev || prev.time !== r.time ? 'border-t-4 border-gray-300' : 'border-b border-gray-300';
 
@@ -403,7 +528,7 @@ const ReservationsSection: React.FC<Props> = ({
                       checkedDepartures.includes(r.id) ? 'bg-gray-300 text-gray-400 ' : ''
                     }${borderClass} text-center ${
                       firstRotatingId[(r.pendingTable ?? r.table)] === r.id ? 'text-red-500' : ''
-                    }`}
+                    }${editTableMode && tablesForMove.includes(r.id) ? 'bg-blue-50 ' : ''}`}
                   >
                     {/* 来店時刻セル */}
                     <td className={`border px-1 ${padY}`}>
@@ -422,7 +547,14 @@ const ReservationsSection: React.FC<Props> = ({
 
                     {/* 卓番セル */}
                     <td className={`border px-1 ${padY} text-center`}>
-                      <div className="inline-flex items-center justify-center">
+                      <div className="relative inline-flex items-center justify-center w-full">
+                        {isNew && (
+                          <span
+                            className="pointer-events-none absolute left-0.5 top-0.5 z-10 block w-1.5 h-1.5 rounded-full bg-amber-500 border border-white shadow-sm"
+                            aria-label="新規"
+                            title="新規"
+                          />
+                        )}
                         <input
                           type="text"
                           readOnly
@@ -436,7 +568,7 @@ const ReservationsSection: React.FC<Props> = ({
                                 }));
                               } else {
                                 setPendingTables((prev) => {
-                                  const next = { ...prev };
+                                  const next = { ...prev } as any;
                                   delete next[r.id];
                                   return next;
                                 });
@@ -451,15 +583,10 @@ const ReservationsSection: React.FC<Props> = ({
                               setNumPadState({ id: r.id, field: 'table', value: r.table });
                             }
                           }}
-                          className={`border px-1 py-0.5 rounded text-sm w-full text-center cursor-pointer ${
+                          className={`border px-1 py-0.5 rounded text-sm w-full !text-center tabular-nums cursor-pointer ${
                             editTableMode && tablesForMove.includes(r.id) ? 'border-4 border-blue-500' : ''
                           }`}
                         />
-                        {isNew && (
-                          <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-200">
-                            NEW
-                          </span>
-                        )}
                       </div>
                     </td>
 
@@ -532,7 +659,7 @@ const ReservationsSection: React.FC<Props> = ({
                         value={r.guests}
                         readOnly
                         onClick={() => setNumPadState({ id: r.id, field: 'guests', value: r.guests.toString() })}
-                        className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
+                        className="border px-1 py-0.5 w-8 rounded text-sm !text-center cursor-pointer"
                       />
                     </td>
 
@@ -632,7 +759,7 @@ const ReservationsSection: React.FC<Props> = ({
                     onClick={() => setNumPadState({ id: '-1', field: 'table', value: '' })}
                     placeholder="例:101"
                     maxLength={3}
-                    className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
+                    className="border px-1 py-0.5 w-8 rounded text-sm !text-center cursor-pointer"
                     required
                   />
                 </td>
@@ -717,7 +844,7 @@ const ReservationsSection: React.FC<Props> = ({
                       onClick={() => setNumPadState({ id: '-1', field: 'guests', value: '' })}
                       placeholder="人数"
                       maxLength={3}
-                      className="border px-1 py-0.5 w-8 rounded text-sm text-center cursor-pointer"
+                      className="border px-1 py-0.5 w-8 rounded text-sm !text-center cursor-pointer"
                       required
                     />
                   </td>

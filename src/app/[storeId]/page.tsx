@@ -17,7 +17,7 @@ import {
   requestPermissionAndGetToken,
   ensureFcmRegistered,
 } from "@/lib/firebase-messaging";
-import { useRealtimeReservations } from '@/hooks/useRealtimeReservations';
+import { useReservationsData } from '@/hooks/useReservationsData';
 import { useRealtimeStoreSettings } from '@/hooks/useRealtimeStoreSettings';
 import { toast } from 'react-hot-toast';
 import { dequeueAll} from '@/lib/opsQueue';
@@ -264,73 +264,13 @@ useEffect(() => {
 }, [drinkOptions]);
 
   //
-  // ─── 2.2 予約(来店) の状態管理 ────────────────────────────────────────────
-  //
-  // 初期復元：① sessionStorage → ② localStorage(CACHE_KEY/RES_KEY) → ③ 旧namespaced
-  const getInitialReservations = (): Reservation[] => {
-    try {
-      const k = `res-cache:${id}`;
-      const rawSess =
-        typeof window !== 'undefined' ? sessionStorage.getItem(k) : null;
-      if (rawSess) {
-        const arr = JSON.parse(rawSess);
-        if (Array.isArray(arr) && arr.length) return arr as Reservation[];
-      }
-    } catch {
-      /* noop */
-    }
-    try {
-      const rawCache =
-        typeof window !== 'undefined' ? localStorage.getItem(CACHE_KEY) : null;
-      if (rawCache) {
-        const arr = JSON.parse(rawCache);
-        if (Array.isArray(arr) && arr.length) return arr as Reservation[];
-      }
-    } catch {
-      /* noop */
-    }
-    // 最後の砦：namespaced 'reservations'
-    return loadReservations();
-  };
-  const [reservations, setReservations] = useState<Reservation[]>(() => getInitialReservations());
-
-  // ---- 予約リスト：セッション復元＆保存（初期空スナップショット対策） ----
-  React.useEffect(() => {
-    try {
-      const key = `res-cache:${id}`;
-      const raw =
-        typeof window !== 'undefined' ? sessionStorage.getItem(key) : null;
-      if (raw) {
-        const cached = JSON.parse(raw);
-        if (
-          Array.isArray(cached) &&
-          cached.length &&
-          (!reservations || reservations.length === 0)
-        ) {
-          setReservations(cached);
-          // 念のため nextResId も更新
-          setNextResId(calcNextResIdFrom(cached as any));
-        }
-      }
-    } catch {
-      // no-op
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]); // 初回＆店舗切替時のみ
-
-  React.useEffect(() => {
-    try {
-      const key = `res-cache:${id}`;
-      if (Array.isArray(reservations) && reservations.length > 0) {
-        if (typeof window !== 'undefined') {
-          sessionStorage.setItem(key, JSON.stringify(reservations));
-        }
-      }
-    } catch {
-      // no-op
-    }
-  }, [reservations, id]);
-  // ------------------------------------------------------------------------
+  // ─── 2.2 予約(来店) の状態管理（統合フック） ────────────────────────────
+  const {
+    reservations,
+    initialized: reservationsInitialized,
+    setReservations,
+    error: reservationsError,
+  } = useReservationsData(id as string);
 
   // ── Early loading guard ───────────────────────────────
   const loading = storeSettings === null;
@@ -350,29 +290,6 @@ useEffect(() => {
 const [pendingTables, setPendingTables] = useState<PendingTables>({});
 
 
-  // Firestore リアルタイム listener (常時購読)
-  const liveReservations = useRealtimeReservations(id);
-
-  // 初回の空スナップショットでローカルを潰さない（非空を受け取ってから空も反映）
-  const livePrimedRef = useRef(false);
-  useEffect(() => {
-    if (!Array.isArray(liveReservations)) return; // まだ未接続など
-    const arr = liveReservations as Reservation[];
-
-    // 初回が空配列なら無視（local/session の復元を残す）
-    if (arr.length === 0 && !livePrimedRef.current) {
-      return;
-    }
-
-    // いったん非空を受け取ったら、その後の空も正として反映
-    livePrimedRef.current = true;
-    setReservations(arr);
-    try {
-      writeReservationsCache(arr);
-    } catch {
-      /* noop */
-    }
-  }, [liveReservations]);
 
   // ─── (先読み) localStorage の settings キャッシュをロード ─────────────
   useEffect(() => {
@@ -449,32 +366,13 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
   }, [storeSettings]);
 
 
-  // ─── Firestore 初回 1 read → localStorage キャッシュ ───
-  useEffect(() => {
-    if (!navigator.onLine) return;           // オフラインならスキップ
-    (async () => {
-      try {
-        const list = await fetchAllReservationsOnce(id as string);
-        if (list.length) {
-          persistReservations(list as any);
-          setReservations(list as any);
-          setNextResId(calcNextResIdFrom(list as any));
-        }
-      } catch (err) {
-        console.error('fetchAllReservationsOnce failed', err);
-      }
-    })();
-  }, []);
+  // (Firestore 初回 1 read → localStorage キャッシュ: 統合フックにより削除)
   // ─── オンライン復帰時にキュー flush + 再取得 ───
   useEffect(() => {
     const flush = async () => {
       try {
         await flushQueuedOps();
-        // 念のため最新を 1 回だけ取得して UI を同期
-        const list = await fetchAllReservationsOnce(id as string);
-        if (list && Array.isArray(list)) {
-          setReservations(list as any);
-        }
+        // 以降のデータ同期はリアルタイム購読フックに任せる
       } catch {
         /* noop */
       }
@@ -1059,7 +957,7 @@ const togglePaymentChecked = useCallback((id: string) => {
 
   // 新規予約入力用フィールド（卓番・時刻・コース・人数・氏名・備考）
   const [newResTable, setNewResTable] = useState<string>('');
-  const [newResTime, setNewResTime] = useState<string>('18:00');
+  const [newResTime, setNewResTime] = useState<string>(() => nsGetStr('lastNewResTime', '18:00'));
   const [newResCourse, setNewResCourse] = useState<string>('');   // 未選択で開始
   const [newResGuests, setNewResGuests] = useState<number | ''>('');
   const [newResName, setNewResName] = useState<string>('');   // タブレット用：予約者氏名
@@ -1465,6 +1363,23 @@ useEffect(() => {
     }
     return arr;
   }, []);
+
+  // === 前回選んだ時刻をデフォルトに（timeOptions 確定後に再適用） ===
+  useEffect(() => {
+    try {
+      const saved = nsGetStr('lastNewResTime', '');
+      if (saved && Array.isArray(timeOptions) && timeOptions.includes(saved) && newResTime !== saved) {
+        setNewResTime(saved);
+      }
+    } catch {}
+  }, [timeOptions]);
+
+  // === 選択が変わるたび保存（店舗IDで名前空間済み） ===
+  useEffect(() => {
+    try {
+      if (newResTime) nsSetStr('lastNewResTime', newResTime);
+    } catch {}
+  }, [newResTime]);
 
   //
   // ─── 2.5 コース/タスク設定用イベントハンドラ ───────────────────────────────
@@ -1940,30 +1855,7 @@ const deleteCourse = async () => {
 });
   };
 
-  // ─── 2.6c localStorage から予約バックアップを復元 ──────────────────────────────
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(CACHE_KEY);
-      if (raw) {
-        const cached: Reservation[] = JSON.parse(raw);
-        if (cached.length > 0) {
-          setReservations(cached);
-          setNextResId(calcNextResIdFrom(cached as any));
-        }
-      }
-    } catch (err) {
-      console.error('localStorage read error:', err);
-    }
-  }, []);
-
-  // ─── 2.6d 予約が変わるたびに localStorage に保存 ──────────────────────────────
-  useEffect(() => {
-    try {
-      writeReservationsCache(reservations);
-    } catch (err) {
-      console.error('localStorage write error:', err);
-    }
-  }, [reservations]);
+  // ─── 2.6c/2.6d localStorage 予約バックアップは統合フックにより削除
   //
   // ─── helper: キーが変わったときだけ再計算する安定ソート ───
   const arraysEqualShallow = (a: readonly string[], b: readonly string[]) => {
@@ -2432,18 +2324,27 @@ const onNumPadConfirm = () => {
     return;
   }
 
-  // ── 卓番号変更モード ──────────────────
+  // ── 卓番号変更モード（適用ボタンで送信） ──────────────────
   if (numPadState.field === 'targetTable') {
     if (numPadState.value) {
-      // 即時反映：Firestore & ローカルを直更新
-      updateReservationField(numPadState.id, 'table', numPadState.value);
-      // プレビュー用 state は使わないためクリアのみ
-      setReservations(prev => prev.map(r =>
-        r.id === numPadState.id ? { ...r, pendingTable: undefined } : r
-      ));
-      setTargetTable(numPadState.value);
-      toast.success('卓番号を更新しました');
+      const id = numPadState.id;
+      const nextVal = numPadState.value;
+
+      // pending に積む：old は現在の table、next は入力値
+      setPendingTables(prev => {
+        const oldTable = reservations.find(r => r.id === id)?.table ?? '';
+        return { ...prev, [id]: { old: oldTable, next: nextVal } } as any;
+      });
+
+      // プレビュー用：行オブジェクトに pendingTable を入れて UI で視覚化
+      setReservations(prev => prev.map(r => (
+        r.id === id ? { ...r, pendingTable: nextVal } : r
+      )));
+
+      // 未選択なら選択状態にする（ハイライト表示のため）
+      setTablesForMove(prev => (prev.includes(id) ? prev : [...prev, id]));
     }
+    // Firestore 反映はしない。トーストも出さない。適用ボタンで commit する。
     setNumPadState(null);
     return;
   }
@@ -2540,7 +2441,6 @@ const onNumPadConfirm = () => {
 
     // 3) 入力フォームリセット
     setNewResTable('');
-    setNewResTime('18:00');
     setNewResGuests('');
     setNewResCourse('');
     setNewResName('');
