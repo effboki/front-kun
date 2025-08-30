@@ -24,6 +24,7 @@ export function useRealtimeReservations(
 ): Reservation[] {
   // detach 用 unsubscribe を覚えておく
   const unsubRef = useRef<Unsubscribe | null>(null);
+  const gotServerRef = useRef(false);
 
   // 取得した予約をここに入れる
   const [list, setList] = useState<Reservation[]>([]);
@@ -86,6 +87,18 @@ export function useRealtimeReservations(
       q,
       { includeMetadataChanges: true },
       (snap) => {
+        const { fromCache, hasPendingWrites } = snap.metadata;
+        const isEmpty = snap.empty;
+
+        // 初回の「キャッシュ起点の空スナップショット」は無視（サーバ応答を待つ）
+        if (!gotServerRef.current && fromCache && !hasPendingWrites && isEmpty) {
+          console.log('[RealtimeRes] skip first cache-empty snapshot');
+          return;
+        }
+        if (!fromCache) {
+          gotServerRef.current = true; // サーバ由来を受信
+        }
+
         const arr = snap.docs.map(
           (d) =>
             ({
@@ -93,7 +106,6 @@ export function useRealtimeReservations(
               ...(d.data() as Omit<Reservation, 'id'>),
             } as Reservation)
         );
-        const { fromCache, hasPendingWrites } = snap.metadata;
         console.log('[RealtimeRes] got docs:', { count: arr.length, fromCache, hasPendingWrites });
         setList(arr);
       },

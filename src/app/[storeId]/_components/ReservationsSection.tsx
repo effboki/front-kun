@@ -1,6 +1,5 @@
 // src/app/[storeId]/_components/ReservationsSection.tsx
 import React, { memo } from 'react';
-import ResOrderControls from './ResOrderControls';
 import type { ResOrder, Reservation, PendingTables } from '@/types';
 import type { FormEvent, Dispatch, SetStateAction } from 'react';
 
@@ -140,16 +139,142 @@ const ReservationsSection: React.FC<Props> = ({
   setNewResNotes,
   addReservation,
 }) => {
+  // 並び替えヘルパー
+  const parseTimeToMinutes = (t: string) => {
+    const [hh, mm] = (t || '').split(':').map((n) => parseInt(n, 10));
+    if (Number.isNaN(hh) || Number.isNaN(mm)) return Number.MAX_SAFE_INTEGER;
+    return hh * 60 + mm;
+  };
+  const getCreatedAtMs = (r: any): number => {
+    // Firestore Timestamp
+    if (r?.createdAt?.toMillis) return r.createdAt.toMillis();
+    // seconds / nanoseconds 形式
+    if (typeof r?.createdAt?.seconds === 'number') return r.createdAt.seconds * 1000 + (r.createdAt.nanoseconds ? Math.floor(r.createdAt.nanoseconds / 1e6) : 0);
+    // number / string 日付
+    if (typeof r?.createdAt === 'number') return r.createdAt;
+    if (typeof r?.createdAt === 'string') {
+      const ms = Date.parse(r.createdAt);
+      if (!Number.isNaN(ms)) return ms;
+    }
+    // id がタイムスタンプ風なら利用（降順安定用の弱いフォールバック）
+    if (typeof r?.id === 'string' && /^\d{10,}$/.test(r.id)) {
+      const n = Number(r.id);
+      if (!Number.isNaN(n)) return n;
+    }
+    return 0;
+  };
+  // 予約リストの最終並び（セクション内で最終決定）
+  const finalReservations = React.useMemo(() => {
+    const arr = [...reservations];
+    if (resOrder === 'time') {
+      arr.sort((a, b) => parseTimeToMinutes(a.time) - parseTimeToMinutes(b.time));
+    } else if (resOrder === 'table') {
+      const ta = (r: any) => Number((r.pendingTable ?? r.table) || 0);
+      arr.sort((a, b) => ta(a) - ta(b));
+    } else if (resOrder === 'created') {
+      // 追加順：新しい順（降順）。必要なら asc に変更可。
+      arr.sort((a, b) => getCreatedAtMs(b) - getCreatedAtMs(a));
+    }
+    return arr;
+  }, [reservations, resOrder]);
+
+  // ペンディングの重複（同じ next に複数割当）を検知
+  const hasPendingConflict = React.useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const v of Object.values(pendingTables || {})) {
+      const key = String(v?.next ?? '');
+      if (!key) continue;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    for (const n of counts.values()) if (n > 1) return true;
+    return false;
+  }, [pendingTables]);
   return (
     <section className="space-y-4 text-sm">
       {/* ─────────────── 予約リストセクション ─────────────── */}
       <section>
+        {/* ── 枠外ツールバー（表示順・表示項目） ───────────────── */}
+        <div className="sm:p-4 p-2 border-b border-gray-200 bg-white">
+          <div className="flex flex-wrap items-center gap-3">
+            {/* 並び替え：セグメント（時間順／卓番順／追加順） */}
+            <div className="flex items-center gap-2">
+              <span className="text-gray-500 text-xs">並び替え：</span>
+              <div className="inline-flex rounded-md border border-gray-300 overflow-hidden">
+                {[
+                  { key: 'time', label: '時間順' },
+                  { key: 'table', label: '卓番順' },
+                  { key: 'created', label: '追加順' },
+                ].map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setResOrder(opt.key as any)}
+                    aria-pressed={resOrder === (opt.key as any)}
+                    className={`px-2 py-1 text-xs sm:text-[13px] ${
+                      resOrder === (opt.key as any)
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white hover:bg-gray-50 text-gray-700'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+  
+            {/* 区切り（薄） */}
+            <div className="h-4 w-px bg-gray-200 hidden xs:block" />
+  
+            {/* 表示：チップ（食・飲・氏名・備考） */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-gray-500 text-xs">表示：</span>
+  
+              <button
+                type="button"
+                onClick={() => setShowEatCol(!showEatCol)}
+                aria-pressed={showEatCol}
+                className={`px-2 py-0.5 text-xs rounded-full border ${
+                  showEatCol ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                食
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowDrinkCol(!showDrinkCol)}
+                aria-pressed={showDrinkCol}
+                className={`px-2 py-0.5 text-xs rounded-full border ${
+                  showDrinkCol ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                飲
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowNameCol((p) => !p)}
+                aria-pressed={showNameCol}
+                className={`hidden sm:inline-flex px-2 py-0.5 text-xs rounded-full border ${
+                  showNameCol ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                氏名
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowNotesCol((p) => !p)}
+                aria-pressed={showNotesCol}
+                className={`hidden sm:inline-flex px-2 py-0.5 text-xs rounded-full border ${
+                  showNotesCol ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                備考
+              </button>
+            </div>
+          </div>
+        </div>
         <div className="sm:p-4 p-2 space-y-4 text-sm border rounded overflow-x-auto">
           {/* ── 予約リスト ヘッダー ───────────────────── */}
           <div className="flex flex-col space-y-2">
-            {/* 上段：表示順ラジオ */}
-            <ResOrderControls value={resOrder} onChange={setResOrder} />
-
             {/* 下段：卓番変更 & 全リセット & 予約確定 */}
             <div className="flex items-center space-x-4">
               <button
@@ -166,48 +291,51 @@ const ReservationsSection: React.FC<Props> = ({
               </button>
             </div>
           </div>
-
-          {/* 表示切替 */}
-          <div className="flex items-center space-x-4 ml-4">
-            <label className="flex items-center space-x-1">
-              <input
-                type="checkbox"
-                checked={showEatCol}
-                onChange={(e) => setShowEatCol(e.target.checked)}
-                className="mr-1"
-              />
-              <span>食表示</span>
-            </label>
-            <label className="flex items-center space-x-1">
-              <input
-                type="checkbox"
-                checked={showDrinkCol}
-                onChange={(e) => setShowDrinkCol(e.target.checked)}
-                className="mr-1"
-              />
-              <span>飲表示</span>
-            </label>
-          </div>
-          <div className="hidden sm:flex items-center space-x-4">
-            <label className="flex items-center space-x-1">
-              <input
-                type="checkbox"
-                checked={showNameCol}
-                onChange={() => setShowNameCol((p) => !p)}
-                className="mr-1"
-              />
-              <span>氏名表示</span>
-            </label>
-            <label className="flex items-center space-x-1">
-              <input
-                type="checkbox"
-                checked={showNotesCol}
-                onChange={() => setShowNotesCol((p) => !p)}
-                className="mr-1"
-              />
-              <span>備考表示</span>
-            </label>
-          </div>
+          {/* ── 卓番変更モード用の固定ツールバー ───────────────── */}
+          {editTableMode && (
+            <div className="flex items-center justify-between gap-3 px-3 py-2 bg-gray-50 border rounded">
+              <div className="text-sm">
+                <span className="font-medium">卓番変更モード</span>
+                <span className="ml-3 text-xs text-gray-600">選択中: {tablesForMove.length}件</span>
+                {hasPendingConflict && (
+                  <span className="ml-2 text-xs text-red-600">※ 重複する卓番号があります</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    // 選択解除
+                    if (Array.isArray(tablesForMove) && tablesForMove.length) {
+                      tablesForMove.forEach((id) => toggleTableForMove(id));
+                    }
+                    // ペンディングをクリア
+                    setPendingTables({});
+                    // モード終了
+                    onToggleEditTableMode();
+                  }}
+                  className="px-2 py-1 text-sm rounded border bg-white hover:bg-gray-50"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (hasPendingConflict) return;
+                    commitTableMoves();
+                    // モード終了（必要に応じて継続にしたい場合はこの行を外す）
+                    onToggleEditTableMode();
+                  }}
+                  disabled={hasPendingConflict}
+                  className={`px-3 py-1 text-sm rounded text-white ${
+                    hasPendingConflict ? 'bg-gray-300 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
+                  }`}
+                >
+                  適用
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* 卓番編集の保留キュー */}
           {editTableMode && Object.keys(pendingTables).length > 0 && (
@@ -257,10 +385,14 @@ const ReservationsSection: React.FC<Props> = ({
               </tr>
             </thead>
             <tbody>
-              {reservations.map((r, idx) => {
-                const prev = reservations[idx - 1];
+              {finalReservations.map((r, idx) => {
+                const prev = finalReservations[idx - 1];
+                const isBlockStart = !prev || prev.time !== r.time;
+                const padY = isBlockStart ? 'py-1.5' : 'py-1';
+                const createdMsRow = getCreatedAtMs(r);
+                const isNew = Date.now() - createdMsRow <= 15 * 60 * 1000; // 直近15分をNEW判定
                 const borderClass =
-                  !prev || prev.time !== r.time ? 'border-t-2 border-gray-300' : 'border-b border-gray-300';
+                  !prev || prev.time !== r.time ? 'border-t-4 border-gray-300' : 'border-b border-gray-300';
 
                 return (
                   <tr
@@ -274,11 +406,11 @@ const ReservationsSection: React.FC<Props> = ({
                     }`}
                   >
                     {/* 来店時刻セル */}
-                    <td className="border px-1 py-1">
+                    <td className={`border px-1 ${padY}`}>
                       <select
                         value={r.time}
                         onChange={(e) => updateReservationField(r.id, 'time', e.target.value)}
-                        className="border px-1 py-0.5 rounded text-sm"
+                        className="border px-1 py-0.5 rounded text-sm font-semibold tabular-nums"
                       >
                         {timeOptions.map((t) => (
                           <option key={t} value={t}>
@@ -289,44 +421,51 @@ const ReservationsSection: React.FC<Props> = ({
                     </td>
 
                     {/* 卓番セル */}
-                    <td>
-                      <input
-                        type="text"
-                        readOnly
-                        value={pendingTables[r.id]?.next ?? (r.pendingTable ?? r.table)}
-                        onClick={() => {
-                          if (editTableMode) {
-                            if (!tablesForMove.includes(r.id)) {
-                              setPendingTables((prev) => ({
-                                ...prev,
-                                [r.id]: { old: r.table, next: r.table },
-                              }));
-                            } else {
-                              setPendingTables((prev) => {
-                                const next = { ...prev };
-                                delete next[r.id];
-                                return next;
+                    <td className={`border px-1 ${padY} text-center`}>
+                      <div className="inline-flex items-center justify-center">
+                        <input
+                          type="text"
+                          readOnly
+                          value={pendingTables[r.id]?.next ?? (r.pendingTable ?? r.table)}
+                          onClick={() => {
+                            if (editTableMode) {
+                              if (!tablesForMove.includes(r.id)) {
+                                setPendingTables((prev) => ({
+                                  ...prev,
+                                  [r.id]: { old: r.table, next: r.table },
+                                }));
+                              } else {
+                                setPendingTables((prev) => {
+                                  const next = { ...prev };
+                                  delete next[r.id];
+                                  return next;
+                                });
+                              }
+                              toggleTableForMove(r.id);
+                              setNumPadState({
+                                id: r.id,
+                                field: 'targetTable',
+                                value: pendingTables[r.id]?.next ?? (r.pendingTable ?? r.table),
                               });
+                            } else {
+                              setNumPadState({ id: r.id, field: 'table', value: r.table });
                             }
-                            toggleTableForMove(r.id);
-                            setNumPadState({
-                              id: r.id,
-                              field: 'targetTable',
-                              value: pendingTables[r.id]?.next ?? (r.pendingTable ?? r.table),
-                            });
-                          } else {
-                            setNumPadState({ id: r.id, field: 'table', value: r.table });
-                          }
-                        }}
-                        className={`border px-1 py-0.5 rounded text-sm w-full text-center ${
-                          editTableMode && tablesForMove.includes(r.id) ? 'border-4 border-blue-500' : ''
-                        }`}
-                      />
+                          }}
+                          className={`border px-1 py-0.5 rounded text-sm w-full text-center cursor-pointer ${
+                            editTableMode && tablesForMove.includes(r.id) ? 'border-4 border-blue-500' : ''
+                          }`}
+                        />
+                        {isNew && (
+                          <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-200">
+                            NEW
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* 氏名セル (タブレット表示) */}
                     {showNameCol && (
-                      <td className="border px-1 py-1 hidden sm:table-cell">
+                      <td className={`border px-1 ${padY} hidden sm:table-cell`}>
                         <input
                           type="text"
                           value={r.name ?? ''}
@@ -338,7 +477,7 @@ const ReservationsSection: React.FC<Props> = ({
                     )}
 
                     {/* コースセル */}
-                    <td className="border px-1 py-1">
+                    <td className={`border px-1 ${padY}`}>
                       <select
                         value={r.course}
                         onChange={(e) => updateReservationField(r.id, 'course', e.target.value)}
@@ -387,7 +526,7 @@ const ReservationsSection: React.FC<Props> = ({
                     )}
 
                     {/* 人数セル */}
-                    <td className="border px-1 py-1">
+                    <td className={`border px-1 ${padY}`}>
                       <input
                         type="text"
                         value={r.guests}
@@ -399,7 +538,7 @@ const ReservationsSection: React.FC<Props> = ({
 
                     {/* 備考セル (タブレット表示) */}
                     {showNotesCol && (
-                      <td className="border px-1 py-1 hidden sm:table-cell">
+                      <td className={`border px-1 ${padY} hidden sm:table-cell`}>
                         <input
                           type="text"
                           value={r.notes ?? ''}
@@ -411,7 +550,7 @@ const ReservationsSection: React.FC<Props> = ({
                     )}
 
                     {/* 来店チェックセル (タブレット表示) */}
-                    <td className="border px-1 py-1 hidden sm:table-cell">
+                    <td className={`border px-1 ${padY} hidden sm:table-cell`}>
                       <button
                         onClick={() => toggleArrivalChecked(r.id)}
                         className={`px-2 py-0.5 rounded text-sm ${
@@ -443,7 +582,7 @@ const ReservationsSection: React.FC<Props> = ({
                     </td>
 
                     {/* 退店チェックセル (タブレット表示) */}
-                    <td className="border px-1 py-1 hidden sm:table-cell">
+                    <td className={`border px-1 ${padY} hidden sm:table-cell`}>
                       <button
                         onClick={() => toggleDepartureChecked(r.id)}
                         className={`px-2 py-0.5 rounded text-sm ${
@@ -455,7 +594,7 @@ const ReservationsSection: React.FC<Props> = ({
                     </td>
 
                     {/* 削除セル */}
-                    <td className="border px-1 py-1">
+                    <td className={`border px-1 ${padY}`}>
                       <button onClick={() => deleteReservation(r.id)} className="bg-red-500 text-white px-2 py-0.5 rounded text-sm">
                         ×
                       </button>
@@ -472,7 +611,7 @@ const ReservationsSection: React.FC<Props> = ({
                     form="new-res-form"
                     value={newResTime}
                     onChange={(e) => setNewResTime(e.target.value)}
-                    className="border px-1 py-0.5 rounded text-sm"
+                    className="border px-1 py-0.5 rounded text-sm font-semibold tabular-nums"
                     required
                   >
                     {timeOptions.map((t) => (

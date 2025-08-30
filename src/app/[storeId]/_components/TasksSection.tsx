@@ -196,20 +196,36 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
   const [minutePickerOpenFor, setMinutePickerOpenFor] = React.useState<string | null>(null);
   const [selectedShiftMinutes, setSelectedShiftMinutes] = React.useState<number | null>(null);
 
-  // ---- タスクセクション: ビューポートに応じてスクロール領域を確保 ----
-  const scrollRef = React.useRef<HTMLDivElement>(null);
-  const [scrollMax, setScrollMax] = React.useState<number | null>(null);
-  React.useLayoutEffect(() => {
-    const update = () => {
-      if (!scrollRef.current) return;
-      const top = scrollRef.current.getBoundingClientRect().top;
-      const h = window.innerHeight - top - 8; // 余白ぶん差し引き
-      setScrollMax(Math.max(200, Math.floor(h)));
+  // 完了一括適用のヒント表示（0件で適用を押した時など）
+  const [completeApplyHint, setCompleteApplyHint] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!completeApplyHint) return;
+    const t = setTimeout(() => setCompleteApplyHint(null), 2500);
+    return () => clearTimeout(t);
+  }, [completeApplyHint]);
+
+  // ---- 二重スクロール対策: 最寄りのスクロール親を無効化（ページ全体でスクロール） ----
+  const hostRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const root = hostRef.current;
+    if (!root) return;
+    const isScrollable = (el: HTMLElement) => {
+      const st = window.getComputedStyle(el);
+      return /(auto|scroll)/.test(st.overflowY) || /(auto|scroll)/.test(st.overflow);
     };
-    update();
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
+    let el = root.parentElement as HTMLElement | null;
+    while (el && el !== document.body) {
+      if (isScrollable(el)) {
+        // 内側スクロールを無効化（外側＝ページ全体のみスクロール）
+        el.style.overflow = 'visible';
+        el.style.overflowY = 'visible';
+        el.style.maxHeight = 'none';
+        break;
+      }
+      el = el.parentElement as HTMLElement | null;
+    }
   }, []);
+
 
   const handleQuickShift = React.useCallback(
     (ids: string[], taskLabel: string, deltaMinutes: number) => {
@@ -254,33 +270,42 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
     const targetKey = firstUpcoming ?? timeKeys[timeKeys.length - 1];
     const handle = window.setTimeout(() => {
       const el = document.getElementById(`task-time-${targetKey}`);
+      const ctrl = document.getElementById('tasks-toolbar');
+      const stickyOffset = (ctrl?.offsetHeight ?? 64) + 8; // control height + small gap
       if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const rect = el.getBoundingClientRect();
+        const y = rect.top + window.scrollY - stickyOffset;
+        window.scrollTo({ top: y, behavior: 'smooth' });
       }
     }, 80);
     return () => window.clearTimeout(handle);
-    // 初回のみ
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Normalize possibly-stale course filter that hides all reservations on reload
+  const didNormalizeFilterRef = React.useRef(false);
   React.useEffect(() => {
-    const validNames = new Set(['全体', '未選択', ...courses.map((c) => c.name)]);
+    if (didNormalizeFilterRef.current) return; // run only once at mount to normalize
+    const validNames = new Set(['全て', '未選択', ...courses.map((c) => c.name)]);
     if (!filterCourse || !validNames.has(filterCourse)) {
-      setFilterCourse('全体');
+      didNormalizeFilterRef.current = true;
+      setFilterCourse('全て');
     }
-  }, [filterCourse, courses, setFilterCourse]);
+  }, [courses]);
 
   // ---- 表示フォールバック: グループが空でも予約が存在する場合は絞り込みを全体に戻す ----
+  const didCoerceFilterRef = React.useRef(false);
   React.useEffect(() => {
+    if (didCoerceFilterRef.current) return; // coerce only once per mount if needed
     const hasGroups = Object.keys(deferredGroupedTasks ?? {}).length > 0;
     const hasReservations = (filteredReservations?.length ?? 0) > 0;
     if (!hasGroups && hasReservations) {
       if (!filterCourse || filterCourse === '未選択') {
-        setFilterCourse('全体');
+        didCoerceFilterRef.current = true;
+        setFilterCourse('全て');
       }
     }
-  }, [deferredGroupedTasks, filteredReservations, filterCourse, setFilterCourse]);
+  }, [deferredGroupedTasks, filteredReservations, filterCourse]);
 
   const onToggleShiftTarget = React.useCallback(
     (id: string) => {
@@ -301,98 +326,118 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
   );
 
   return (
-    <>
+    <section id="tasks-root" ref={hostRef} className="w-full pb-2 mb-0">
       {/* ───────── コントロールバー ───────── */}
-      <section className="mt-20 space-y-3 text-sm">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="flex flex-col">
-            <label className="mb-1">コース絞り込み：</label>
-            <select
-              value={filterCourse && filterCourse.length ? filterCourse : '全体'}
-              onChange={(e) => setFilterCourse(e.target.value)}
-              className="border px-2 py-1 rounded text-sm"
-            >
-              <option value="全体">全体</option>
-              {courses.map((c) => (
-                <option key={c.name} value={c.name}>
-                  {c.name}
-                </option>
-              ))}
-              <option value="未選択">未選択</option>
-            </select>
+      <div
+        id="tasks-toolbar"
+        className="sticky top-0 inset-x-0 z-40 bg-white/95 supports-[backdrop-filter]:bg-white/70 backdrop-blur border-b-2 border-gray-200/80 shadow px-3 pt-2 pb-2"
+      >
+        <div className="max-w-full">
+          {/* 表示：コース表示／人数表示（1段目） */}
+          <div className="mt-0">
+            <div className="grid grid-cols-[auto,1fr] items-center gap-x-2 gap-y-1">
+              <span className="text-xs text-gray-600 shrink-0">表示：</span>
+              <div className="flex items-center gap-3 flex-wrap">
+                <label className="flex items-center gap-1 text-xs select-none">
+                  <input
+                    type="checkbox"
+                    className="accent-blue-600"
+                    checked={showCourseAll}
+                    onChange={(e) => setShowCourseAll(e.target.checked)}
+                    aria-label="コースを表示する"
+                  />
+                  コースを表示
+                </label>
+                <label className="flex items-center gap-1 text-xs select-none">
+                  <input
+                    type="checkbox"
+                    className="accent-blue-600"
+                    checked={showGuestsAll}
+                    onChange={(e) => setShowGuestsAll(e.target.checked)}
+                    aria-label="人数を表示する"
+                  />
+                  人数表示
+                </label>
+              </div>
+
+              {/* 2行目：コース表示ONのときだけ出す（同一名まとめ） */}
+              {showCourseAll && (
+                <>
+                  <span className="text-xs text-transparent select-none">表示：</span>
+                  <label className="flex items-center gap-1 text-xs select-none">
+                    <input
+                      type="checkbox"
+                      className="accent-blue-600"
+                      checked={mergeSameTasks}
+                      onChange={(e) => setMergeSameTasks(e.target.checked)}
+                      aria-label="同一名のタスクはまとめて表示"
+                    />
+                    同一名のタスクはまとめて表示
+                  </label>
+                </>
+              )}
+            </div>
           </div>
 
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-1">
-              <input
-                type="checkbox"
-                checked={showCourseAll}
-                aria-checked={showCourseAll}
-                onChange={(e) => setShowCourseAll(e.target.checked)}
-              />
-              <span>コース表示</span>
-            </label>
+          {/* 並び替え：左／ コース：右寄せ（同じ行） */}
+          <div className="mt-2 flex items-center justify-between gap-2 whitespace-nowrap">
+            <div className="flex items-center gap-2 whitespace-nowrap">
+              <span className="text-[11px] text-gray-600 shrink-0">並び替え：</span>
+              <div className="inline-flex rounded border overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setTaskSort('table')}
+                  className={`px-2 py-0.5 text-[11px] ${taskSort === 'table' ? 'bg-blue-600 text-white' : 'bg-white'}`}
+                  aria-pressed={taskSort === 'table'}
+                >
+                  卓番順
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTaskSort('guests')}
+                  className={`px-2 py-0.5 text-[11px] border-l ${taskSort === 'guests' ? 'bg-blue-600 text-white' : 'bg-white'}`}
+                  aria-pressed={taskSort === 'guests'}
+                >
+                  人数順
+                </button>
+              </div>
+            </div>
 
-            <label className="flex items-center gap-1">
-              <input
-                type="checkbox"
-                checked={showGuestsAll}
-                aria-checked={showGuestsAll}
-                onChange={(e) => setShowGuestsAll(e.target.checked)}
-              />
-              <span>人数表示</span>
-            </label>
-
-            {showCourseAll && (
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={mergeSameTasks}
-                  aria-checked={mergeSameTasks}
-                  onChange={(e) => setMergeSameTasks(e.target.checked)}
-                />
-                <span>同一タスクはまとめて表示</span>
-              </label>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2">
-            <span className="mr-1">タスク並び替え：</span>
-            <label className="flex items-center gap-1">
-              <input
-                type="radio"
-                name="taskSort"
-                value="table"
-                checked={taskSort === 'table'}
-                aria-checked={taskSort === 'table'}
-                onChange={() => setTaskSort('table')}
-              />
-              卓番順
-            </label>
-            <label className="flex items-center gap-1">
-              <input
-                type="radio"
-                name="taskSort"
-                value="guests"
-                checked={taskSort === 'guests'}
-                aria-checked={taskSort === 'guests'}
-                onChange={() => setTaskSort('guests')}
-              />
-              人数順
-            </label>
+            <div className="flex items-center gap-2 whitespace-nowrap">
+              <span className="text-[11px] text-gray-600 shrink-0">コース：</span>
+             <select
+  value={filterCourse && filterCourse.length ? filterCourse : '全て'}
+  onChange={(e) => setFilterCourse(e.target.value)}
+  className="border px-1 py-0.5 rounded text-[10px] w-[5.75rem]"
+  aria-label="コースを絞り込み"
+>
+                <option value="全て">全て</option>
+                {courses.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+                <option value="未選択">未選択</option>
+              </select>
+            </div>
           </div>
         </div>
-      </section>
+      </div>
+      {/* ───────── スペーサー（sticky直後のかぶり防止） ───────── */}
+      <div className="h-2" />
 
       {/* ───────── タスク表本体 ───────── */}
-      <div ref={scrollRef} className="overflow-y-auto overscroll-contain" style={{ maxHeight: scrollMax ? `${scrollMax}px` : undefined }}>
-        <section className="space-y-4 text-sm touch-pan-y pr-1">
+        <section className="space-y-4 text-sm touch-pan-y">
         {timeKeys.map((timeKey) => {
           // この時間帯が「15分以上前」かどうか（表示を薄くするために使用）
           const isPast15 = parseTimeToMinutes(timeKey) <= (nowMinutes - 15);
 
           return (
-            <div key={timeKey} id={`task-time-${timeKey}`} className="border-b pb-2">
+            <div
+              key={timeKey}
+              id={`task-time-${timeKey}`}
+              className="border-b pb-2 last:border-b-0 last:pb-0"
+            >
               <div className="text-gray-900 font-semibold text-lg mb-2">{timeKey}</div>
 
             {/* まとめ表示 ON */}
@@ -472,12 +517,12 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
                             {openShiftMenuFor === keyForTask && (
                               <div className="ml-2 mt-1 p-2 border rounded bg-gray-50 relative">
                                 {/* 1段目：対象／適用／キャンセル */}
-                                <div className="flex items-center justify-between gap-2 flex-wrap whitespace-normal w-full text-[12px]">
-                                  <div className="inline-flex items-center gap-1">
+                                <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap w-full text-[11px]">
+                                  <div className="inline-flex items-center gap-1 shrink-0">
                                     <span className="text-[11px] text-gray-600">対象：</span>
                                     <span className="text-[11px]">{`選択中（${shiftTargets.length}件）`}</span>
                                   </div>
-                                  <div className="inline-flex items-center gap-1 ml-auto">
+                                  <div className="inline-flex items-center gap-1 ml-auto shrink-0">
                                     <button
                                       onClick={() => {
                                         if (selectedShiftMinutes === null) return;
@@ -545,9 +590,7 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
                                       </div>
                                     )}
                                   </div>
-                                  <span className="text-xs text-gray-600">
-                                    {selectedShiftMinutes !== null ? 'ずらす' : '分ずらす'}
-                                  </span>
+                                  <span className="text-xs text-gray-600">ずらす</span>
                                 </div>
                               </div>
                             )}
@@ -560,6 +603,10 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
                               <div className="ml-auto flex items-center gap-2">
                                 <button
                                   onClick={() => {
+                                    if (selectedForComplete.length === 0) {
+                                      setCompleteApplyHint('① 完了したい卓をタップで選ぶ\n② 「適用」を押す');
+                                      return;
+                                    }
                                     selectedForComplete.forEach((resId) => {
                                       const courseName =
                                         filteredReservations.find((r) => r.id === resId)?.course || '';
@@ -574,10 +621,15 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
                                     });
                                     setSelectionModeTask(null);
                                     setSelectedForComplete([]);
+                                    setCompleteApplyHint('適用しました（取り消す場合は再度タップで選択 → 適用）');
                                   }}
-                                  className="px-2 py-0.5 bg-green-700 text-white rounded text-sm"
+                                  className={`px-2 py-0.5 rounded text-sm text-white ${
+                                    selectedForComplete.length === 0
+                                      ? 'bg-blue-300 cursor-not-allowed'
+                                      : 'bg-blue-600 hover:bg-blue-700'
+                                  }`}
                                 >
-                                  完了登録
+                                  適用
                                 </button>
                                 <button
                                   onClick={() =>
@@ -601,13 +653,17 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
                                 }
                                 className="ml-2 px-2 py-0.5 bg-yellow-500 text-white rounded text-sm"
                                 aria-pressed={false}
-                                aria-label="完了一括選択モード"
+                                aria-label="完了を選ぶモード"
                               >
-                                選択完了
+                                完了
                               </button>
                             )}
                           </>
                         )}
+                      {/* 完了一括適用ヒント（まとめ表示ON/選択モードのみ表示） */}
+                      {selectionModeTask === keyForTask && completeApplyHint && (
+                        <div className="mt-1 text-[11px] text-blue-700 whitespace-pre-line">{completeApplyHint}</div>
+                      )}
                       </div>
 
                       <div className="flex flex-wrap gap-1.5">
@@ -697,12 +753,12 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
                           {openShiftMenuFor === keyForTask && (
                             <div className="ml-2 mt-1 p-2 border rounded bg-gray-50 relative">
                               {/* 1段目：対象／適用／キャンセル */}
-                              <div className="flex items-center justify-between gap-2 flex-wrap whitespace-normal w-full text-[12px]">
-                                <div className="inline-flex items-center gap-1">
+                              <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap w-full text-[11px]">
+                                <div className="inline-flex items-center gap-1 shrink-0">
                                   <span className="text-[11px] text-gray-600">対象：</span>
                                   <span className="text-[11px]">{`選択中（${shiftTargets.length}件）`}</span>
                                 </div>
-                                <div className="inline-flex items-center gap-1 ml-auto">
+                                <div className="inline-flex items-center gap-1 ml-auto shrink-0">
                                   <button
                                     onClick={() => {
                                       if (selectedShiftMinutes === null) return;
@@ -770,9 +826,7 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
                                     </div>
                                   )}
                                 </div>
-                                <span className="text-xs text-gray-600">
-                                  {selectedShiftMinutes !== null ? 'ずらす' : '分ずらす'}
-                                </span>
+                                <span className="text-xs text-gray-600">ずらす</span>
                               </div>
                             </div>
                           )}
@@ -784,6 +838,10 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
                             <div className="ml-auto flex items-center gap-2">
                               <button
                                 onClick={() => {
+                                  if (selectedForComplete.length === 0) {
+                                    setCompleteApplyHint('① 完了したい卓をタップで選ぶ\n② 「適用」を押す');
+                                    return;
+                                  }
                                   selectedForComplete.forEach((resId) => {
                                     const courseName =
                                       filteredReservations.find((r) => r.id === resId)?.course || '';
@@ -798,10 +856,15 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
                                   });
                                   setSelectionModeTask(null);
                                   setSelectedForComplete([]);
+                                  setCompleteApplyHint('適用しました（取り消す場合は再度タップで選択 → 適用）');
                                 }}
-                                className="px-2 py-0.5 bg-green-700 text-white rounded text-sm"
+                                className={`px-2 py-0.5 rounded text-sm text-white ${
+                                  selectedForComplete.length === 0
+                                    ? 'bg-blue-300 cursor-not-allowed'
+                                    : 'bg-blue-600 hover:bg-blue-700'
+                                }`}
                               >
-                                完了登録
+                                適用
                               </button>
                               <button
                                 onClick={() =>
@@ -825,12 +888,17 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
                               }
                               className="ml-2 px-2 py-0.5 bg-yellow-500 text-white rounded text-sm"
                               aria-pressed={false}
-                              aria-label="完了一括選択モード"
+                              aria-label="完了を選ぶモード"
                             >
-                              選択完了
+                              完了
                             </button>
                           )}
                         </>
+                      )}
+
+                      {/* 完了一括適用ヒント（まとめ表示OFF/選択モードのみ表示） */}
+                      {selectionModeTask === keyForTask && completeApplyHint && (
+                        <div className="mt-1 text-[11px] text-blue-700 whitespace-pre-line">{completeApplyHint}</div>
                       )}
                     </div>
 
@@ -892,9 +960,8 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
           <div className="text-center text-gray-500">表示するタスクはありません。</div>
         )}
         </section>
-      </div>
-    </>
+    </section>
   );
 });
 
-export default TasksSection;
+export default TasksSection;    

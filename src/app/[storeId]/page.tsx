@@ -266,7 +266,71 @@ useEffect(() => {
   //
   // ─── 2.2 予約(来店) の状態管理 ────────────────────────────────────────────
   //
-  const [reservations, setReservations] = useState<Reservation[]>(loadReservations());
+  // 初期復元：① sessionStorage → ② localStorage(CACHE_KEY/RES_KEY) → ③ 旧namespaced
+  const getInitialReservations = (): Reservation[] => {
+    try {
+      const k = `res-cache:${id}`;
+      const rawSess =
+        typeof window !== 'undefined' ? sessionStorage.getItem(k) : null;
+      if (rawSess) {
+        const arr = JSON.parse(rawSess);
+        if (Array.isArray(arr) && arr.length) return arr as Reservation[];
+      }
+    } catch {
+      /* noop */
+    }
+    try {
+      const rawCache =
+        typeof window !== 'undefined' ? localStorage.getItem(CACHE_KEY) : null;
+      if (rawCache) {
+        const arr = JSON.parse(rawCache);
+        if (Array.isArray(arr) && arr.length) return arr as Reservation[];
+      }
+    } catch {
+      /* noop */
+    }
+    // 最後の砦：namespaced 'reservations'
+    return loadReservations();
+  };
+  const [reservations, setReservations] = useState<Reservation[]>(() => getInitialReservations());
+
+  // ---- 予約リスト：セッション復元＆保存（初期空スナップショット対策） ----
+  React.useEffect(() => {
+    try {
+      const key = `res-cache:${id}`;
+      const raw =
+        typeof window !== 'undefined' ? sessionStorage.getItem(key) : null;
+      if (raw) {
+        const cached = JSON.parse(raw);
+        if (
+          Array.isArray(cached) &&
+          cached.length &&
+          (!reservations || reservations.length === 0)
+        ) {
+          setReservations(cached);
+          // 念のため nextResId も更新
+          setNextResId(calcNextResIdFrom(cached as any));
+        }
+      }
+    } catch {
+      // no-op
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]); // 初回＆店舗切替時のみ
+
+  React.useEffect(() => {
+    try {
+      const key = `res-cache:${id}`;
+      if (Array.isArray(reservations) && reservations.length > 0) {
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem(key, JSON.stringify(reservations));
+        }
+      }
+    } catch {
+      // no-op
+    }
+  }, [reservations, id]);
+  // ------------------------------------------------------------------------
 
   // ── Early loading guard ───────────────────────────────
   const loading = storeSettings === null;
@@ -288,21 +352,20 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
 
   // Firestore リアルタイム listener (常時購読)
   const liveReservations = useRealtimeReservations(id);
-  const liveInitRef = useRef(false);
 
-  // 🔄 スナップショットが来るたびに reservations を上書きし、localStorage も同期（削除/変更を反映）
+  // 初回の空スナップショットでローカルを潰さない（非空を受け取ってから空も反映）
+  const livePrimedRef = useRef(false);
   useEffect(() => {
-    const arr = liveReservations as any;
-    if (!Array.isArray(arr)) return;
+    if (!Array.isArray(liveReservations)) return; // まだ未接続など
+    const arr = liveReservations as Reservation[];
 
-    // 初回だけ特別扱い：空配列ならローカルを維持（オフラインや遅延で空が来ることがある）
-    if (!liveInitRef.current) {
-      liveInitRef.current = true;
-      if (arr.length === 0) {
-        return;
-      }
+    // 初回が空配列なら無視（local/session の復元を残す）
+    if (arr.length === 0 && !livePrimedRef.current) {
+      return;
     }
 
+    // いったん非空を受け取ったら、その後の空も正として反映
+    livePrimedRef.current = true;
     setReservations(arr);
     try {
       writeReservationsCache(arr);
@@ -391,7 +454,7 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
     if (!navigator.onLine) return;           // オフラインならスキップ
     (async () => {
       try {
-        const list = await fetchAllReservationsOnce();
+        const list = await fetchAllReservationsOnce(id as string);
         if (list.length) {
           persistReservations(list as any);
           setReservations(list as any);
@@ -408,7 +471,7 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
       try {
         await flushQueuedOps();
         // 念のため最新を 1 回だけ取得して UI を同期
-        const list = await fetchAllReservationsOnce();
+        const list = await fetchAllReservationsOnce(id as string);
         if (list && Array.isArray(list)) {
           setReservations(list as any);
         }
@@ -2153,19 +2216,24 @@ const deleteCourse = async () => {
       .map(([timeKey, set]) => ({ timeKey, tasks: Array.from(set) }));
   }, [filteredReservations, courses, currentTime, checkedDepartures]);
 
-  // 回転テーブル判定: 同じ卓番号が複数予約されている場合、その卓は回転中とみなす
-  const tableCounts: Record<string, number> = {};
-  filteredReservations.forEach((r) => {
-    tableCounts[r.table] = (tableCounts[r.table] || 0) + 1;
-  });
-  const rotatingTables = new Set(Object.keys(tableCounts).filter((t) => tableCounts[t] > 1));
-  // 各回転テーブルごとに最初の予約IDを記録
-  const firstRotatingId: Record<string, string> = {};
-  filteredReservations.forEach((r) => {
-    if (rotatingTables.has(r.table) && !(r.table in firstRotatingId)) {
-      firstRotatingId[r.table] = r.id;
-    }
-  });
+  // 回転テーブル判定: 同じ卓番号が複数予約されている場合、その卓は回転中とみなす（参照安定化）
+  const { rotatingTables, firstRotatingId } = useMemo(() => {
+    const tableCounts: Record<string, number> = {};
+    filteredReservations.forEach((r) => {
+      tableCounts[r.table] = (tableCounts[r.table] || 0) + 1;
+    });
+    const rotating = new Set(Object.keys(tableCounts).filter((t) => tableCounts[t] > 1));
+
+    // 各回転テーブルごとに最初の予約IDを記録
+    const first: Record<string, string> = {};
+    filteredReservations.forEach((r) => {
+      if (rotating.has(r.table) && !(r.table in first)) {
+        first[r.table] = r.id;
+      }
+    });
+
+    return { rotatingTables: rotating, firstRotatingId: first };
+  }, [filteredReservations]);
 
 
   //
@@ -2275,6 +2343,43 @@ source.forEach((r) => {
       .filter((tk) => parseTimeToMinutes(tk) >= nowMin)
       .slice(0, 4);
   }, [sortedTimeKeys, currentTime]);
+
+  // ---- unify scroll: kill inner scroll containers in Tasks tab (force single scrollbar) ----
+  useEffect(() => {
+    if (bottomTab !== 'tasks') return;
+    const root = document.getElementById('tasks-root') as HTMLElement | null;
+    if (!root) return;
+
+    // Ensure the page (html/body) is the only scroller
+    const prevHtmlOv = document.documentElement.style.overflowY;
+    const prevBodyOv = document.body.style.overflowY;
+    document.documentElement.style.overflowY = 'auto';
+    document.body.style.overflowY = 'auto';
+
+    // Collect inner nodes that create their own scrollbars and neutralize them
+    const modified: Array<{ el: HTMLElement; ov: string; mh: string; h: string }> = [];
+    const nodes = Array.from(root.querySelectorAll<HTMLElement>('*'));
+    nodes.forEach((el) => {
+      const cs = getComputedStyle(el);
+      if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll')) {
+        modified.push({ el, ov: el.style.overflowY, mh: el.style.maxHeight, h: el.style.height });
+        el.style.overflowY = 'visible';
+        el.style.maxHeight = 'none';
+        if (cs.height !== 'auto') el.style.height = 'auto';
+      }
+    });
+
+    return () => {
+      // restore inline styles
+      modified.forEach(({ el, ov, mh, h }) => {
+        el.style.overflowY = ov;
+        el.style.maxHeight = mh;
+        el.style.height = h;
+      });
+      document.documentElement.style.overflowY = prevHtmlOv;
+      document.body.style.overflowY = prevBodyOv;
+    };
+  }, [bottomTab]);
 
   
   // ─── 2.9 “数値パッド” 用の状態とハンドラ ─────────────────────────────────────────
@@ -2575,6 +2680,65 @@ const onNumPadConfirm = () => {
       prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
     );
   };
+
+  // ==== memoized props for TasksSection to keep referential stability ====
+  const tasksData = useMemo(() => ({
+    groupedTasks,
+    sortedTimeKeys,
+    courses,
+    filteredReservations,
+    firstRotatingId,
+  }), [groupedTasks, sortedTimeKeys, courses, filteredReservations, firstRotatingId]);
+
+  const tasksUI = useMemo(() => ({
+    filterCourse,
+    showCourseAll,
+    showGuestsAll,
+    mergeSameTasks,
+    taskSort,
+    showTableStart,
+    selectionModeTask,
+    shiftModeKey,
+    selectedForComplete,
+    shiftTargets,
+  }), [
+    filterCourse,
+    showCourseAll,
+    showGuestsAll,
+    mergeSameTasks,
+    taskSort,
+    showTableStart,
+    selectionModeTask,
+    shiftModeKey,
+    selectedForComplete,
+    shiftTargets,
+  ]);
+
+  const tasksActions = useMemo(() => ({
+    setFilterCourse,
+    setShowCourseAll,
+    setShowGuestsAll,
+    setMergeSameTasks,
+    setTaskSort,
+    setSelectionModeTask,
+    setSelectedForComplete,
+    setShiftModeKey,
+    setShiftTargets,
+    batchAdjustTaskTime,
+    updateReservationField,
+  }), [
+    setFilterCourse,
+    setShowCourseAll,
+    setShowGuestsAll,
+    setMergeSameTasks,
+    setTaskSort,
+    setSelectionModeTask,
+    setSelectedForComplete,
+    setShiftModeKey,
+    setShiftTargets,
+    batchAdjustTaskTime,
+    updateReservationField,
+  ]);
 
   return (
     <>
@@ -3383,45 +3547,10 @@ const onNumPadConfirm = () => {
     reservations={filteredReservations}
   />
 )}
-  {/* ───────────── タスク表セクション（外部コンポーネント） start ───────────── */}
+{/* ───────────── タスク表セクション（外部コンポーネント） start ───────────── */}
 {!isSettings && bottomTab === 'tasks' && (
-  <div className="min-h-0 flex-1">
-    <div className="max-h-[calc(100dvh-220px)] min-h-[300px] overflow-y-auto overscroll-contain pr-2">
-      <TasksSection
-  data={{
-    groupedTasks,
-    sortedTimeKeys,
-    courses,
-    filteredReservations,
-    firstRotatingId,
-  }}
-  ui={{
-    filterCourse,
-    showCourseAll,
-    showGuestsAll,
-    mergeSameTasks,
-    taskSort,
-    showTableStart,
-    selectionModeTask,
-    shiftModeKey,
-    selectedForComplete,
-    shiftTargets,
-  }}
-  actions={{
-    setFilterCourse,
-    setShowCourseAll,
-    setShowGuestsAll,
-    setMergeSameTasks,
-    setTaskSort,
-    setSelectionModeTask,
-    setSelectedForComplete,
-    setShiftModeKey,
-    setShiftTargets,
-    batchAdjustTaskTime,
-    updateReservationField,
-  }}
-/>
-    </div>
+  <div className="">
+    <TasksSection data={tasksData} ui={tasksUI} actions={tasksActions} />
   </div>
 )}
 {/* ───────────────────────────── タスク表セクション（外部コンポーネント） end ───────────────────────────── */}

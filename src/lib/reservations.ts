@@ -172,7 +172,17 @@ export async function addReservationFS(data: any): Promise<void> {
 
   // オフラインは即キュー
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    enqueueOp({ type: 'add', payload: { ...data } });
+    enqueueOp({
+      type: 'add',
+      payload: {
+        ...data,
+        // NEWバッジ用。未指定ならクライアント時刻で埋める（後続オンライン追加時は serverTimestamp に統一）
+        createdAt: (data as any)?.createdAt ?? Date.now(),
+        // 以降の表示安定のために更新時刻と楽観バージョンを付与
+        updatedAt: Date.now(),
+        version: (typeof (data as any)?.version === 'number' ? (data as any).version : 0) + 1,
+      },
+    });
     return;
   }
 
@@ -191,6 +201,7 @@ export async function addReservationFS(data: any): Promise<void> {
       {
         ...data,
         version: (typeof data.version === 'number' ? data.version : 0) + 1,
+        createdAt: (data as any)?.createdAt ?? serverTimestamp(),
         updatedAt: serverTimestamp(),
       },
       { merge: true }
@@ -250,11 +261,10 @@ export async function deleteReservationFS(id: string): Promise<void> {
 }
 
 /** 予約を 1 回だけ全件取得（初回キャッシュ用） */
-export async function fetchAllReservationsOnce(): Promise<any[]> {
-  const rawStoreId = getStoreId();
-  const storeId = sanitizeSegment(rawStoreId);
+export async function fetchAllReservationsOnce(storeId: string): Promise<any[]> {
+  const sId = sanitizeSegment(String(storeId));
   const { collection, getDocs, query, orderBy } = await import('firebase/firestore');
-  const q = query(collection(db, 'stores', storeId, 'reservations'), orderBy('time', 'asc'));
+  const q = query(collection(db, 'stores', sId, 'reservations'), orderBy('time', 'asc'));
   const snap = await getDocs(q);
   return snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
 }
