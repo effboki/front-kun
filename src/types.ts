@@ -1,4 +1,3 @@
-
 import type { FormEvent } from 'react';
 // Shared types used across the app
 
@@ -13,6 +12,8 @@ export interface Reservation {
   id: string;
   /** 卓番号 */
   table: string;
+  /** 複数卓（先頭に主卓 table を含める） */
+  tables?: string[];
   /** 来店時刻 "HH:MM" 形式 */
   time: string;
   /** コース名 */
@@ -40,7 +41,7 @@ export interface Reservation {
 }
 
 // 卓番変更プレビュー用マップ
-export type PendingTables = Record<string, { old: string; next: string }>;
+export type PendingTables = Record<string, { old: string; nextList: string[] }>;
 
 /** １コースあたりのタスク定義 */
 export interface TaskDef {
@@ -68,6 +69,21 @@ export type NumPadField =
   | 'presetTable'
   | 'targetTable'
   | 'pendingTable';
+
+/** エリア/フロア定義 */
+export type AreaDef = {
+  id: string;        // 例: 'area_1f'
+  name: string;      // 例: '1F'
+  tables: string[];  // 重複所属OK
+  color?: string;
+  icon?: string;
+};
+
+/** 店舗設定（最小定義：後方互換のため動的キーも許可） */
+export type StoreSettingsValue = {
+  tables?: string[];
+  areas?: AreaDef[];
+} & Record<string, any>;
 
 // ======== Shared ViewModel types for cross-file reuse ========
 
@@ -142,6 +158,7 @@ export type TasksActions = {
       | 'notes'
       | 'date'
       | 'table'
+      | 'tables'
       | 'completed'
       | 'arrived'
       | 'paid'
@@ -168,4 +185,4 @@ export type TasksSectionProps = {
     | 'showTableStart'
   >;
   actions: TasksActions;
-};
+};  

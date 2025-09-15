@@ -6,10 +6,11 @@
 // 役割：live > onceFetch > cache を一元管理するフック
 // 返り値：{ reservations, initialized, setReservations, error }
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import type { Reservation } from '@/types';
 import { useRealtimeReservations } from './useRealtimeReservations';
 import { fetchAllReservationsOnce } from '@/lib/reservations';
+import type { WaveSourceReservation } from '@/lib/waveSelectors';
 
 // --- キャッシュの schema version ---
 const RES_CACHE_VERSION = 1;
@@ -148,4 +149,40 @@ export function useReservationsData(storeId: string) {
   }, []);
 
   return { reservations, initialized, setReservations: setReservationsStable, error } as const;
+}
+
+// ===== Wave 用セレクタフック =====
+/**
+ * Reservation -> WaveSourceReservation[] へマップするための関数型
+ * - 1つの予約から複数の WaveSourceReservation を返してもOK
+ * - 対象外は null を返す
+ */
+export type WaveReservationMapper = (r: Reservation) => WaveSourceReservation | WaveSourceReservation[] | null | undefined;
+
+/**
+ * useWaveSourceReservations
+ * - 予約の live/once/cache を統合した useReservationsData を内部で使用
+ * - 呼び出し側が与える mapper で WaveSourceReservation[] に変換して返す
+ * - Reservation 型の詳細に依存しないため、このフックは安全に再利用可能
+ */
+export function useWaveSourceReservations(
+  storeId: string,
+  mapReservation: WaveReservationMapper
+) {
+  const { reservations, initialized, error } = useReservationsData(storeId);
+  const data = useMemo<WaveSourceReservation[]>(() => {
+    const out: WaveSourceReservation[] = [];
+    if (!Array.isArray(reservations)) return out;
+    for (const r of reservations) {
+      const m = mapReservation?.(r);
+      if (!m) continue;
+      if (Array.isArray(m)) out.push(...m);
+      else out.push(m);
+    }
+    // time 昇順（startMs がある前提）
+    out.sort((a, b) => a.startMs - b.startMs);
+    return out;
+  }, [reservations, mapReservation]);
+
+  return { data, initialized, error } as const;
 }

@@ -4,13 +4,15 @@ import React, { memo } from 'react';
 import { useParams } from 'next/navigation';
 import { toggleTaskComplete } from '@/lib/reservations';
 import { renameCourseTx } from '@/lib/courses';
-import { loadStoreSettings, saveStoreSettingsTx, db } from '@/lib/firebase';
+import { db } from '@/lib/firebase';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { flushQueuedOps } from '@/lib/opsQueue';
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-expressions */
 // 📌 ChatGPT からのテスト編集: 拡張機能連携確認済み
+// 📌 Policy: UI preview must NOT read/write r.pendingTable. Preview state lives only in pendingTables.
 
-import type { StoreSettings } from '@/types/settings';
+import type { StoreSettings, StoreSettingsValue } from '@/types/settings';
+import { toUISettings } from '@/types/settings';
 import { useState, ChangeEvent, FormEvent, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   ensureServiceWorkerRegistered,
@@ -29,8 +31,12 @@ import ResOrderControls from './_components/ResOrderControls';
 import ReservationsSection from './_components/ReservationsSection';
 import CourseStartSection from './_components/CourseStartSection';
 import type { ResOrder, Reservation, PendingTables, NumPadField, TaskDef, CourseDef } from '@/types';
-import TasksSection from './_components/TasksSection';
 
+import TasksSection from './_components/TasksSection';
+import StoreSettingsContent from "./_components/settings/StoreSettingsContent";
+import PreopenSettingsContent from "./_components/preopen/PreopenSettingsContent";
+
+import type { AreaDef } from '@/types';
 
 /** ラベル比較の正規化（前後空白 / 全角半角 / 大文字小文字の揺れを吸収） */
 const normalizeLabel = (s: string): string =>
@@ -68,6 +74,184 @@ const calcNextResIdFrom = (list: Reservation[] | any[]): string => {
   return String(maxId + 1);
 };
 
+// ───────── RootNumPad (multi-support for new reservation) ─────────
+type RootNumPadSubmit = { value: string; list?: string[] };
+
+type RootNumPadProps = {
+  open: boolean;
+  title?: string;
+  value?: string;
+  initialList?: string[];
+  /** 卓番号入力のとき true */
+  multi?: boolean;
+  onCancel: () => void;
+  onSubmit: (result: RootNumPadSubmit) => void;
+};
+
+const RootNumPad: React.FC<RootNumPadProps> = ({
+  open,
+  title,          // 受け取るが表示しない（シンプル化）
+  value = '',
+  initialList = [],
+  multi = false,
+  onCancel,
+  onSubmit,
+}) => {
+  const [val, setVal] = React.useState<string>('');
+  const [list, setList] = React.useState<string[]>([]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    setVal(value || '');
+    setList(multi ? (Array.isArray(initialList) ? [...initialList] : []) : []);
+  }, [open, value, initialList, multi]);
+
+  const appendDigit = (d: string) => setVal((prev) => (prev + d).replace(/^0+(?=\d)/, ''));
+  const backspace = () => setVal((prev) => prev.slice(0, -1));
+  const clearAll = () => setVal('');
+
+  // 「＋ 追加」: 現在の val を list に確定（空/重複は無視）
+  const pushCurrentToList = () => {
+    if (!multi) return;
+    const v = val.trim();
+    if (!v) return;
+    setList((prev) => (prev.includes(v) ? prev : [...prev, v]));
+    setVal('');
+  };
+
+  const handleSubmit = () => {
+    if (!multi) {
+      onSubmit({ value: val });
+      return;
+    }
+    let final = list;
+    const v = val.trim();
+    if (v) final = final.includes(v) ? final : [...final, v];
+    onSubmit({ value: v, list: final.filter(Boolean) });
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30">
+      <div className="w-full sm:w-[420px] bg-white rounded-t-2xl sm:rounded-2xl shadow-xl p-4">
+        {/* プレビュー（新規は“後の卓”だけを大きく表示：○.○卓） */}
+        <div className="mb-2">
+          {multi ? (
+            <div className="ml-auto max-w-full tabular-nums text-right bg-gray-100 border border-gray-200 rounded px-3 py-1.5">
+              {(() => {
+                let after = Array.isArray(list) ? [...list] : [];
+                const v = (val || '').trim();
+                if (v && !after.includes(v)) after.push(v);
+                const joined = after.join('.');
+                return joined ? (
+                  <span className="font-bold text-lg md:text-xl text-gray-900">
+                    {joined}
+                    <span className="ml-0.5">卓</span>
+                  </span>
+                ) : (
+                  <span className="text-gray-400 text-lg md:text-xl">—</span>
+                );
+              })()}
+            </div>
+          ) : (
+            <div className="ml-auto text-right text-3xl font-semibold tabular-nums">{val || '0'}</div>
+          )}
+        </div>
+
+        {multi && (
+          <div className="flex flex-wrap gap-2 mb-2">
+            {list.map((t) => (
+              <span
+                key={t}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300"
+              >
+                <span className="tabular-nums">{t}</span>
+                <button
+                  type="button"
+                  onClick={() => setList((prev) => prev.filter((x) => x !== t))}
+                  className="leading-none px-1 hover:text-amber-900"
+                  aria-label={`${t} を削除`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* キーパッド（4列：左3列＝数字/記号、右1列＝＋追加・決定） */}
+        <div className="grid grid-cols-4 grid-rows-4 gap-2 items-stretch mt-2">
+          {/* 1行目（7 8 9） */}
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={() => appendDigit('7')}>7</button>
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={() => appendDigit('8')}>8</button>
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={() => appendDigit('9')}>9</button>
+
+          {/* 右列（卓追加／確定） */}
+          {multi ? (
+            <div className="col-start-4 row-start-1 row-span-4 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={pushCurrentToList}
+                className="h-1/3 rounded bg-amber-400 hover:bg-amber-500 text-white font-semibold text-sm"
+                title="卓追加"
+                aria-label="卓追加"
+              >
+                卓追加
+              </button>
+              <button
+                type="button"
+                onClick={handleSubmit}
+                className="h-2/3 rounded bg-blue-600 hover:bg-blue-700 text-white font-bold text-xl"
+                title="確定"
+                aria-label="確定"
+              >
+                確定
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSubmit}
+              className="col-start-4 row-start-1 row-span-4 rounded bg-blue-600 hover:bg-blue-700 text-white font-bold text-xl h-full"
+              title="確定"
+              aria-label="確定"
+            >
+              確定
+            </button>
+          )}
+
+          {/* 2行目（4 5 6） */}
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={() => appendDigit('4')}>4</button>
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={() => appendDigit('5')}>5</button>
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={() => appendDigit('6')}>6</button>
+
+          {/* 3行目（1 2 3） */}
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={() => appendDigit('1')}>1</button>
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={() => appendDigit('2')}>2</button>
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={() => appendDigit('3')}>3</button>
+
+          {/* 4行目（0 ← C） */}
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={() => appendDigit('0')}>0</button>
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={backspace}>←</button>
+          <button type="button" className="py-3 rounded border bg-gray-50 hover:bg-gray-100 text-xl font-semibold" onClick={clearAll}>C</button>
+        </div>
+
+        {/* キャンセル */}
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="w-full py-2 rounded bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold"
+          >
+            キャンセル
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+// ─────────────────────────────────────────────────────────────
 //
 // ───────────────────────────── ② MAIN コンポーネント ─────────────────────────────────
 //
@@ -89,23 +273,114 @@ export default function Home() {
 
 function HomeBody() {
   // ── Bottom tabs: 予約リスト / タスク表 / コース開始時間表
-const [bottomTab, setBottomTab] =
-  useState<'reservations' | 'tasks' | 'courseStart'>('reservations');
+  const [bottomTab, setBottomTab] =
+    useState<'reservations' | 'tasks' | 'courseStart'>('reservations');
 
   // サイドメニューの選択状態（既存の既定値はそのまま）
   const [selectedMenu, setSelectedMenu] = useState<string>('予約リスト×タスク表');
-// 「店舗設定画面 / 営業前設定」時だけ main を隠すためのフラグ
-const isSettings =
-  selectedMenu === '店舗設定画面' || selectedMenu === '営業前設定';
-// メイン画面へ戻す
-const goMain = () => setSelectedMenu('予約リスト×タスク表');
-// 下部タブを押したとき：設定画面ならメインに戻してからタブ切替
-const handleBottomTabClick = (tab: 'reservations' | 'tasks' | 'courseStart') => {
-  setBottomTab(tab);
-  if (isSettings) {
-    goMain(); // 設定画面を閉じてメインへ
-  }
-};
+  // 「店舗設定画面 / 営業前設定」時だけ main を隠すためのフラグ
+  const isSettings =
+    selectedMenu === '店舗設定画面' || selectedMenu === '営業前設定';
+  // メイン画面へ戻す
+  const goMain = () => setSelectedMenu('予約リスト×タスク表');
+  // 下部タブを押したとき：設定画面ならメインに戻してからタブ切替
+  const handleBottomTabClick = (tab: 'reservations' | 'tasks' | 'courseStart') => {
+    setBottomTab(tab);
+    if (isSettings) {
+      goMain(); // 設定画面を閉じてメインへ
+    }
+  };
+
+  // ── 店舗設定（分割UI）用のドラフト状態（子コンポーネントに丸ごと渡す）
+  const [settingsDraft, setSettingsDraft] = useState<StoreSettingsValue>({
+    courses: [],
+    positions: [],
+    tables: [],
+    plans: [],
+    areas: [],
+  });
+  // Firestore の “直近保存済み” スナップショット（dirty 判定用）
+const [baselineSettings, setBaselineSettings] =
+  useState<StoreSettingsValue | null>(null);
+  // --- shallow helpers for stable arrays (avoid needless re-renders) ---
+  const sameArrayShallow = <T,>(a?: readonly T[], b?: readonly T[]) => {
+    if (a === b) return true;
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  };
+  const setArrayIfChanged = <T,>(prevArr: readonly T[] | undefined, nextArr: readonly T[] | undefined): T[] => {
+    if (nextArr === undefined) return (prevArr as T[]) || [];
+    return sameArrayShallow(prevArr, nextArr) ? ([...(prevArr as T[])] as T[]) : ([...(nextArr as T[])] as T[]);
+  };
+
+
+  const patchSettings = React.useCallback(
+    (patch: Partial<StoreSettingsValue>) => {
+      // 1) Draft は従来通り、参照安定化しつつ更新
+      setSettingsDraft((prev) => {
+        let next: StoreSettingsValue = { ...prev };
+        if ('courses' in patch)   next.courses   = setArrayIfChanged(prev.courses,   patch.courses as any);
+        if ('positions' in patch) next.positions = setArrayIfChanged(prev.positions, patch.positions as any);
+        if ('tables' in patch)    next.tables    = setArrayIfChanged(prev.tables,    patch.tables as any);
+        if ('plans' in patch)     next.plans     = setArrayIfChanged(prev.plans,     patch.plans as any);
+        // --- sanitize areas: block empty-name areas from being added/updated ---
+        if ('areas' in patch) {
+          const src = Array.isArray((patch as any).areas) ? ((patch as any).areas as any[]) : [];
+          const filtered = src.filter((a: any) => {
+            const nm = typeof a?.name === 'string' ? a.name.trim() : '';
+            return nm.length > 0;
+          });
+          next.areas = setArrayIfChanged(prev.areas as any, filtered as any);
+        }
+        const { courses, positions, tables, plans, areas, ...rest } = patch as any;
+        next = { ...next, ...rest };
+        return next;
+      });
+
+      // 2) 親のライブ state も同時に更新（※差分があるときのみ）
+      if ('courses' in patch) {
+        const next = (patch.courses as any) ?? [];
+        setCourses((prev) => (sameArrayShallow(prev, next) ? prev as any : ([...next] as any)));
+      }
+      if ('positions' in patch) {
+        const next = (patch.positions as any) ?? [];
+        setPositions((prev) => (sameArrayShallow(prev, next) ? prev as any : ([...next] as any)));
+      }
+      if ('tables' in patch) {
+        const next = (patch.tables as any) ?? [];
+        setPresetTables((prev) => (sameArrayShallow(prev, next) ? prev as any : ([...next] as any)));
+      }
+      if ('tasksByPosition' in patch) {
+        const next = (patch.tasksByPosition as any) ?? {};
+        setTasksByPosition((prev) => {
+          try {
+            return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+          } catch {
+            return next;
+          }
+        });
+      }
+      if ('eatOptions' in patch) {
+        const next = (patch.eatOptions as any) ?? [];
+        setEatOptions((prev) => (sameArrayShallow(prev, next) ? prev as any : ([...next] as any)));
+      }
+      if ('drinkOptions' in patch) {
+        const next = (patch.drinkOptions as any) ?? [];
+        setDrinkOptions((prev) => (sameArrayShallow(prev, next) ? prev as any : ([...next] as any)));
+      }
+    },
+    [sameArrayShallow]
+  );
+
+  // === Courses state (declared early to avoid TDZ in callbacks/effects) ===
+  const [courses, setCourses] = useState<CourseDef[]>([]);
+
+  // NOTE:
+  // フックの呼び出し順序を崩さないため、早期 return は行わない。
+  // 設定画面は最終の JSX で条件分岐して描画する（例: {isSettings ? renderSettingsContent : mainUI}）。
+  // 店舗設定画面のときはメインUIを描かず、設定UIのみを表示
   // URL から店舗IDを取得
   const params = useParams();
   const storeId = params?.storeId;
@@ -165,6 +440,37 @@ const handleBottomTabClick = (tab: 'reservations' | 'tasks' | 'courseStart') => 
         localStorage.removeItem(oldKey);
       } catch {/* ignore */}
     }
+
+    // --- Tab-scoped UI prefs migration (namespaced → tasks_/cs_ ) -----------------
+    try {
+      const pairs: Array<{ from: string; to: string }> = [
+        // Tasks tab
+        { from: nsKey('showCourseAll'),        to: nsKey('tasks_showCourseAll') },
+        { from: nsKey('showGuestsAll'),        to: nsKey('tasks_showGuestsAll') },
+        { from: nsKey('mergeSameTasks'),       to: nsKey('tasks_mergeSameTasks') },
+        // Course Start tab
+        { from: nsKey('showTableStart'),       to: nsKey('cs_showTableStart') },
+        { from: nsKey('courseStartFiltered'),  to: nsKey('cs_courseStartFiltered') },
+        // Reservations tab (namespaced → res_*)
+        { from: nsKey('showEatCol'),       to: nsKey('res_showEatCol') },
+        { from: nsKey('showDrinkCol'),     to: nsKey('res_showDrinkCol') },
+        { from: nsKey('showNameCol'),      to: nsKey('res_showNameCol') },
+        { from: nsKey('showNotesCol'),     to: nsKey('res_showNotesCol') },
+        { from: nsKey('showGuestsCol'),    to: nsKey('res_showGuestsCol') },
+        { from: nsKey('resOrder'),         to: nsKey('res_resOrder') },
+      ];
+
+      for (const { from, to } of pairs) {
+        const toVal = localStorage.getItem(to);
+        if (toVal !== null) continue; // already migrated
+        const fromVal = localStorage.getItem(from);
+        if (fromVal === null) continue;
+        localStorage.setItem(to, fromVal);
+        // keep old key for backward safety or uncomment to remove:
+        // localStorage.removeItem(from);
+      }
+    } catch {/* ignore */}
+    // -----------------------------------------------------------------------------
   };
 
   // run once on mount
@@ -216,6 +522,45 @@ const handleBottomTabClick = (tab: 'reservations' | 'tasks' | 'courseStart') => 
       /* ignore */
     }
   };
+
+  // --- helper: normalize Firestore positions (string[] | {id?:string; name:string}[]) -> string[] ---
+  const toPositionNames = (arr: unknown): string[] => {
+    if (!Array.isArray(arr)) return [];
+    const names = (arr as any[]).map((p) => {
+      if (typeof p === 'string') return p;
+      if (p && typeof p.name === 'string') return p.name as string;
+      return undefined;
+    }).filter((v): v is string => typeof v === 'string' && v.length > 0);
+    // 重複除去（順序維持）
+    return Array.from(new Set(names));
+  };
+
+  // --- helper: normalize/sanitize courses payload (unknown -> CourseDef[]) ---
+  const sanitizeCourses = (arr: unknown): CourseDef[] => {
+    if (!Array.isArray(arr)) return [];
+    const out: CourseDef[] = [];
+    for (const c of arr as any[]) {
+      const name = typeof c?.name === 'string' ? c.name : '';
+      if (!name) continue;
+      const rawTasks = Array.isArray(c?.tasks) ? c.tasks : [];
+      const tasks = rawTasks
+        .map((t: any) => {
+          const label = typeof t?.label === 'string' ? t.label : '';
+          if (!label) return null;
+          const timeOffset = Number.isFinite(Number(t?.timeOffset)) ? Number(t.timeOffset) : 0;
+          const bgColor = typeof t?.bgColor === 'string' ? t.bgColor : 'bg-gray-100/80';
+          return { timeOffset, label, bgColor } as TaskDef;
+        })
+        .filter((v: TaskDef | null): v is TaskDef => !!v)
+        .sort((a: TaskDef, b: TaskDef) => a.timeOffset - b.timeOffset);
+      out.push({ name, tasks });
+    }
+    return out;
+  };
+
+// --- defensive accessor: always return an array for c.tasks ---
+const getTasks = (c: { tasks?: any }): { timeOffset:number; label:string; bgColor:string }[] =>
+  (Array.isArray(c?.tasks) ? (c.tasks as { timeOffset:number; label:string; bgColor:string }[]) : []);
   
   // Reservation storage helpers (namespace-scoped)
   const loadReservations = (): Reservation[] => nsGetJSON<Reservation[]>('reservations', []);
@@ -240,7 +585,38 @@ const handleBottomTabClick = (tab: 'reservations' | 'tasks' | 'courseStart') => 
   const [editTableMode, setEditTableMode] = useState<boolean>(false);
 
   // 店舗設定（eatOptions / drinkOptions / positions …）をリアルタイム購読
-  const storeSettings = useRealtimeStoreSettings(id);
+  const {
+  value: serverSettings,
+  areas,
+  tableToAreas,
+  save: saveSettings,
+  loading: settingsLoading,
+  isSaving: isSavingSettings,
+} = useRealtimeStoreSettings(id as string);
+    
+  // Reflect Firestore realtime settings into UI draft (overwrite on arrival/updates)
+  useEffect(() => {
+    try {
+      if (!serverSettings || Object.keys(serverSettings as any).length === 0) return;
+      const ui = toUISettings(serverSettings as StoreSettings) as any;
+      setSettingsDraft(prev => ({
+        ...prev,
+        ...ui,
+        areas: Array.isArray((serverSettings as any).areas)
+          ? (serverSettings as any).areas
+          : (prev.areas ?? []),
+      }));
+      setBaselineSettings(prev => ({
+        ...(prev ?? {}),
+        ...ui,
+        areas: Array.isArray((serverSettings as any).areas)
+          ? (serverSettings as any).areas
+          : ((prev as any)?.areas ?? []),
+      }) as StoreSettingsValue);
+    } catch (e) {
+      console.warn('[settings] toUISettings failed:', e);
+    }
+  }, [serverSettings]);
   //
   // ───────── 食・飲 オプション ─────────
   //
@@ -273,7 +649,7 @@ useEffect(() => {
   } = useReservationsData(id as string);
 
   // ── Early loading guard ───────────────────────────────
-  const loading = storeSettings === null;
+  const loading = settingsLoading === true;
   const [nextResId, setNextResId] = useState<string>("1");
   // --- keep nextResId monotonic & unique relative to current reservations ---
   useEffect(() => {
@@ -293,7 +669,7 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
 
   // ─── (先読み) localStorage の settings キャッシュをロード ─────────────
   useEffect(() => {
-    if (storeSettings) return; // Firestore から来たら不要
+    if (!settingsLoading) return; // Firestore 読み込み完了後は不要
     try {
       const cache = nsGetJSON<{ cachedAt: number; data: Partial<StoreSettings> }>(
         'settings-cache',
@@ -305,65 +681,125 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
       // 最低限 eat/drinkOptions / positions / tasksByPosition を復元
       setEatOptions(cached.eatOptions ?? []);
       setDrinkOptions(cached.drinkOptions ?? []);
-      if (cached.positions) setPositions(cached.positions);
+      if (cached.positions) setPositions(toPositionNames(cached.positions as any));
       if (cached.tasksByPosition) setTasksByPosition(cached.tasksByPosition);
+
+      // courses（空配列では上書きしない）
+      if (Array.isArray(cached.courses)) {
+        const normalized = sanitizeCourses(cached.courses);
+        if (normalized.length > 0) {
+          setCourses(normalized);
+          nsSetJSON('courses', normalized);
+        } else {
+          console.log('[settings-cache] skip empty courses');
+        }
+      }
     } catch (err) {
       console.warn('SETTINGS_CACHE read failed', err);
     }
-  }, [storeSettings]);
+  }, [settingsLoading]);
 
   // ─── Firestore からの店舗設定を UI State へ反映 ─────────────────
   useEffect(() => {
-    if (!storeSettings) return; // まだ取得前
-
+    if (settingsLoading || !serverSettings) return; // まだ取得前
     // ① 既存キャッシュの timestamp を取得（無ければ 0）
     const cache = nsGetJSON<{ cachedAt: number; data: Partial<StoreSettings> }>(
       'settings-cache',
       { cachedAt: 0, data: {} }
     );
     const cachedAt = cache.cachedAt ?? 0;
-
     // ② Firestore データの更新時刻を取得（無ければ 0）
-    //    Firestore 側で `updatedAt` (number: milliseconds) を持っている前提
-    const fsUpdated = (storeSettings as any).updatedAt ?? 0;
-
-    // ③ キャッシュが新しい場合は UI を上書きせずスキップ
-    if (cachedAt >= fsUpdated && fsUpdated !== 0) {
-      console.info('[page] skip firestore -> state (cache newer)');
-      return;
-    }
-
+    const rawUpdatedAt: any = (serverSettings as any).updatedAt ?? 0;
+    const fsUpdated =
+      typeof rawUpdatedAt === 'object' && rawUpdatedAt && typeof rawUpdatedAt.toMillis === 'function'
+        ? rawUpdatedAt.toMillis()
+        : (typeof rawUpdatedAt === 'number' ? rawUpdatedAt : 0);
+    // ③ Firestore を常に真実として反映（キャッシュ新しさによるスキップを撤廃）
     // ④ Firestore を優先して UI & localStorage を更新
-    // eatOptions / drinkOptions
-    setEatOptions(storeSettings.eatOptions ?? []);
-    nsSetJSON('eatOptions', storeSettings.eatOptions ?? []);
-
-    setDrinkOptions(storeSettings.drinkOptions ?? []);
-    nsSetJSON('drinkOptions', storeSettings.drinkOptions ?? []);
-
-    // courses
-    if (storeSettings.courses && storeSettings.courses.length > 0) {
-      setCourses(storeSettings.courses as any);
-      nsSetJSON('courses', storeSettings.courses);
+    setEatOptions(serverSettings.eatOptions ?? []);
+    nsSetJSON('eatOptions', serverSettings.eatOptions ?? []);
+    setDrinkOptions(serverSettings.drinkOptions ?? []);
+    nsSetJSON('drinkOptions', serverSettings.drinkOptions ?? []);
+    if (Array.isArray(serverSettings.courses)) {
+      const normalized = sanitizeCourses(serverSettings.courses);
+      if (normalized.length > 0) {
+        setCourses(normalized);
+        nsSetJSON('courses', normalized);
+      } else {
+        console.log('[fs] skip empty courses');
+      }
     }
-
-    // tables
-    if (storeSettings.tables && storeSettings.tables.length > 0) {
-      setPresetTables(storeSettings.tables as any);
-      nsSetJSON('presetTables', storeSettings.tables);
+    if (serverSettings.tables && serverSettings.tables.length > 0) {
+      const list = (serverSettings.tables as any[]).map(String);
+      setPresetTables(list);
+      nsSetJSON('presetTables', list);
     }
-
-    // positions
-    setPositions(storeSettings.positions ?? []);
-    nsSetJSON('positions', storeSettings.positions ?? []);
-
-    // tasksByPosition
-    setTasksByPosition(storeSettings.tasksByPosition ?? {});
-    nsSetJSON('tasksByPosition', storeSettings.tasksByPosition ?? {});
-
+    if (Array.isArray(serverSettings.positions) && serverSettings.positions.length > 0) {
+      const posNames = toPositionNames(serverSettings.positions as any);
+      setPositions(posNames);
+      nsSetJSON('positions', posNames);
+    }
+    if (
+      serverSettings.tasksByPosition &&
+      typeof serverSettings.tasksByPosition === 'object' &&
+      Object.keys(serverSettings.tasksByPosition).length > 0
+    ) {
+      setTasksByPosition(serverSettings.tasksByPosition);
+      nsSetJSON('tasksByPosition', serverSettings.tasksByPosition);
+    }
     // ⑤ キャッシュ更新
-    nsSetJSON('settings-cache', { cachedAt: Date.now(), data: storeSettings });
-  }, [storeSettings]);
+    nsSetJSON('settings-cache', { cachedAt: Date.now(), data: serverSettings });
+  }, [serverSettings, settingsLoading]);
+
+// ── Areas: normalize + local table→areas map (derived from settingsDraft.areas) ──
+const usableAreas: AreaDef[] = React.useMemo<AreaDef[]>(() => {
+  const src = Array.isArray(settingsDraft?.areas)
+    ? (settingsDraft!.areas as any[])
+    : [];
+
+  return src
+    // 無名エリアを除外（name の空白も除外）
+    .filter((a) => {
+      const nm =
+        typeof (a as any)?.name === 'string'
+          ? String((a as any).name).trim()
+          : '';
+      return a && typeof (a as any).id === 'string' && nm.length > 0;
+    })
+    // tables は文字列化 + 重複除去（戻りを AreaDef に固定）
+    .map<AreaDef>((a: any): AreaDef => {
+      const id: string = String((a as any).id);
+      const name: string = String((a as any).name);
+      const tables: string[] = Array.from(
+        new Set<string>(
+          (Array.isArray((a as any).tables) ? (a as any).tables : []).map(
+            (t: any) => String(t)
+          )
+        )
+      );
+      const color: string | undefined =
+        typeof (a as any).color === 'string' ? (a as any).color : undefined;
+      const icon: string | undefined =
+        typeof (a as any).icon === 'string' ? (a as any).icon : undefined;
+
+      return { id, name, tables, color, icon };
+    });
+}, [settingsDraft?.areas]);
+
+// usableAreas から “卓番号 → 含まれるエリアID[]” を作る
+const tableToAreasLocal = React.useMemo(() => {
+  const map: Record<string, string[]> = {};
+  for (const a of usableAreas) {
+    const aid = a.id;
+    const list = Array.isArray(a.tables) ? a.tables : [];
+    for (const t of list) {
+      const key = String(t);
+      if (!map[key]) map[key] = [];
+      if (!map[key].includes(aid)) map[key].push(aid);
+    }
+  }
+  return map;
+}, [usableAreas]);
 
 
   // (Firestore 初回 1 read → localStorage キャッシュ: 統合フックにより削除)
@@ -395,11 +831,12 @@ function updateReservationField(
     | 'notes'
     | 'date'
     | 'table'
+    | 'tables'
     | 'completed'
     | 'arrived'
     | 'paid'
     | 'departed',
-  value: string | number | { [key: string]: boolean } | boolean
+  value: string | number | { [key: string]: boolean } | boolean | string[]
 ) {
   setReservations((prev) => {
     const next = prev.map((r) => {
@@ -430,14 +867,16 @@ function updateReservationField(
         return { ...r, departed: Boolean(value) };
       } else if (field === 'table') {
         return { ...r, table: String(value) };
+      } else if (field === 'tables') {
+        return { ...r, tables: (value as string[]) };
       } else {
         return { ...r, [field]: value as any };
       }
     });
 
-  persistReservations(next);
-  writeReservationsCache(next);
-  return next;
+    persistReservations(next);
+    writeReservationsCache(next);
+    return next;
   });
 
   // Firestore 側も更新（オフライン時は SDK がキュー）
@@ -451,26 +890,54 @@ function updateReservationField(
 const [tablesForMove, setTablesForMove] = useState<string[]>([]); // 変更対象
 // 現在入力中の “変更後卓番号”
 const [targetTable, setTargetTable] = useState<string>('');
-// 変更確定処理
-const commitTableMoves = useCallback(() => {
-  const entries = Object.entries(pendingTables);
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTE: Edit Table Mode の OFF は **commitTableMoves** が唯一の責務。
+// 子コンポーネントや他の処理からは onToggleEditTableMode() を呼ばないこと。
+// （ユーザー手操作の ON/OFF は onToggleEditTableMode でのみ実行）
+// ─────────────────────────────────────────────────────────────────────────────
+// 変更確定処理 (async, 親がモードOFFを司る) — override を受け取れるように拡張
+const commitTableMoves = useCallback(async (override?: PendingTables): Promise<void> => {
+  // コミット対象は override があればそれ、なければ state
+  const source = override ?? pendingTables;
+  const entries = Object.entries(source);
   if (entries.length === 0) return;
 
-  const moveDocs: { id: string; old: string; new: string }[] = [];   // ←①
+  // --- コンフリクト検知：同じ primary(= nextList[0]) が 2 件以上ある場合は中止 ---
+  const primaryTargets: string[] = entries.map(([_, pt]) => {
+    const list = Array.isArray(pt?.nextList) ? pt.nextList : [];
+    const primary = (list[0] ?? pt?.old ?? '');
+    return String(primary || '').trim();
+  }).filter(Boolean);
 
-  // Firestore & local 更新
-  entries.forEach(([idStr, { old, next }]) => {                     // ←②
-    moveDocs.push({ id: idStr, old, new: next });           // ←③
-    updateReservationField(idStr, 'table', next);
-  });
+  const counts: Record<string, number> = {};
+  for (const t of primaryTargets) counts[t] = (counts[t] || 0) + 1;
+  const dupTarget = Object.keys(counts).find(k => counts[k] > 1);
+  if (dupTarget) {
+    toast.error(`同じ卓番号「${dupTarget}」に複数の予約を割り当てようとしています。対象を確認してください。`);
+    return;
+  }
 
-  // 後片付け
+  // --- 実更新：table と tables を同時に反映（バックエンド & ローカル） ---
+  for (const [idStr, pt] of entries) {
+    const nextList = Array.isArray(pt?.nextList) ? pt.nextList.map(String) : [];
+    const primary = (nextList[0] ?? pt?.old ?? '');
+    const primaryStr = String(primary || '');
+
+    if (primaryStr) {
+      updateReservationField(idStr, 'table', primaryStr);
+    }
+    if (nextList.length > 0) {
+      updateReservationField(idStr, 'tables', nextList);
+    } else if (primaryStr) {
+      updateReservationField(idStr, 'tables', [primaryStr]);
+    }
+  }
+
+  // --- 後片付け（ここだけが唯一のOFF） ---
   setPendingTables({});
   setTablesForMove([]);
+  try { setNumPadState(null as any); } catch {/* optional */}
   setEditTableMode(false);
-
-  // 予約オブジェクトから preview 用フィールドを除去
-  setReservations(prev => prev.map(r => ({ ...r, pendingTable: undefined })));
 
   toast.success('卓番号の変更を反映しました');
 }, [pendingTables, updateReservationField]);
@@ -480,130 +947,150 @@ const toggleTableForMove = useCallback((id: string) => {
     prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]
   );
 }, []);
+
+// 卓番号変更プレビュー: 1件のみキャンセル（pendingTables, tablesForMove から除去）
+const cancelOnePending = useCallback((id: string) => {
+  // pendingTables から対象IDを削除
+  setPendingTables(prev => {
+    if (!prev || !(id in prev)) return prev;
+    const next = { ...prev } as any;
+    delete next[id];
+    return next;
+  });
+  // 選択対象からも除外
+  setTablesForMove(prev => prev.filter(x => x !== id));
+  // ※ NumPad の開閉は子コンポーネント側で制御
+}, []);
 　/* ──────────────────────────────── */
-  // 店舗設定タブを初めて開いたときのみ Firestore を 1 read
+  // 店舗設定タブを初めて開いたときのみ Firestore を 1 read（※統合フックに置換のため停止）
   useEffect(() => {
     if (selectedMenu === '店舗設定画面' && !hasLoadedStore.current) {
-      (async () => {
-        try {
-          const data = await loadStoreSettings();
-          if (data) {
-            // only override if saved courses exist
-            if (data.courses && data.courses.length > 0) {
-              setCourses(data.courses);
-            }
-            // only override if saved tables exist
-            if (data.tables && data.tables.length > 0) {
-              setPresetTables(data.tables);
-            }
-            // positions や tasksByPosition を同期したい場合はここで上書き
-          }
-        } catch (err) {
-          console.warn('loadStoreSettings failed, fallback to local cache', err);
-        } finally {
-          hasLoadedStore.current = true;
-        }
-      })();
+      console.info('[page] skip loadStoreSettings() → useRealtimeStoreSettings に統一');
+      hasLoadedStore.current = true; // フラグだけ立てる
     }
   }, [selectedMenu]);
-  // --- 店舗設定を Firestore に保存して閉じる ----------------------------
-  const handleStoreSave = async () => {
-    await toast.promise(
-      saveStoreSettingsTx({
-        eatOptions,
-        drinkOptions,
-        courses,
-        tables: presetTables,
-        positions,
-        tasksByPosition,
-      }),
-      {
-        loading: '保存中…',
-        success: '店舗設定を保存しました',
-        error: '保存に失敗しました（オフライン中かもしれません）',
-      }
-    );
-    // Always write current courses array to localStorage
-    nsSetJSON('courses', courses);
 
-    // 最新設定を Firestore から再取得し、eatOptions/drinkOptions/positions/tasksByPosition を再セット
-    try {
-      // 型定義が追いついていないため any キャストで拡張プロパティを参照
-      const latest = (await loadStoreSettings()) as {
-        eatOptions: string[];
-        drinkOptions: string[];
-        courses: any[];
-        tables: any[];
-        positions?: string[];
-        tasksByPosition?: Record<string, Record<string, string[]>>;
-      };
-      // eatOptions
-      if (Array.isArray(latest.eatOptions) && latest.eatOptions.length > 0) {
-        setEatOptions(latest.eatOptions);
-        nsSetJSON('eatOptions', latest.eatOptions);
-      }
-      // drinkOptions
-      if (Array.isArray(latest.drinkOptions) && latest.drinkOptions.length > 0) {
-        setDrinkOptions(latest.drinkOptions);
-        nsSetJSON('drinkOptions', latest.drinkOptions);
-      }
-      // positions
-      if (Array.isArray(latest.positions) && latest.positions.length > 0) {
-        setPositions(latest.positions);
-        nsSetJSON('positions', latest.positions);
-      }
-      // tasksByPosition
-      if (
-        latest.tasksByPosition &&
-        typeof latest.tasksByPosition === 'object'
-      ) {
-        setTasksByPosition(latest.tasksByPosition);
-        nsSetJSON('tasksByPosition', latest.tasksByPosition);
-      }
-    } catch (err) {
-      // 取得失敗時は無視
-    }
-    // 保存後は設定画面を閉じてメイン画面へ戻る
-    setSelectedMenu('営業前設定');
-  };
+  // === Reservations: edited marks (persist across tab switches) ===
+
+  // === Reservations: edited marks (persist across tab switches) ===
+const [editedMarks, setEditedMarks] = useState<Record<string, number>>(
+  () => nsGetJSON<Record<string, number>>('res_editedMarks', {})
+);
+useEffect(() => {
+  nsSetJSON('res_editedMarks', editedMarks);
+}, [editedMarks]);
   // ----------------------------------------------------------------------
   // ─────────────── 追加: コントロールバー用 state ───────────────
+  // Tasks tab control center (namespaced)
   const [showCourseAll, setShowCourseAll] = useState<boolean>(() =>
-  nsGetStr('showCourseAll', '1') === '1'
-);
+    nsGetStr('tasks_showCourseAll', '1') === '1'
+  );
   const [showGuestsAll, setShowGuestsAll] = useState<boolean>(() =>
-  nsGetStr('showGuestsAll', '1') === '1'
-);
-  
-  // 「コース開始時間表」で卓番を表示するかどうか
-const [showTableStart, setShowTableStart] = useState<boolean>(true);  
+    nsGetStr('tasks_showGuestsAll', '1') === '1'
+  );
   const [mergeSameTasks, setMergeSameTasks] = useState<boolean>(() =>
-  nsGetStr('mergeSameTasks', '0') === '1'
-);
-  const [taskSort, setTaskSort] = useState<'table' | 'guests'>('table');
-  const [filterCourse, setFilterCourse] = useState<string>(() => nsGetStr('filterCourse', '全体'));
+    nsGetStr('tasks_mergeSameTasks', '0') === '1'
+  );
+
+  // Course Start tab settings (namespaced)
+  const [showTableStart, setShowTableStart] = useState<boolean>(() => nsGetStr('cs_showTableStart', '1') === '1');
+  const [courseStartFiltered, setCourseStartFiltered] = useState<boolean>(() => nsGetStr('cs_courseStartFiltered', '1') === '1');
+
+  // Course Start tab – sort order (persisted)
+const [csStartSort, setCsStartSort] = useState<'table' | 'guests'>(() => {
+  const v = nsGetStr('cs_startSort', 'table');
+  return v === 'guests' ? 'guests' : 'table';
+});
+useEffect(() => {
+  if (typeof window !== 'undefined') nsSetStr('cs_startSort', csStartSort);
+}, [csStartSort]);
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      nsSetStr('filterCourse', filterCourse);
+    if (typeof window !== 'undefined') nsSetStr('cs_showTableStart', showTableStart ? '1' : '0');
+  }, [showTableStart]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') nsSetStr('cs_courseStartFiltered', courseStartFiltered ? '1' : '0');
+  }, [courseStartFiltered]);
+  // Tasks tab – sort order (persisted)
+  const [taskSort, setTaskSort] = useState<'table' | 'guests'>(() => {
+    const v = nsGetStr('tasks_taskSort', 'table');
+    return v === 'guests' ? 'guests' : 'table';
+  });
+  useEffect(() => {
+    if (typeof window !== 'undefined') nsSetStr('tasks_taskSort', taskSort);
+  }, [taskSort]);
+
+  // Tasks tab – area filter (replaces old "filterCourse")
+  const [filterArea, setFilterArea] = React.useState<string>(() =>
+    nsGetStr('tasks_filterArea', '全て')
+  );
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') nsSetStr('tasks_filterArea', filterArea);
+  }, [filterArea]);
+
+  // Reservations filtered by Area for Tasks tab
+  const reservationsByArea = React.useMemo(() => {
+    const base = Array.isArray(reservations) ? reservations : [];
+    if (filterArea === '全て') return base;
+
+    if (filterArea === '未割当') {
+      // エリアに一切割り当てられていない卓（tableToAreas 無し or 空配列）
+      const assigned = new Set<string>();
+      const map = tableToAreasLocal || {};
+      Object.entries(map).forEach(([t, arr]) => {
+        if (Array.isArray(arr) && arr.length > 0) assigned.add(String(t));
+      });
+      return base.filter(r => !assigned.has(String(r.table)));
     }
-  }, [filterCourse]);
+
+    // areaId 指定：重複所属OK → そのエリアを含む卓のみ
+    const map = tableToAreasLocal || {};
+    return base.filter(r => {
+      const list = map[String(r.table)] || [];
+      return Array.isArray(list) && list.includes(filterArea);
+    });
+  }, [reservations, filterArea, tableToAreasLocal]);
+
+  // --- Course Start tab–only: show guests toggle (independent from Tasks tab) ---
+const [csShowGuestsAll, setCsShowGuestsAll] = useState<boolean>(() => nsGetStr('cs_showGuestsAll', '1') === '1');
+
+useEffect(() => {
+  if (typeof window !== 'undefined') nsSetStr('cs_showGuestsAll', csShowGuestsAll ? '1' : '0');
+}, [csShowGuestsAll]);
+
+  // --- タブ別：コース絞り込み（Tasks / CourseStart） ---
+  const [tasksFilterCourse, setTasksFilterCourse] = useState<string>(
+    () => nsGetStr('tasks_filterCourse', '全体')
+  );
+  useEffect(() => {
+    if (typeof window !== 'undefined') nsSetStr('tasks_filterCourse', tasksFilterCourse);
+  }, [tasksFilterCourse]);
+
+  const [csFilterCourse, setCsFilterCourse] = useState<string>(
+    () => nsGetStr('cs_filterCourse', '全体')
+  );
+  useEffect(() => {
+    if (typeof window !== 'undefined') nsSetStr('cs_filterCourse', csFilterCourse);
+  }, [csFilterCourse]);
+
+
 
   // ▼ Control Center toggles — persist to localStorage
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      nsSetStr('showCourseAll', showCourseAll ? '1' : '0');
+      nsSetStr('tasks_showCourseAll', showCourseAll ? '1' : '0');
     }
   }, [showCourseAll]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      nsSetStr('showGuestsAll', showGuestsAll ? '1' : '0');
+      nsSetStr('tasks_showGuestsAll', showGuestsAll ? '1' : '0');
     }
   }, [showGuestsAll]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      nsSetStr('mergeSameTasks', mergeSameTasks ? '1' : '0');
+      nsSetStr('tasks_mergeSameTasks', mergeSameTasks ? '1' : '0');
     }
   }, [mergeSameTasks]);
 
@@ -790,10 +1277,29 @@ const togglePaymentChecked = useCallback((id: string) => {
   const updateReservationFieldRef = useRef(updateReservationField);
   useEffect(() => { updateReservationFieldRef.current = updateReservationField; }, [updateReservationField]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  // ※依存配列を空にしているためLint警告を無効化（安全に使える想定）
-  const onToggleEditTableMode = useCallback(() => {
-    setEditTableMode(prev => !prev);
-  }, []);
+// ※依存配列を空にしているためLint警告を無効化（安全に使える想定）
+/**
+ * ユーザー手操作専用のトグル。
+ * - プログラム側（適用など）からは呼ばないこと。
+ * - OFF 遷移時のみ、未適用プレビュー（pendingTables / tablesForMove）を破棄。
+ * - reservations は確定処理以外で書き換えないため、pendingTable は互換目的で undefined に揃えるのみ。
+ */
+const onToggleEditTableMode = useCallback(() => {
+  setEditTableMode(prev => {
+    const next = !prev;
+    // モードOFFに遷移する時は未適用プレビューを破棄（reservations 自体は書き換えない）
+    if (!next) {
+      setPendingTables({});
+      setTablesForMove([]);
+      // 互換目的：UIでは使っていないが、残っている可能性のある pendingTable は明示的に消しておく
+      try {
+        setReservations(prevRes => prevRes.map(r => ({ ...r, pendingTable: undefined })));
+      } catch {/* noop */}
+      // NumPadのクローズは子で管理しているため、ここでは行わない
+    }
+    return next;
+  });
+}, []);
 
   // 予約追加（子に渡す用）: 必ず Promise を返す
   const addReservationCb = useCallback((e: FormEvent) => {
@@ -868,8 +1374,60 @@ const togglePaymentChecked = useCallback((id: string) => {
     },
   ];
 
-  // 初期レンダリング時は必ず defaultCourses で一致させる（SSR ↔ CSR）
-  const [courses, setCourses] = useState<CourseDef[]>(defaultCourses);
+
+  // 選択中のコース名 (タスク設定用)
+  const [selectedCourse, setSelectedCourse] = useState<string>(() => nsGetStr('selectedCourse', 'スタンダード'));
+
+  // 営業前設定・タスクプレビュー用に表示中のコース
+  const [displayTaskCourse, setDisplayTaskCourse] = useState<string>(() => courses[0]?.name || '');
+
+  // 安全な表示用タスクリスト（常に配列を返す）
+  const displayTasksSafe = useMemo(() => {
+    const tasks = courses.find(c => c.name === displayTaskCourse)?.tasks;
+    return Array.isArray(tasks) ? tasks : [];
+  }, [courses, displayTaskCourse]);
+
+  // --- keep selectedCourse valid whenever courses change ---
+  useEffect(() => {
+    if (!Array.isArray(courses) || courses.length === 0) return;
+    if (!selectedCourse || !courses.some(c => c.name === selectedCourse)) {
+      const fallback = courses[0]?.name || '';
+      setSelectedCourse(fallback);
+      try { nsSetStr('selectedCourse', fallback); } catch {}
+    }
+  }, [courses, selectedCourse]);
+
+  // --- keep displayTaskCourse valid whenever courses change ---
+  useEffect(() => {
+    if (!Array.isArray(courses) || courses.length === 0) return;
+    if (!displayTaskCourse || !courses.some(c => c.name === displayTaskCourse)) {
+      setDisplayTaskCourse(courses[0]?.name || '');
+    }
+  }, [courses, displayTaskCourse]);
+
+  // --- one-time migration: fix broken courses in localStorage and state ---
+  const didMigrateCoursesRef = useRef(false);
+  useEffect(() => {
+    if (didMigrateCoursesRef.current) return;
+    didMigrateCoursesRef.current = true;
+    try {
+      const raw = nsGetJSON<any>('courses', []);
+      const normalized = sanitizeCourses(raw);
+      // storage を正規化
+      if (Array.isArray(raw)) {
+        const needsWrite =
+          raw.length !== normalized.length ||
+          JSON.stringify(raw) !== JSON.stringify(normalized);
+        if (needsWrite) nsSetJSON('courses', normalized);
+      } else {
+        if (normalized.length > 0) nsSetJSON('courses', normalized);
+      }
+      // state が空で storage にデータがあるなら adopt
+      setCourses(prev => (prev.length === 0 && normalized.length > 0 ? normalized : prev));
+    } catch (err) {
+      console.warn('[migration] courses normalize failed', err);
+    }
+  }, []);
 
   // CSR でのみ localStorage を参照して上書き（Hydration mismatch 回避）
   useEffect(() => {
@@ -880,34 +1438,21 @@ const togglePaymentChecked = useCallback((id: string) => {
     }
   }, []);
 
-  // ─── コース一覧が変わった時、選択中コース名を自動補正 ───
+
+
+  // タブ別コース絞り込みの自己修復（存在しないコース名→『全体』へ）
   useEffect(() => {
-    if (courses.length === 0) return;
-
-    // ① タスク編集用 selectedCourse
-    if (!courses.some(c => c.name === selectedCourse)) {
-      const fallback = courses[0].name;
-      setSelectedCourse(fallback);
-      nsSetStr('selectedCourse', fallback);
+    if (tasksFilterCourse !== '全体' && !courses.some(c => c.name === tasksFilterCourse)) {
+      setTasksFilterCourse('全体');
+      try { nsSetStr('tasks_filterCourse', '全体'); } catch {}
     }
-
-    // ② タスク表示用 displayTaskCourse
-    if (!courses.some(c => c.name === displayTaskCourse)) {
-      setDisplayTaskCourse(courses[0].name);
+    if (csFilterCourse !== '全体' && !courses.some(c => c.name === csFilterCourse)) {
+      setCsFilterCourse('全体');
+      try { nsSetStr('cs_filterCourse', '全体'); } catch {}
     }
-  }, [courses]);
-
-  // ─── コース絞り込みの自己修復：存在しないコースが選ばれていたら「全体」に戻す ───
-  useEffect(() => {
-    if (filterCourse !== '全体' && !courses.some(c => c.name === filterCourse)) {
-      setFilterCourse('全体');
-      try { nsSetStr('filterCourse', '全体'); } catch {}
-    }
-  }, [courses, filterCourse]);
+  }, [courses, tasksFilterCourse, csFilterCourse]);
 
 
-  // 選択中のコース名 (タスク設定用)
-  const [selectedCourse, setSelectedCourse] = useState<string>(() => nsGetStr('selectedCourse', 'スタンダード'));
   // タスク設定セクションの開閉
   const [courseTasksOpen, setCourseTasksOpen] = useState<boolean>(false);
   // 編集中の既存タスク (offset と label で一意に判定)
@@ -957,6 +1502,7 @@ const togglePaymentChecked = useCallback((id: string) => {
 
   // 新規予約入力用フィールド（卓番・時刻・コース・人数・氏名・備考）
   const [newResTable, setNewResTable] = useState<string>('');
+  const [newResTables, setNewResTables] = useState<string[]>([]);
   const [newResTime, setNewResTime] = useState<string>(() => nsGetStr('lastNewResTime', '18:00'));
   const [newResCourse, setNewResCourse] = useState<string>('');   // 未選択で開始
   const [newResGuests, setNewResGuests] = useState<number | ''>('');
@@ -966,39 +1512,55 @@ const togglePaymentChecked = useCallback((id: string) => {
 const [newResDrink, setNewResDrink] = useState<string>(''); // 飲み放題
 
   // 来店入力：氏名表示・備考表示（タブレット専用）
-  const [showNameCol, setShowNameCol] = useState<boolean>(true);
-  const [showNotesCol, setShowNotesCol] = useState<boolean>(true);
+  const [showNameCol, setShowNameCol] = useState<boolean>(() => nsGetStr('res_showNameCol', '1') === '1');
+  const [showNotesCol, setShowNotesCol] = useState<boolean>(() => nsGetStr('res_showNotesCol', '1') === '1');
   // 来店入力：食べ放題・飲み放題表示
   // ── 食 / 飲 列の表示フラグ（localStorage ←→ state）────────────────────
-const [showEatCol, setShowEatCol] = useState<boolean>(() => nsGetStr('showEatCol', '1') === '1');
-const [showDrinkCol, setShowDrinkCol] = useState<boolean>(() => nsGetStr('showDrinkCol', '1') === '1');
+  const [showEatCol, setShowEatCol] = useState<boolean>(() => nsGetStr('res_showEatCol', '1') === '1');
+  const [showDrinkCol, setShowDrinkCol] = useState<boolean>(() => nsGetStr('res_showDrinkCol', '1') === '1');
 
 // ON/OFF が変わるたびに localStorage へ保存
 useEffect(() => {
   if (typeof window !== 'undefined') {
-    nsSetStr('showEatCol', showEatCol ? '1' : '0');
-
+    nsSetStr('res_showEatCol', showEatCol ? '1' : '0');
   }
 }, [showEatCol]);
 
 useEffect(() => {
   if (typeof window !== 'undefined') {
-    nsSetStr('showDrinkCol', showDrinkCol ? '1' : '0');
+    nsSetStr('res_showDrinkCol', showDrinkCol ? '1' : '0');
   }
 }, [showDrinkCol]);
+
+useEffect(() => {
+  if (typeof window !== 'undefined') {
+    nsSetStr('res_showNameCol', showNameCol ? '1' : '0');
+  }
+}, [showNameCol]);
+
+useEffect(() => {
+  if (typeof window !== 'undefined') {
+    nsSetStr('res_showNotesCol', showNotesCol ? '1' : '0');
+  }
+}, [showNotesCol]);
 // ─────────────────────────────────────────────────────────────
   // 来店入力: 人数列を表示するかどうか
-  const [showGuestsCol, setShowGuestsCol] = useState<boolean>(true);
+  const [showGuestsCol, setShowGuestsCol] = useState<boolean>(() => nsGetStr('res_showGuestsCol', '1') === '1');
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      nsSetStr('res_showGuestsCol', showGuestsCol ? '1' : '0');
+    }
+  }, [showGuestsCol]);
   // 表示順選択 (table/time/created)
   const [resOrder, setResOrder] = useState<ResOrder>(() => {
-    const v = nsGetStr('resOrder', 'time');
+    const v = nsGetStr('res_resOrder', 'time');
     return (v === 'time' || v === 'table' || v === 'created') ? (v as ResOrder) : 'time';
   });
 
   // 並び順セレクタの変更をlocalStorageに保存
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      nsSetStr('resOrder', resOrder);
+      nsSetStr('res_resOrder', resOrder);
     }
   }, [resOrder]);
 
@@ -1010,6 +1572,11 @@ useEffect(() => {
   const [presetTables, setPresetTables] = useState<string[]>(() =>
   nsGetJSON<string[]>('presetTables', [])
 );
+  // 表示・子渡し用に、卓番号を string 化 + 数字として昇順ソート
+  const presetTablesView: string[] = React.useMemo(() => {
+    const src = Array.isArray(presetTables) ? presetTables : [];
+    return src.map(String).sort((a, b) => Number(a) - Number(b));
+  }, [presetTables]);
   // 新規テーブル入力用 (numeric pad)
   const [newTableTemp, setNewTableTemp] = useState<string>('');
   // 卓設定セクション開閉
@@ -1017,19 +1584,21 @@ useEffect(() => {
   // フロア図エディット用テーブル設定トグル
   const [tableConfigOpen, setTableConfigOpen] = useState<boolean>(false);
   // “フィルター表示する卓番号” 用チェック済みテーブル配列
-  const [checkedTables, setCheckedTables] = useState<string[]>(() =>
-  nsGetJSON<string[]>('checkedTables', [])
-);
+  const [checkedTables, setCheckedTables] = React.useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(`${ns}-checkedTables`) ?? '[]');
+    } catch {
+      return [];
+    }
+  });
 
-  // ⬇︎ “表示する卓” フィルターも常に永続化
+  // ⬇︎ “表示する卓” フィルターも常に永続化（namespaced）
   useEffect(() => {
-  nsSetJSON('checkedTables', checkedTables);
-}, [checkedTables]);
+    try {
+      localStorage.setItem(`${ns}-checkedTables`, JSON.stringify(checkedTables));
+    } catch {}
+  }, [checkedTables]);
 
-  // 「コース開始時間表」でポジション／卓フィルターを使うかどうか
-  const [courseStartFiltered, setCourseStartFiltered] = useState<boolean>(true);
-  // 営業前設定・タスクプレビュー用に表示中のコース
-  const [displayTaskCourse, setDisplayTaskCourse] = useState<string>(() => courses[0]?.name || '');
   // ⏱ モード自動解除（ズレ防止）
   // 画面切替・フィルター変更・データ更新が起きたら時間調整モードを終了して選択をクリア
   useEffect(() => {
@@ -1039,7 +1608,6 @@ useEffect(() => {
     }
   }, [
     selectedMenu,          // タブ切替
-    filterCourse,          // コース絞り込み
     checkedTables,         // 卓フィルタ
     checkedTasks,          // タスク可視フィルタ（その他）
     courseStartFiltered,   // コース開始時間表のフィルタ
@@ -1080,6 +1648,63 @@ useEffect(() => {
     }
     return (parsed as Record<string, Record<string, string[]>>) || {};
   });
+
+
+  // ── Settings: save handler (placed AFTER all live states it depends on) ─────────
+const handleStoreSave = React.useCallback(async () => {
+  try {
+    console.log('[handleStoreSave] start');
+    // ✅ Save from current live state (親の state を唯一の真実とする)
+
+    const draftForSave: StoreSettingsValue = {
+      ...settingsDraft,
+      courses,
+      positions,
+      tables: presetTables,
+      tasksByPosition,
+      eatOptions,
+      drinkOptions,
+      plans: settingsDraft.plans ?? [],
+      areas: Array.isArray(settingsDraft.areas) ? settingsDraft.areas : [],
+    };
+
+    console.info('[handleStoreSave] saving to', `stores/${id}/settings/config`, 'keys:', Object.keys(draftForSave || {}));
+
+    // フック経由の保存（唯一の経路）
+    await saveSettings(draftForSave as any);
+
+    // baseline & ローカルキャッシュ更新
+    setBaselineSettings(draftForSave);
+    try {
+      nsSetJSON('courses',         draftForSave.courses || []);
+      nsSetJSON('positions',       draftForSave.positions || []);
+      nsSetJSON('presetTables',    draftForSave.tables || []);
+      nsSetJSON('tasksByPosition', draftForSave.tasksByPosition || {});
+      nsSetJSON('eatOptions',      draftForSave.eatOptions || []);
+      nsSetJSON('drinkOptions',    draftForSave.drinkOptions || []);
+      nsSetJSON('settings-cache',  { cachedAt: Date.now(), data: draftForSave });
+    } catch {}
+
+    toast.success('店舗設定を保存しました');
+  } catch (e) {
+    console.error('[store settings] save failed:', e);
+    toast.error('保存に失敗しました。ネットワークをご確認ください。');
+  }
+}, [id, settingsDraft, courses, positions, presetTables, tasksByPosition, eatOptions, drinkOptions, saveSettings]);
+
+  // ── Settings: JSX block（新しい handleStoreSave を使用） ─────────
+  const renderSettingsContent = (
+    <main className="p-4">
+      <StoreSettingsContent
+  value={settingsDraft}
+  onChange={patchSettings}
+  onSave={handleStoreSave}
+  isSaving={isSavingSettings}
+  baseline={baselineSettings}
+/>
+    </main>
+  );
+
 
   // --- 一度きり: localStorage 正規化（checkedTasks / tasksByPosition） ---
   const didNormalizeLSRef = useRef(false);
@@ -1181,10 +1806,18 @@ useEffect(() => {
     setCourseByPosition(next);
     nsSetJSON('courseByPosition', next);
   };
-  // 全コースからタスクラベル一覧を取得
+  // 全コースからタスクラベル一覧を取得（防御的: coursesやtasksがundefinedでもOK）
   const allTasks = useMemo(() => {
     const labels = new Set<string>();
-    courses.forEach((c) => c.tasks.forEach((t) => labels.add(t.label)));
+    const list = Array.isArray(courses) ? courses : [];
+    for (const c of list) {
+      const tasks = Array.isArray(c?.tasks) ? c.tasks : [];
+      for (const t of tasks) {
+        if (t && typeof t.label === 'string' && t.label.length > 0) {
+          labels.add(t.label);
+        }
+      }
+    }
     return Array.from(labels);
   }, [courses]);
   // ポジション操作ヘルパー
@@ -1335,11 +1968,13 @@ useEffect(() => {
     const base = new Set((checkedTasks || []).map(normalizeLabel));
     const result: Record<string, Set<string>> = {};
 
-    courses.forEach((c) => {
+    const listCourses = Array.isArray(courses) ? courses : [];
+    listCourses.forEach((c) => {
       const s = new Set<string>(base);
       if (selectedDisplayPosition !== 'その他') {
         const posObj = tasksByPosition[selectedDisplayPosition] || {};
-        (posObj[c.name] || []).forEach((l) => s.add(normalizeLabel(l)));
+        const labels = Array.isArray((posObj as any)[c.name]) ? (posObj as any)[c.name] : [];
+        labels.forEach((l: string) => s.add(normalizeLabel(l)));
       }
       result[c.name] = s; // 空集合は「制約なし」を表す
     });
@@ -1405,10 +2040,11 @@ useEffect(() => {
     setCourses((prev) => {
       const next = prev.map((c) => {
         if (c.name !== selectedCourse) return c;
-        return {
-          ...c,
-          tasks: c.tasks.filter((t) => !(t.timeOffset === offset && normEq(t.label, label))),
-        };
+        const tasks = [...getTasks(c)];
+        const nextTasks = tasks.filter(
+          (t) => !(t.timeOffset === offset && normEq(t.label, label))
+        );
+        return { ...c, tasks: nextTasks };
       });
       nsSetJSON('courses', next);
       return next;
@@ -1436,18 +2072,20 @@ useEffect(() => {
     setEditingTask(null);
   };
 
-  // 既存タスク時間を ±5 分ずらす
+  // 既存タスク時間を ±5 分ずらす（防御的に配列化）
   const shiftTaskOffset = (offset: number, label: string, delta: number) => {
     setCourses((prev) => {
       const next = prev.map((c) => {
         if (c.name !== selectedCourse) return c;
-        const newTasks = c.tasks.map((t) => {
-          if (t.timeOffset !== offset || !normEq(t.label, label)) return t;
-          const newOffset = Math.max(0, Math.min(180, t.timeOffset + delta));
-          return { ...t, timeOffset: newOffset };
-        });
-        newTasks.sort((a, b) => a.timeOffset - b.timeOffset);
-        return { ...c, tasks: newTasks };
+        const base = [...getTasks(c)];
+        const tasks = base
+          .map((t) => {
+            if (t.timeOffset !== offset || !normEq(t.label, label)) return t;
+            const newOffset = Math.max(0, Math.min(180, t.timeOffset + delta));
+            return { ...t, timeOffset: newOffset };
+          })
+          .sort((a, b) => a.timeOffset - b.timeOffset);
+        return { ...c, tasks };
       });
       nsSetJSON('courses', next);
       return next;
@@ -1506,8 +2144,10 @@ useEffect(() => {
     setCourses(prev => {
       const next = prev.map(c => {
         if (c.name !== selectedCourse) return c;
-        const updatedTasks = c.tasks.map(t =>
-          normEq(t.label, oldLabel) && (timeOffset === undefined || t.timeOffset === timeOffset)
+        const base = [...getTasks(c)];
+        const updatedTasks = base.map(t =>
+          normEq(t.label, oldLabel) &&
+          (typeof timeOffset === 'undefined' || t.timeOffset === timeOffset)
             ? { ...t, label: newLabel }
             : t
         );
@@ -1517,39 +2157,24 @@ useEffect(() => {
       return next;
     });
 
-    // 2) 表示タスクフィルター（その他タブ）の同期
-    //    - 旧ラベルが他コースにまだ存在する → 旧ラベルが「その他」可視に含まれていた時だけ新ラベルを追加（増やさない）
-    //    - 旧ラベルが他コースに存在しない   → 旧ラベルが「その他」可視に含まれていた時だけ旧→新へ正規化置換
-    const existsInOtherCourses = courses.some(
-      (c) =>
-        c.name !== selectedCourse &&
-        c.tasks.some((t) => normEq(t.label, oldLabel))
-    );
+    // 2) 表示タスクフィルター（その他タブ）の同期（追加しない／置換のみ）
     setCheckedTasks((prev) => {
       const base = Array.isArray(prev) ? prev : [];
-      const hadOld = includesNorm(base, oldLabel);
-      let nextRef = base;
+      // 旧ラベルがチェックされていない場合は何もしない（追加しない）
+      if (!includesNorm(base, oldLabel)) return prev;
 
-      if (existsInOtherCourses) {
-        // 旧ラベルが他コースに残る場合：
-        // - 旧ラベルが元々「その他」可視に含まれていた時だけ、新ラベルを追加して可視性を維持
-        // - 含まれていなければ何もしない（新ラベルを勝手に可視化しない）
-        if (hadOld) {
-          nextRef = addIfMissingNorm(base, newLabel);
-        }
-      } else {
-        // 旧ラベルを使っているのがこのコースだけの場合：
-        // - 旧ラベルが「その他」に入っている時だけ、旧→新へ置換
-        if (hadOld) {
-          nextRef = Array.from(new Set(replaceLabelNorm(base, oldLabel, newLabel)));
-        }
+      // 旧→新へ置換（順序維持・重複は除去）
+      const replaced = base.map(l => (normEq(l, oldLabel) ? newLabel : l));
+      const dedup: string[] = [];
+      for (const l of replaced) {
+        if (!dedup.some(x => normEq(x, l))) dedup.push(l);
       }
 
-      if (nextRef !== base) {
-        try { nsSetJSON('checkedTasks', nextRef); } catch {}
-        return nextRef;
-      }
-      return prev; // 変更なし
+      // 変更がなければそのまま
+      if (dedup.length === base.length && dedup.every((v, i) => v === base[i])) return prev;
+
+      try { nsSetJSON('checkedTasks', dedup); } catch {}
+      return dedup;
     });
 
     // 3) ポジション × コースのタスク表示設定は「選択中コースに限定して」ラベルを置換。
@@ -1599,7 +2224,13 @@ useEffect(() => {
   useEffect(() => {
     // いま存在している全ラベル（正規化済み）をセット化
     const allNorm = new Set<string>();
-    courses.forEach(c => c.tasks.forEach(t => allNorm.add(normalizeLabel(t.label))));
+    const cList = Array.isArray(courses) ? courses : [];
+    for (const c of cList) {
+      const tList = Array.isArray(c?.tasks) ? c.tasks : [];
+      for (const t of tList) {
+        if (t && typeof t.label === 'string') allNorm.add(normalizeLabel(t.label));
+      }
+    }
 
     // ① “その他”タブのチェックリストを掃除（正規化比較）
     setCheckedTasks(prev => {
@@ -1638,7 +2269,13 @@ useEffect(() => {
     try {
       // いま存在している全ラベル（正規化）
       const allNorm = new Set<string>();
-      courses.forEach(c => c.tasks.forEach(t => allNorm.add(normalizeLabel(t.label))));
+      const cList2 = Array.isArray(courses) ? courses : [];
+      for (const c of cList2) {
+        const tList = Array.isArray(c?.tasks) ? c.tasks : [];
+        for (const t of tList) {
+          if (t && typeof t.label === 'string') allNorm.add(normalizeLabel(t.label));
+        }
+      }
 
       // 現在の結合フィルター（正規化）
       const combinedNorm = new Set<string>();
@@ -1676,7 +2313,9 @@ useEffect(() => {
     setCourses((prev) => {
       const next = prev.map((c) => {
         if (c.name !== selectedCourse) return c;
-        if (c.tasks.some((t) => t.timeOffset === offset && t.label === label)) {
+        const tasks = [...getTasks(c)];
+        // 重複ガード（同offset・同ラベル）
+        if (tasks.some((t) => t.timeOffset === offset && t.label === label)) {
           return c;
         }
         const bgColorMap: Record<string, string> = {
@@ -1689,23 +2328,18 @@ useEffect(() => {
         };
         const color = bgColorMap[label] || 'bg-gray-100/80';
         const updatedTasks = [
-          ...c.tasks,
+          ...tasks,
           { timeOffset: offset, label, bgColor: color },
-        ];
-        updatedTasks.sort((a, b) => a.timeOffset - b.timeOffset);
+        ].sort((a, b) => a.timeOffset - b.timeOffset);
         return { ...c, tasks: updatedTasks };
       });
       nsSetJSON('courses', next);
       return next;
     });
 
-    // ② 新規タスクをフィルターに自動追加（“最初から見える”ように）
-    setCheckedTasks((prev) => {
-  const next = addIfMissingNorm(prev ?? [], label);
-  if (next === prev) return prev;
-  try { nsSetJSON('checkedTasks', next); } catch {}
-  return next;
-});
+    // ② 新規タスクをフィルターに自動追加（撤廃：ユーザー操作のみでチェック）
+setCheckedTasks((prev) => prev);
+setTasksByPosition((prev) => prev);
   };
 
 // コース名を変更
@@ -1951,17 +2585,34 @@ const deleteCourse = async () => {
   const sortedReservations =
     resOrder === 'time' ? sortedByTime : resOrder === 'created' ? sortedByCreated : sortedByTable;
 
-  // “事前設定テーブル” で選ばれたもののみ表示＋コース絞り込み
-  const filteredReservations = useMemo(() => {
-    return sortedReservations
-      .filter((r) => {
-        // Table filter
-        if (checkedTables.length > 0 && !checkedTables.includes(r.table)) return false;
-        // Course filter
-        if (filterCourse !== '全体' && r.course !== filterCourse) return false;
-        return true;
-      });
-  }, [sortedReservations, checkedTables, filterCourse, checkedDepartures]);
+  // ▼ 共通 → タブ別フィルタへ分割
+  // 1) 営業前設定の「表示する卓」だけを適用した共通フィルタ（コース絞り込みは含めない）
+  const filteredByTables = useMemo(() => {
+    return sortedReservations.filter((r) => {
+      if (checkedTables.length > 0) {
+        const list = (Array.isArray(r.tables) && r.tables.length > 0) ? r.tables : [r.table];
+        if (!list.some(t => checkedTables.includes(t))) return false;
+      }
+      return true;
+    });
+  }, [sortedReservations, checkedTables]);
+
+  // 2) Tasks タブ専用：コース絞り込みを tasks_filterCourse で適用
+  const filteredReservationsTasks = useMemo(() => {
+    return filteredByTables.filter((r) => {
+      if (tasksFilterCourse !== '全体' && r.course !== tasksFilterCourse) return false;
+      return true;
+    });
+  }, [filteredByTables, tasksFilterCourse]);
+
+  // 3) コース開始時間表専用：営業前設定フィルタの反映有無 + cs_filterCourse を適用
+  const filteredReservationsCourseStart = useMemo(() => {
+    const source = courseStartFiltered ? filteredByTables : sortedReservations;
+    return source.filter((r) => {
+      if (csFilterCourse !== '全体' && r.course !== csFilterCourse) return false;
+      return true;
+    });
+  }, [filteredByTables, sortedReservations, courseStartFiltered, csFilterCourse]);
 
   /* ─── 2.x リマインド機能 state & ロジック ───────────────────────── */
   // 通知の ON/OFF（永続化：localStorage に保存 / 復元）
@@ -2046,16 +2697,17 @@ const deleteCourse = async () => {
 
       const baseMin = parseTimeToMinutes(res.time);
 
-      cdef.tasks.forEach((t) => {
+      const _tasks = Array.isArray(cdef?.tasks) ? cdef.tasks : [];
+      for (const t of _tasks) {
         // 営業前設定の表示タスクフィルターを尊重（非表示タスクは通知しない）
-        if (!isTaskAllowed(res.course, t.label)) return;
+        if (!isTaskAllowed(res.course, t.label)) continue;
 
         const absMin = baseMin + t.timeOffset + (res.timeShift?.[t.label] ?? 0);
-        if (absMin !== nowMin) return; // ちょうど今の分だけ通知
+        if (absMin !== nowMin) continue; // ちょうど今の分だけ通知
 
         const dateStr = res.date || todayKey();
         const dedupeKey = `${dateStr}_${res.id}_${t.label}_${res.course}_${res.time}`;
-        if (hasSent(dedupeKey)) return;
+        if (hasSent(dedupeKey)) continue;
 
         markSent(dedupeKey);
         sendTaskEvent({
@@ -2069,7 +2721,7 @@ const deleteCourse = async () => {
           dedupeKey,
           deviceId,
         });
-      });
+      }
     });
     // 依存には、時刻の他、予約・設定類を含める（重い場合は最小化してOK）
   }, [currentTime, remindersEnabled, reservations, courses, checkedTasks, selectedDisplayPosition, tasksByPosition, courseByPosition, checkedDepartures]);
@@ -2078,54 +2730,55 @@ const deleteCourse = async () => {
    *  [{ timeKey: "18:15", tasks: ["コース説明", "カレー"] }, ... ]
    */
   const upcomingReminders = useMemo<Array<{ timeKey: string; tasks: string[] }>>(() => {
-    if (!filteredReservations.length) return [];
+    if (!filteredReservationsTasks.length) return [];
     const nowMin = parseTimeToMinutes(currentTime);
 
     const map: Record<string, Set<string>> = {};
 
-    filteredReservations.forEach((res) => {
+    filteredReservationsTasks.forEach((res) => {
       // 除外: 既に退店済みの予約
       if (checkedDepartures.includes(res.id)) return;
       const courseDef = courses.find((c) => c.name === res.course);
       if (!courseDef) return;
       const baseMin = parseTimeToMinutes(res.time);
 
-      courseDef.tasks.forEach((t) => {
+      const _tasks = Array.isArray(courseDef?.tasks) ? courseDef.tasks : [];
+      for (const t of _tasks) {
         const absMin = calcTaskAbsMin(res.time, t.timeOffset, t.label, res.timeShift);
         // ---------- 表示タスクフィルター ----------
-        if (!isTaskAllowed(res.course, t.label)) return; // 表示フィルター非対象はスキップ
+        if (!isTaskAllowed(res.course, t.label)) continue; // 表示フィルター非対象はスキップ
         // ------------------------------------------
-        if (absMin < nowMin) return; // 既に過ぎているタスクは対象外
+        if (absMin < nowMin) continue; // 既に過ぎているタスクは対象外
         const timeKey = formatMinutesToTime(absMin);
         if (!map[timeKey]) map[timeKey] = new Set();
         map[timeKey].add(t.label);
-      });
+      }
     });
 
     // map → 配列へ変換し時刻順にソート
     return Object.entries(map)
       .sort((a, b) => parseTimeToMinutes(a[0]) - parseTimeToMinutes(b[0]))
       .map(([timeKey, set]) => ({ timeKey, tasks: Array.from(set) }));
-  }, [filteredReservations, courses, currentTime, checkedDepartures]);
+  }, [filteredReservationsTasks, courses, currentTime, checkedDepartures]);
 
   // 回転テーブル判定: 同じ卓番号が複数予約されている場合、その卓は回転中とみなす（参照安定化）
   const { rotatingTables, firstRotatingId } = useMemo(() => {
     const tableCounts: Record<string, number> = {};
-    filteredReservations.forEach((r) => {
-      tableCounts[r.table] = (tableCounts[r.table] || 0) + 1;
+    filteredReservationsTasks.forEach((r) => {
+      const list = (Array.isArray(r.tables) && r.tables.length > 0) ? r.tables : [r.table];
+      list.forEach(t => { tableCounts[t] = (tableCounts[t] || 0) + 1; });
     });
     const rotating = new Set(Object.keys(tableCounts).filter((t) => tableCounts[t] > 1));
 
     // 各回転テーブルごとに最初の予約IDを記録
     const first: Record<string, string> = {};
-    filteredReservations.forEach((r) => {
-      if (rotating.has(r.table) && !(r.table in first)) {
-        first[r.table] = r.id;
-      }
+    filteredReservationsTasks.forEach((r) => {
+      const list = (Array.isArray(r.tables) && r.tables.length > 0) ? r.tables : [r.table];
+      list.forEach(t => { if (rotating.has(t) && !(t in first)) first[t] = r.id; });
     });
 
     return { rotatingTables: rotating, firstRotatingId: first };
-  }, [filteredReservations]);
+  }, [filteredReservationsTasks]);
 
 
   //
@@ -2135,10 +2788,9 @@ const deleteCourse = async () => {
   // ─── コース開始時間表用グルーピング ─────────────────────────────
   const groupedStartTimes = useMemo(() => {
     const map: Record<string, Record<string, Reservation[]>> = {};
-    const source = courseStartFiltered ? filteredReservations : sortedReservations;
-source.forEach((r) => {
-      // コース絞り込み
-      if (filterCourse !== '全体' && r.course !== filterCourse) return;
+    // ここでは CourseStart 専用の配列を利用（営業前設定フィルタの反映有無＋コース絞り込み込み）
+    const source = filteredReservationsCourseStart;
+    source.forEach((r) => {
       if (!map[r.time]) map[r.time] = {};
       if (!map[r.time][r.course]) map[r.time][r.course] = [];
       map[r.time][r.course].push(r);
@@ -2150,7 +2802,7 @@ source.forEach((r) => {
         Object.entries(coursesMap).map(([courseName, reservations]) => ({ courseName, reservations })),
       ])
     );
-  }, [filteredReservations, sortedReservations, filterCourse, courseStartFiltered]);
+  }, [filteredReservationsCourseStart]);
 
   type TaskGroup = {
     timeKey: string;
@@ -2169,18 +2821,19 @@ source.forEach((r) => {
   } => {
     const grouped: Record<string, TaskGroup[]> = {};
 
-    filteredReservations.forEach((res) => {
+    filteredReservationsTasks.forEach((res) => {
       // Skip tasks for departed reservations
       if (checkedDepartures.includes(res.id)) return;
       if (res.course === '未選択') return;
       const courseDef = courses.find((c) => c.name === res.course);
       if (!courseDef) return;
 
-      courseDef.tasks.forEach((t) => {
+      const _tasks2 = Array.isArray(courseDef?.tasks) ? courseDef.tasks : [];
+      for (const t of _tasks2) {
         // === 営業前設定の「表示するタスク」フィルター（正規化済み集合を利用） ===
         const set = allowedLabelSetByCourse[res.course];
         const allowed = !set || set.size === 0 || set.has(normalizeLabel(t.label));
-        if (!allowed) return;
+        if (!allowed) continue;
 
         const slot = calcTaskAbsMin(res.time, t.timeOffset, t.label, res.timeShift);
         const timeKey = formatMinutesToTime(slot);
@@ -2197,7 +2850,7 @@ source.forEach((r) => {
           taskGroup.courseGroups.push(courseGroup);
         }
         courseGroup.reservations.push(res);
-      });
+      }
     });
 
     // 時刻キーを昇順に
@@ -2226,7 +2879,7 @@ source.forEach((r) => {
     });
 
     return { groupedTasks: grouped, sortedTimeKeys: keys };
-  }, [filteredReservations, courses, checkedDepartures, allowedLabelSetByCourse]);
+  }, [filteredReservationsTasks, courses, checkedDepartures, allowedLabelSetByCourse]);
 
   // ─── “リマインド用” 直近タイムキー（現在含む先頭4つ） ───
   const futureTimeKeys = useMemo(() => {
@@ -2388,13 +3041,15 @@ const onNumPadConfirm = () => {
       alert('内部エラー：予約IDが採番できませんでした。ページを再読み込みして下さい');
       return;
     }
+    // --- Guard: allow either single table or multi-tables --------------------
+    const hasAnyTable = (Array.isArray(newResTables) && newResTables.length > 0) || !!newResTable;
     if (
-      !newResTable ||                      // 卓番号未入力
-      !newResTime ||                       // 時刻未入力
-      newResGuests === '' ||               // 人数未入力
-      isNaN(Number(newResGuests)) ||       // 人数が数値でない
-      !newResCourse ||                     // コース未選択
-      nextResId === ''                     // ID が空  → 予約追加禁止
+      !hasAnyTable ||                    // 卓番号（単一 or 複数）未入力
+      !newResTime ||                     // 時刻未入力
+      newResGuests === '' ||             // 人数未入力
+      isNaN(Number(newResGuests)) ||     // 人数が数値でない
+      !newResCourse ||                   // コース未選択
+      nextResId === ''                   // ID が空  → 予約追加禁止
     ) {
       alert('卓番号・人数・コース・ID を正しく入力してください');
       return;
@@ -2408,11 +3063,16 @@ const onNumPadConfirm = () => {
       idToUse = String(Number(idToUse || '0') + 1);
     }
 
+    // primary table & tables payload for multi-table support
+    const primaryTable = (Array.isArray(newResTables) && newResTables.length > 0) ? newResTables[0] : newResTable;
+    const tablesPayload = (Array.isArray(newResTables) && newResTables.length > 0) ? newResTables : (newResTable ? [newResTable] : []);
+
     const newEntry: Reservation = {
       id: idToUse,
-      table: newResTable,
+      table: String(primaryTable || ''),
+      tables: tablesPayload.map(String),
       time: newResTime,
-      date: new Date().toISOString().slice(0, 10), // ← 追加 今日の日付
+      date: new Date().toISOString().slice(0, 10),
       course: newResCourse,
       eat: newResEat,
       drink: newResDrink,
@@ -2440,6 +3100,7 @@ const onNumPadConfirm = () => {
     }
 
     // 3) 入力フォームリセット
+    setNewResTables([]);
     setNewResTable('');
     setNewResGuests('');
     setNewResCourse('');
@@ -2583,31 +3244,54 @@ const onNumPadConfirm = () => {
 
   // ==== memoized props for TasksSection to keep referential stability ====
   const tasksData = useMemo(() => ({
-    groupedTasks,
-    sortedTimeKeys,
-    courses,
-    filteredReservations,
-    firstRotatingId,
-  }), [groupedTasks, sortedTimeKeys, courses, filteredReservations, firstRotatingId]);
+  groupedTasks,
+  sortedTimeKeys,
+  courses,
+  // Tasksタブ専用の配列を渡す（エリア絞り込み後）
+  filteredReservations: reservationsByArea,
+  firstRotatingId,
+}), [groupedTasks, sortedTimeKeys, courses, reservationsByArea, firstRotatingId]);
+
+  // --- migrate legacy shared key → split keys (one-time) ---
+  React.useEffect(() => {
+    try {
+      const legacy = nsGetStr('showTableStart', '');
+      if (legacy) {
+        // if new keys are not set, copy legacy value
+        if (localStorage.getItem(`${ns}-cs_showTableStart`) === null) nsSetStr('cs_showTableStart', legacy);
+        if (localStorage.getItem(`${ns}-tasks_showTable`) === null) nsSetStr('tasks_showTable', legacy);
+      }
+    } catch {}
+  }, []);
+
+  // --- ensure CourseStart flag persists to cs_showTableStart ---
+  React.useEffect(() => {
+    try { nsSetStr('cs_showTableStart', showTableStart ? '1' : '0'); } catch {}
+  }, [showTableStart]);
+
+  // --- Tasks tab: independent table-number visibility flag ---
+  const [tasksShowTable, setTasksShowTable] = React.useState<boolean>(() => nsGetStr('tasks_showTable', '1') === '1');
+  React.useEffect(() => {
+    try { nsSetStr('tasks_showTable', tasksShowTable ? '1' : '0'); } catch {}
+  }, [tasksShowTable]);
 
   const tasksUI = useMemo(() => ({
-    filterCourse,
     showCourseAll,
     showGuestsAll,
     mergeSameTasks,
     taskSort,
-    showTableStart,
+    // タスク表は専用フラグを使う（CourseStart とは独立）
+    showTableStart: tasksShowTable,
     selectionModeTask,
     shiftModeKey,
     selectedForComplete,
     shiftTargets,
   }), [
-    filterCourse,
     showCourseAll,
     showGuestsAll,
     mergeSameTasks,
     taskSort,
-    showTableStart,
+    tasksShowTable,
     selectionModeTask,
     shiftModeKey,
     selectedForComplete,
@@ -2615,7 +3299,6 @@ const onNumPadConfirm = () => {
   ]);
 
   const tasksActions = useMemo(() => ({
-    setFilterCourse,
     setShowCourseAll,
     setShowGuestsAll,
     setMergeSameTasks,
@@ -2627,7 +3310,6 @@ const onNumPadConfirm = () => {
     batchAdjustTaskTime,
     updateReservationField,
   }), [
-    setFilterCourse,
     setShowCourseAll,
     setShowGuestsAll,
     setMergeSameTasks,
@@ -2726,660 +3408,42 @@ const onNumPadConfirm = () => {
       
       {/* ─────────────── 店舗設定セクション ─────────────── */}
       {selectedMenu === '店舗設定画面' && (
-        <section>
-          {/* コース設定表ボタンと内容を上に移動 */}
-          <button
-            onClick={() => setCourseSettingsTableOpen(prev => !prev)}
-            className="w-full text-left p-2 font-semibold bg-gray-100 rounded text-sm"
-          >
-            {courseSettingsTableOpen ? '▼▼ コース設定表' : '▶▶ コース設定表'}
-          </button>
-          {courseSettingsTableOpen && (
-            <div className="p-4 space-y-3 text-sm border rounded">
-              {/* 設定中のコース・新コース作成 */}
-              <div className="flex items-center space-x-2 mb-3">
-                <label className="whitespace-nowrap">設定中のコース：</label>
-                <select
-                  value={selectedCourse}
-                  onChange={handleCourseChange}
-                  className="border px-2 py-1 rounded text-sm"
-                >
-                  {courses.map((c) => (
-                    <option key={c.name} value={c.name}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  onClick={renameCourse}
-                  className="ml-2 px-3 py-1 bg-blue-500 text-white rounded text-sm"
-                >
-                  ✎ コース名変更
-                </button>
-                <button
-                  onClick={deleteCourse}
-                  className="ml-2 px-3 py-1 bg-red-600 text-white rounded text-sm"
-                >
-                  🗑 コース削除
-                </button>
-                <button
-                  onClick={() => {
-                    const courseName = prompt('新しいコース名を入力してください：');
-                    if (!courseName) return;
-                    if (courses.some((c) => c.name === courseName)) {
-                      alert('そのコース名は既に存在します。');
-                      return;
-                    }
-                    const next = [...courses, { name: courseName, tasks: [] }];
-                    setCourses(next);
-                    nsSetJSON('courses', next);
-                    setSelectedCourse(courseName);
-                  }}
-                  className="ml-2 px-3 py-1 bg-green-500 text-white rounded text-sm"
-                >
-                  ＋新コース作成
-                </button>
-              </div>
-            {(
-              courses.find((c) => c.name === selectedCourse)?.tasks ?? []
-            )
-              .slice()
-              .sort((a, b) => a.timeOffset - b.timeOffset)
-              .map((task, idx) => (
-                <div
-                  key={`${task.timeOffset}_${idx}`}
-                  className="flex flex-wrap items-center space-x-2 border-b pb-1"
-                >
-                  <div className="flex items-center space-x-1">
-                    {editingTask &&
-                    editingTask.offset === task.timeOffset &&
-                    editingTask.label === task.label ? (
-                      <>
-                        <button
-                          onClick={() =>
-                            shiftTaskOffset(task.timeOffset, task.label, -5)
-                          }
-                          className="w-6 h-6 bg-gray-300 rounded text-sm"
-                        >
-                          -5
-                        </button>
-                        <span className="w-12 text-center">{task.timeOffset}分後</span>
-                        <button
-                          onClick={() =>
-                            shiftTaskOffset(task.timeOffset, task.label, +5)
-                          }
-                          className="w-6 h-6 bg-gray-300 rounded text-sm"
-                        >
-                          +5
-                        </button>
-                      </>
-                    ) : (
-                      <span
-                        onClick={() =>
-                          toggleEditingTask(task.timeOffset, task.label)
-                        }
-                        className="w-20 cursor-pointer"
-                      >
-                        {task.timeOffset}分後
-                      </span>
-                    )}
-                  </div>
-
-                  {editingTask &&
- editingTask.offset === task.timeOffset &&
- normEq(editingTask.label, task.label) ? (
-  <input
-    type="text"
-    value={editingTaskDraft}
-    onChange={(e) => setEditingTaskDraft(e.target.value)}
-    onBlur={() => commitTaskLabelEdit(task.label, task.timeOffset)}
-    onKeyDown={(e) => {
-      if (e.key === 'Enter') {
-        e.currentTarget.blur(); // Enterで確定
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        cancelTaskLabelEdit();  // Escでキャンセル
-      }
-    }}
-    autoFocus
-    className="border px-2 py-1 rounded text-sm"
-  />
-) : (
-  <span
-    className="border px-2 py-1 rounded text-sm cursor-text"
-    onClick={() => toggleEditingTask(task.timeOffset, task.label)}
-    title="クリックして名前を編集"
-  >
-    {task.label}
-  </span>
-)}
-
-                  <button
-                    onClick={() => deleteTaskFromCourse(task.timeOffset, task.label)}
-                    className="px-2 py-1 bg-red-500 text-white rounded text-xs order-1 sm:order-2"
-                  >
-                    削除
-                  </button>
-                </div>
-              ))}
-
-              <div className="pt-2 space-y-2">
-                <div className="flex flex-wrap items-center space-x-2">
-                  <input
-                    type="text"
-                    placeholder="タスク名"
-                    value={newTaskLabel}
-                    onChange={(e) => setNewTaskLabel(e.target.value)}
-                    className="border px-2 py-1 flex-1 rounded text-sm"
-                  />
-                  <button
-                    onClick={() => setNewTaskOffset((prev) => Math.max(0, prev - 5))}
-                    className="w-8 h-8 bg-gray-300 rounded text-sm"
-                  >
-                    -5
-                  </button>
-                  <span className="w-12 text-center">{newTaskOffset}分後</span>
-                  <button
-                    onClick={() => setNewTaskOffset((prev) => Math.min(180, prev + 5))}
-                    className="w-8 h-8 bg-gray-300 rounded text-sm"
-                  >
-                    +5
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (!newTaskLabel.trim()) return;
-                      addTaskToCourse(newTaskLabel.trim(), newTaskOffset);
-                      setNewTaskLabel('');
-                      setNewTaskOffset(0);
-                    }}
-                    className="px-3 py-1 bg-blue-500 text-white rounded text-sm"
-                  >
-                    ＋タスク追加
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ポジション設定ボタンと内容 */}
-          <button
-            onClick={() => setPosSettingsOpen(prev => !prev)}
-            className="w-full text-left p-2 font-semibold bg-gray-100 rounded text-sm"
-          >
-            {posSettingsOpen ? '▼▼ ポジション設定' : '▶▶ ポジション設定'}
-          </button>
-          {posSettingsOpen && (
-            <div className="space-y-4 mt-8">
-              {/* 新規ポジション追加 */}
-              <div className="flex items-center space-x-2 mb-4">
-                <input
-                  type="text"
-                  placeholder="新しいポジション名"
-                  value={newPositionName}
-                  onChange={(e) => setNewPositionName(e.target.value)}
-                  className="border px-2 py-1 rounded text-sm flex-1"
-                />
-                <button onClick={addPosition} className="px-3 py-1 bg-green-500 text-white rounded text-sm">
-                  ＋追加
-                </button>
-              </div>
-              {/* 各ポジションカード */}
-              {positions.map((pos) => (
-                <div key={pos} className="border rounded p-3 bg-white shadow-sm space-y-2">
-                  <div className="flex items-center justify-between">
-                    {/* Improved up/down/toggle block */}
-                    <div className="flex items-center space-x-2">
-                      {/* Up/Down move buttons */}
-                      <div className="flex items-center space-x-1">
-                        {positions.indexOf(pos) > 0 && (
-                          <button
-                            onClick={() => movePositionUp(pos)}
-                            aria-label={`Move ${pos} up`}
-                            className="p-1 bg-gray-200 hover:bg-gray-300 rounded focus:outline-none"
-                          >
-                            ↑
-                          </button>
-                        )}
-                        {positions.indexOf(pos) < positions.length - 1 && (
-                          <button
-                            onClick={() => movePositionDown(pos)}
-                            aria-label={`Move ${pos} down`}
-                            className="p-1 bg-gray-200 hover:bg-gray-300 rounded focus:outline-none"
-                          >
-                            ↓
-                          </button>
-                        )}
-                      </div>
-                      {/* Expand/Collapse with position name */}
-                      <button
-                        onClick={() => togglePositionOpen(pos)}
-                        aria-label={`${openPositions[pos] ? 'Collapse' : 'Expand'} ${pos}`}
-                        className="flex items-center font-medium text-sm space-x-1 focus:outline-none"
-                      >
-                        <span>{openPositions[pos] ? '▼' : '▶'}</span>
-                        <span>{pos}</span>
-                      </button>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <button
-                        onClick={() => renamePosition(pos)}
-                        aria-label={`Rename ${pos}`}
-                        className="text-blue-500 text-sm"
-                      >
-                        ✎
-                      </button>
-                      <button
-                        onClick={() => removePosition(pos)}
-                        aria-label={`Remove ${pos}`}
-                        className="text-red-500 text-sm"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  </div>
-                  {openPositions[pos] && (
-                    <>
-                      {/* コース選択（ポジションごと） */}
-                      <div className="flex items-center space-x-2 mb-2">
-                        <label className="whitespace-nowrap">コース：</label>
-                        <select
-                          value={courseByPosition[pos]}
-                          onChange={(e) => setCourseForPosition(pos, e.target.value)}
-                          className="border px-2 py-1 rounded text-sm"
-                        >
-                          {courses.map((c) => (
-                            <option key={c.name} value={c.name}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        {(courses.find((c) => c.name === courseByPosition[pos])?.tasks ?? [])
-                          .slice()
-                          .sort((a, b) => a.timeOffset - b.timeOffset)
-                          .map((task) => (
-                            <div
-                              key={`${task.timeOffset}_${task.label}`}
-                              className="flex items-center space-x-2 border-b pb-1 text-sm"
-                            >
-                              <span className="w-20">{task.timeOffset}分後</span>
-                              <span className="flex-1">{task.label}</span>
-                              <label className="flex items-center space-x-1">
-                                <input
-                                  type="checkbox"
-                                  checked={tasksByPosition[pos]?.[courseByPosition[pos]]?.includes(task.label) || false}
-                                  onChange={() => toggleTaskForPosition(pos, courseByPosition[pos], task.label)}
-                                  className="mr-1"
-                                />
-                                <span>表示</span>
-                              </label>
-                            </div>
-                          ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-          {/* 卓設定ボタンと内容（そのまま） */}
-          <button
-            onClick={() => {
-              if (!tableSettingsOpen && !confirm('卓設定を開きますか？')) return;
-              setTableSettingsOpen((prev) => !prev);
-            }}
-            className="w-full text-left p-2 font-semibold bg-gray-100 rounded text-sm"
-          >
-            {tableSettingsOpen ? '▼▼ 卓設定' : '▶▶ 卓設定'}
-          </button>
-          {tableSettingsOpen && (
-            <div className="p-4 space-y-3 text-sm border rounded">
-              <div className="space-y-2">
-                <p className="text-gray-500 text-xs">
-                  電卓型パッドで卓番号を入力し、Enter で追加します。追加された卓は番号順に並びます。
-                </p>
-                <div className="flex items-center space-x-2">
-                             <input
-  type="text"
-  value={newTableTemp}                            
-  readOnly
-  onClick={() =>
-    setNumPadState({ id: '-1', field: 'presetTable', value: '' })}  
-                    placeholder="卓番号を入力"
-                    maxLength={3}
-                    className="border px-2 py-1 w-full rounded text-sm text-center cursor-pointer"
-                  />
-                </div>
-                <div className="grid grid-cols-3 gap-0 p-1">
-                  {numPadState && (numPadState.field === 'presetTable' || numPadState.field === 'table' || numPadState.field === 'guests')
-                    ? ['1','2','3','4','5','6','7','8','9','0','←','C'].map((digit) => (
-                        <button
-                          key={digit}
-                          onClick={() => onNumPadPress(digit)}
-                          className="bg-gray-200 rounded text-xl font-mono py-2"
-                        >
-                          {digit}
-                        </button>
-                      ))
-                    : null}
-                  {numPadState && (numPadState.field === 'presetTable' || numPadState.field === 'table' || numPadState.field === 'guests') && (
-                    <button
-                      onClick={onNumPadConfirm}
-                      className="col-span-3 bg-blue-500 rounded text-white text-lg py-2"
-                    >
-                      追加
-                    </button>
-                  )}
-                  {numPadState && (numPadState.field === 'presetTable' || numPadState.field === 'table' || numPadState.field === 'guests') && (
-                    <button
-                      onClick={onNumPadCancel}
-                      className="col-span-3 text-center text-sm text-gray-500 py-2"
-                    >
-                      キャンセル
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {presetTables.length > 0 && (
-                <div className="mt-2">
-                  <div className="flex items-center justify-between">
-                    <p className="font-medium mb-1">設定済み卓リスト：</p>
-                    <button
-                      onClick={() => setTableEditMode((prev) => !prev)}
-                      className="px-2 py-0.5 bg-yellow-500 text-white rounded text-xs"
-                    >
-                      {tableEditMode ? '完了' : '編集'}
-                    </button>
-                  </div>
-                  <div className="grid gap-1 p-0 grid-cols-[repeat(auto-fit,minmax(3rem,1fr))]">
-                    {presetTables.map((tbl) =>
-                      tableEditMode ? (
-                        <div key={tbl} className="flex items-center space-x-1">
-                          <span className="border px-1 py-0.5 rounded text-xs">{tbl}</span>
-                          <button
-                            onClick={() => {
-                              setPresetTables((prev) => {
-                                const nextTables = prev.filter((t) => t !== tbl);
-                                localStorage.setItem(`${ns}-presetTables`, JSON.stringify(nextTables));
-                                return nextTables;
-                              });
-                              setCheckedTables((prev) => {
-                                const nextChecked = prev.filter((t) => t !== tbl);
-                                localStorage.setItem(`${ns}-checkedTables`, JSON.stringify(nextChecked));
-                                return nextChecked;
-                              });
-                            }}
-                            className="text-red-500 text-sm"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ) : (
-                        <div key={tbl} className="flex items-center space-x-1">
-                          <span className="border px-1 py-0.5 rounded text-xs">{tbl}</span>
-                        </div>
-                      )
-                    )}
-                  </div>
-                  {/* <p className="text-gray-500 text-xs">
-                    チェックした卓のみを予約リスト・タスク表示に反映します。未チェックなら全卓表示。
-                  </p> */}
-                </div>
-              )}
-
-            </div>
-          )}
-
-         {/* ─── テーブル設定トグル ─── */}
-        
-        {/* ─────────────── 食べ放題 / 飲み放題 オプション設定 ─────────────── */}
-        <button
-          onClick={() => setEatDrinkSettingsOpen(prev => !prev)}
-          className="w-full text-left p-2 font-semibold bg-gray-100 rounded text-sm mb-2"
-        >
-          {eatDrinkSettingsOpen ? '▼ 食べ放題飲み放題設定' : '▶ 食べ放題飲み放題設定'}
-        </button>
-        {eatDrinkSettingsOpen && (
-          <div className="mt-6 space-y-6 text-sm">
-            <p className="text-red-600 text-xs leading-relaxed">
-              ※予約リストの幅の制限の為、<b>２文字</b>までの入力に制限させていただいております。<br />
-              以下のように略称または記号を使って判別にご利用ください。<br />
-              スタンダード飲み放題＝<b>スタ</b> ／ プレミアム飲み放題＝<b>プレ</b><br />
-              ○○食べ放題＝<b>⭐︎</b> ／ ○○食べ放題＝<b>⭐︎⭐︎</b>
-            </p>
-
-            {/* 食べ放題オプション */}
-            <div>
-              <h3 className="font-semibold mb-1">食べ放題：登録済み</h3>
-              <div className="flex flex-wrap gap-2 mb-2">
-                {eatOptions.map((opt) => (
-                  <span key={opt} className="border px-2 py-0.5 rounded flex items-center">
-                    {opt}
-                    <button
-                      onClick={() =>
-                        setEatOptions(eatOptions.filter((o) => o !== opt))
-                      }
-                      className="ml-1 text-red-600">
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="text"
-                  value={newEatOption}
-                  onChange={(e) => setNewEatOption(e.target.value.slice(0, 2))}
-                  maxLength={2}
-                  placeholder="例: ⭐︎"
-                  className="border px-2 py-0.5 w-16 rounded"
-                />
-                <button
-                  onClick={() => {
-                    if (newEatOption && !eatOptions.includes(newEatOption)) {
-                      setEatOptions([...eatOptions, newEatOption]);
-                      setNewEatOption('');
-                    }
-                  }}
-                  className="px-2 py-0.5 bg-blue-500 text-white rounded">
-                  追加
-                </button>
-              </div>
-            </div>
-
-            {/* 飲み放題オプション */}
-            <div>
-              <h3 className="font-semibold mb-1">飲み放題：登録済み</h3>
-              <div className="flex flex-wrap gap-2 mb-2">
-                {drinkOptions.map((opt) => (
-                  <span key={opt} className="border px-2 py-0.5 rounded flex items-center">
-                    {opt}
-                    <button
-                      onClick={() =>
-                        setDrinkOptions(drinkOptions.filter((o) => o !== opt))
-                      }
-                      className="ml-1 text-red-600">
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="text"
-                  value={newDrinkOption}
-                  onChange={(e) => setNewDrinkOption(e.target.value.slice(0, 2))}
-                  maxLength={2}
-                  placeholder="例: スタ"
-                  className="border px-2 py-0.5 w-16 rounded"
-                />
-                <button
-                  onClick={() => {
-                    if (newDrinkOption && !drinkOptions.includes(newDrinkOption)) {
-                      setDrinkOptions([...drinkOptions, newDrinkOption]);
-                      setNewDrinkOption('');
-                    }
-                  }}
-                  className="px-2 py-0.5 bg-blue-500 text-white rounded">
-                  追加
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ---- 店舗設定をまとめて保存 ---- */}
-        <button
-          onClick={handleStoreSave}
-          className="mt-6 px-4 py-2 bg-blue-600 text-white rounded"
-        >
-          保存
-        </button>
-        </section>
+        <StoreSettingsContent
+  value={settingsDraft}
+  onChange={patchSettings}
+  onSave={handleStoreSave}
+  isSaving={isSavingSettings}
+  baseline={baselineSettings}
+/>
       )}
 
       {/* ─────────────── 営業前設定セクション ─────────────── */}
-      {selectedMenu === '営業前設定' && (
-        <section>
-          <button
-            onClick={() => setDisplayTablesOpen1(prev => !prev)}
-            className="w-full text-left p-2 font-semibold bg-gray-100 rounded text-sm"
-          >
-            {displayTablesOpen1 ? '▼▼ 表示する卓' : '▶▶ 表示する卓'}
-          </button>
-          {displayTablesOpen1 && (
-            <div className="p-4 space-y-3 text-sm border rounded">
-              <div className="grid gap-1 p-0 grid-cols-[repeat(auto-fit,minmax(3rem,1fr))]">
-                {presetTables.map((tbl) => (
-                  <div key={tbl} className="flex flex-col items-center">
-                    <span className="border px-1 py-0.5 rounded text-xs">{tbl}</span>
-                    <label className="mt-1 flex items-center space-x-1">
-                      <input
-                        type="checkbox"
-                        checked={checkedTables.includes(tbl)}
-                        onChange={() => {
-                          setCheckedTables((prev) => {
-                            const next = prev.includes(tbl)
-                              ? prev.filter((t) => t !== tbl)
-                              : [...prev, tbl];
-                            localStorage.setItem(`${ns}-checkedTables`, JSON.stringify(next));
-                            return next;
-                          });
-                        }}
-                        className="mr-1"
-                      />
-                      <span className="text-xs">表示</span>
-                    </label>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          <button
-            onClick={() => setDisplayTablesOpen2(prev => !prev)}
-            className="w-full text-left p-2 font-semibold bg-gray-100 rounded text-sm mt-2"
-          >
-            {displayTablesOpen2 ? '▼▼ 表示するタスク' : '▶▶ 表示するタスク'}
-          </button>
-          {displayTablesOpen2 && (
-            <div className="p-4 space-y-4 text-sm border rounded">
-              {/* ポジション選択 */}
-              <div className="flex items-center space-x-2 mb-4">
-                <label className="whitespace-nowrap">ポジション選択：</label>
-                <select
-                  value={selectedDisplayPosition}
-                  onChange={(e) => setSelectedDisplayPosition(e.target.value)}
-                  className="border px-2 py-1 rounded text-sm"
-                >
-                  {positions.map((pos) => (
-                    <option key={pos} value={pos}>
-                      {pos}
-                    </option>
-                  ))}
-                  <option key="その他" value="その他">
-                    その他
-                  </option>
-                </select>
-              </div>
+      {(selectedMenu === '営業前設定') && (
+        <PreopenSettingsContent
+          // --- コース/ポジション ---
+          courses={courses}
+          positions={positions}
+          selectedCourse={selectedCourse}
 
-              {/* タスク一覧 */}
-              {selectedDisplayPosition !== 'その他' ? (
-                <div className="space-y-4">
-                  {/* コース切り替えボタン行 */}
-                  <div className="flex flex-wrap gap-2 mb-2">
-                    {courses.map((c) => (
-                      <button
-                        key={c.name}
-                        onClick={() => setDisplayTaskCourse(c.name)}
-                        className={`px-3 py-1 rounded text-sm ${
-                          displayTaskCourse === c.name ? 'bg-blue-500 text-white' : 'bg-gray-200'
-                        }`}
-                      >
-                        {c.name}
-                      </button>
-                    ))}
-                  </div>
-                  {/* 選択中コースのタスク一覧 */}
-                  {(() => {
-                    const course = courses.find((c) => c.name === displayTaskCourse) || courses[0];
-                    return (
-                      <div className="border rounded p-2">
-                        <div className="font-semibold mb-1">{course.name}</div>
-                        {course.tasks
-                          .slice()
-                          .sort((a, b) => a.timeOffset - b.timeOffset)
-                          .map((task) => (
-                            <div
-                              key={`${task.timeOffset}_${task.label}_${course.name}`}
-                              className="flex items-center space-x-2 border-b pb-1 text-sm"
-                            >
-                              <span className="w-20">{task.timeOffset}分後</span>
-                              <span className="flex-1">{task.label}</span>
-                              <label className="flex items-center space-x-1">
-                                <input
-                                  type="checkbox"
-                                  checked={tasksByPosition[selectedDisplayPosition]?.[displayTaskCourse]?.includes(task.label) || false}
-                                  onChange={() => toggleTaskForPosition(selectedDisplayPosition, displayTaskCourse, task.label)}
-                                  className="mr-1"
-                                />
-                                <span>表示</span>
-                              </label>
-                            </div>
-                          ))}
-                      </div>
-                    );
-                  })()}
-                </div>
-              ) : (
-                <div className="space-y-1">
-                  {(courses.find((c) => c.name === selectedCourse)?.tasks ?? [])
-                    .slice()
-                    .sort((a, b) => a.timeOffset - b.timeOffset)
-                    .map((task) => (
-                      <div
-                        key={`${task.timeOffset}_${task.label}`}
-                        className="flex items-center space-x-2 border-b pb-1 text-sm"
-                      >
-                        <span className="w-20">{task.timeOffset}分後</span>
-                        <span className="flex-1">{task.label}</span>
-                        <label className="flex items-center space-x-1">
-                          <input
-                            type="checkbox"
-                            checked={checkedTasks.includes(task.label)}
-                            onChange={() => handleTaskCheck(task.label)}
-                            className="mr-1"
-                          />
-                          <span>表示</span>
-                        </label>
-                      </div>
-                    ))}
-                </div>
-              )}
-            </div>
-          )}
-        </section>
+          // --- タスク可視フィルター＆ポジション別の表示タスク設定 ---
+          checkedTasks={checkedTasks}
+          setCheckedTasks={setCheckedTasks}
+          tasksByPosition={tasksByPosition}
+          toggleTaskForPosition={toggleTaskForPosition}
+          selectedDisplayPosition={selectedDisplayPosition}
+          setSelectedDisplayPosition={setSelectedDisplayPosition}
+          displayTaskCourse={displayTaskCourse}
+          setDisplayTaskCourse={setDisplayTaskCourse}
+
+          // --- 卓番号プリセット＆フィルタ（「表示する卓」） ---
+          presetTables={presetTablesView}
+          checkedTables={checkedTables}
+          setCheckedTables={setCheckedTables}
+
+          // --- エリア（和集合一括選択用） ---
+          areas={usableAreas}
+          ns={ns}
+        />
       )}
       
       {/* ─────────────── 予約リストセクション ─────────────── */}
@@ -3444,70 +3508,72 @@ const onNumPadConfirm = () => {
     setNewResNotes={setNewResNotes}
     addReservation={addReservationCb}
     /* データ */
-    reservations={filteredReservations}
+    reservations={filteredByTables}
+
+    editedMarks={editedMarks}
+    setEditedMarks={setEditedMarks}
   />
 )}
 {/* ───────────── タスク表セクション（外部コンポーネント） start ───────────── */}
 {!isSettings && bottomTab === 'tasks' && (
   <div className="">
-    <TasksSection data={tasksData} ui={tasksUI} actions={tasksActions} />
+    <TasksSection
+  data={tasksData}
+  ui={tasksUI}
+  actions={tasksActions}
+  filterArea={filterArea}
+  setFilterArea={setFilterArea}
+  areas={areas ?? []}
+  // 既存の並び替え等はそのまま
+  taskSort={taskSort}
+  setTaskSort={setTaskSort}
+/>
   </div>
 )}
 {/* ───────────────────────────── タスク表セクション（外部コンポーネント） end ───────────────────────────── */}
 
       {/* ─────────────── 5. 数値パッドモーダル ─────────────── */}
-      {numPadState && numPadState.field !== 'presetTable' && (
-        <div className="fixed inset-0 bg-black/30 flex items-end justify-center z-50">
-          <div className="bg-white w-full max-w-md rounded-t-lg pb-4 shadow-lg">
-            <div className="p-4 border-b">
-              <p className="text-center text-lg font-semibold">
-                {numPadState.field === 'table'
-                  ? '卓番 を入力'
-                  : numPadState.field === 'guests'
-                  ? '人数 を入力'
-                  : ''}
-              </p>
-              <p className="mt-2 text-center text-2xl font-mono">
-                {numPadState.value || '　'}
-              </p>
-            </div>
-            <div className="grid grid-cols-3 gap-2 p-4">
-              {['1','2','3','4','5','6','7','8','9','0'].map((digit) => (
-                <button
-                  key={digit}
-                  onClick={() => onNumPadPress(digit)}
-                  className="bg-gray-200 rounded text-xl font-mono py-2"
-                >
-                  {digit}
-                </button>
-              ))}
-              <button
-                onClick={() => onNumPadPress('←')}
-                className="bg-gray-200 rounded text-xl font-mono py-2"
-              >
-                ←
-              </button>
-              <button
-                onClick={() => onNumPadPress('C')}
-                className="bg-gray-200 rounded text-xl font-mono py-2"
-              >
-                C
-              </button>
-              <button
-                onClick={onNumPadConfirm}
-                className="col-span-3 bg-blue-500 rounded text-white text-lg py-2"
-              >
-                確定
-              </button>
-            </div>
-            <button
-              onClick={onNumPadCancel}
-              className="w-full text-center text-sm text-gray-500 py-2"
-            >
-              キャンセル
-            </button>
-          </div>
-        </div>
+      {numPadState && (
+        <RootNumPad
+          open={!!numPadState}
+          title=""
+          multi={numPadState.id === '-1' && numPadState.field === 'table'}
+          initialList={numPadState.id === '-1' && numPadState.field === 'table' ? newResTables : []}
+          value={numPadState.value || ''}
+          onCancel={() => setNumPadState(null)}
+          onSubmit={({ value, list }) => {
+            const st = numPadState!;
+            // 1) 新規予約の卓番号（複数卓対応）
+            if (st.id === '-1' && st.field === 'table') {
+              const final = (Array.isArray(list) && list.length > 0) ? list : (value ? [value] : []);
+              setNewResTables(final);
+              setNewResTable(final[0] ?? '');
+              setNumPadState(null);
+              return;
+            }
+            // 2) 新規予約の人数（単一値）
+            if (st.id === '-1' && st.field === 'guests') {
+              const n = Number(value || '0');
+              setNewResGuests(Number.isFinite(n) ? n : 0);
+              setNumPadState(null);
+              return;
+            }
+            // 3) 既存レコード: 直接反映（通常の単発変更）
+            if (st.field === 'table' || st.field === 'targetTable') {
+              const v = (Array.isArray(list) && list.length > 0) ? String(list[0]) : String(value || '');
+              if (v) updateReservationField(st.id, 'table', v);
+              setNumPadState(null);
+              return;
+            }
+            if (st.field === 'guests') {
+              const n = Number(value || '0');
+              updateReservationField(st.id, 'guests', Number.isFinite(n) ? n : 0);
+              setNumPadState(null);
+              return;
+            }
+            setNumPadState(null);
+          }}
+        />
       )}
 
      
@@ -3515,19 +3581,20 @@ const onNumPadConfirm = () => {
 
 {!isSettings && bottomTab === 'courseStart' && (
   <CourseStartSection
-    groupedStartTimes={groupedStartTimes}
-    showTableStart={showTableStart}
-    setShowTableStart={setShowTableStart}
-    courseStartFiltered={courseStartFiltered}
-    setCourseStartFiltered={setCourseStartFiltered}
-    // 「表示コース」は UI から削除済みなので props も不要
-    filterCourse={filterCourse}
-    setFilterCourse={setFilterCourse}
-    courses={courses}
-    showGuestsAll={showGuestsAll}
-    rotatingTables={rotatingTables as any}
-    firstRotatingId={firstRotatingId as any}
-  />
+  groupedStartTimes={groupedStartTimes}
+  showTableStart={showTableStart}
+  setShowTableStart={setShowTableStart}
+  courseStartFiltered={courseStartFiltered}
+  setCourseStartFiltered={setCourseStartFiltered}
+  filterCourse={csFilterCourse}
+  setFilterCourse={setCsFilterCourse}
+  courses={courses}
+  showGuestsAll={csShowGuestsAll}          // ← CS 専用を渡す
+  rotatingTables={rotatingTables as any}
+  firstRotatingId={firstRotatingId as any}
+  startSort={csStartSort}
+  setStartSort={setCsStartSort}
+/>
 )}
    
 {/* ─────────────── テーブル管理セクション ─────────────── */}
@@ -3591,4 +3658,4 @@ const onNumPadConfirm = () => {
 
 //
 // ─────────────────────────────── EOF ────────────────────────────────────────────
-//
+//  

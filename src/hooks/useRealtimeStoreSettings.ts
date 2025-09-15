@@ -1,81 +1,172 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { doc, onSnapshot, getDoc, type Unsubscribe } from 'firebase/firestore';
-import { db, DEFAULT_STORE_SETTINGS } from '@/lib/firebase';
-import type { StoreSettings } from '@/types/settings';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { doc, onSnapshot, getDoc, setDoc, serverTimestamp, type Unsubscribe } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
+import { sanitizeCourses, type StoreSettings } from '@/types/settings';
 
 /**
- * 店舗設定ドキュメント (/stores/{storeId}/settings/config) を購読して
- * 常に最新の StoreSettings を返すカスタムフック。
+ * 店舗設定ドキュメント (/stores/{storeId}/settings/config) を購読しつつ、
+ * 画面側の編集ドラフトを保持・保存できるフック。
  *
- * ✅ Hooks の呼び出し順が毎回一定になるように、条件分岐は useEffect 内に閉じ込める。
- *    （useState → useRef → useEffect の順番を維持）
+ * 返り値：
+ *  - value: 画面で編集中のドラフト（StoreSettings）
+ *  - patch: ドラフトへの部分更新
+ *  - save: Firestore へ保存（merge 書き込み）
+ *  - loading: Firestore 初期ロード中
+ *  - error: 初期ロード中のエラー
+ *  - isSaving: 保存中フラグ
  */
-export const useRealtimeStoreSettings = (
-  storeId?: string,
-): StoreSettings | null => {
-  // 1) useState —— 常に最初に呼ばれる
-  const [settings, setSettings] = useState<StoreSettings | null>(null);
-  // 2) useRef —— 次に呼ばれる（購読解除用）
+export const useRealtimeStoreSettings = (storeId?: string) => {
+  // ---- local draft ----
+  const [value, setValue] = useState<StoreSettings>({} as StoreSettings);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<unknown>(null);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+
+  // keep last server value to decide when to reset draft (optional; not strictly necessary)
+  const lastServerValueRef = useRef<StoreSettings | null>(null);
+
+  // unsubscribe holder
   const unsubRef = useRef<Unsubscribe | null>(null);
 
-  // 3) useEffect —— 最後に呼ばれる（副作用の中で条件分岐）
+  // Firestore -> StoreSettings（courses だけは安全化）
+  const normalizeRead = useCallback((raw: unknown): StoreSettings => {
+    const r = (raw || {}) as any;
+    const out: any = { ...r };
+    // ensure areas always exists as an array (even if missing on the doc)
+    out.areas = Array.isArray(r?.areas) ? r.areas : [];
+    if (Array.isArray(r?.courses)) {
+      out.courses = sanitizeCourses(r.courses);
+    }
+    return out as StoreSettings;
+  }, []);
+
+  const ref = useMemo(() => {
+    if (!storeId) return null;
+    return doc(db, 'stores', storeId, 'settings', 'config');
+  }, [storeId]);
+
+  // 初期ロード + リアルタイム購読
   useEffect(() => {
-    // 前回の購読を解除し、表示値を一旦クリア（読み込み中の意味）
+    // 既存購読を解除
     if (unsubRef.current) {
       unsubRef.current();
       unsubRef.current = null;
     }
-    setSettings(null);
 
-    // storeId が無い場合は何もしない（呼び出し順は維持される）
-    if (!storeId) return;
+    // storeId が無ければ終了
+    if (!ref) {
+      setLoading(false);
+      setError(null);
+      return;
+    }
 
-    const ref = doc(db, 'stores', storeId, 'settings', 'config');
+    setLoading(true);
+    setError(null);
 
-    // 初期値を即時反映（ミスマッチを避け、UX を向上）
+    // 1) 先に getDoc で即時反映
     (async () => {
       try {
         const snap = await getDoc(ref);
         if (snap.exists()) {
-          const data = snap.data() as Partial<StoreSettings>;
-          setSettings({ ...DEFAULT_STORE_SETTINGS, ...data });
+          const server = normalizeRead(snap.data());
+          lastServerValueRef.current = server;
+          setValue((prev) => {
+            // 初回はサーバ値で上書き（画面初期表示を最新化）
+            return Object.keys(prev ?? {}).length === 0 ? server : prev;
+          });
         } else {
-          setSettings({ ...DEFAULT_STORE_SETTINGS });
+          lastServerValueRef.current = {} as StoreSettings;
+          // サーバに存在しない場合でも空を維持
         }
-      } catch (err) {
-        console.warn('[useRealtimeStoreSettings] getDoc failed:', err);
-        setSettings({ ...DEFAULT_STORE_SETTINGS });
+      } catch (e) {
+        setError(e);
+      } finally {
+        setLoading(false);
       }
     })();
 
-    // リアルタイム購読
+    // 2) onSnapshot で追随
     const unsub = onSnapshot(
       ref,
       (snap) => {
         if (!snap.exists()) {
-          setSettings({ ...DEFAULT_STORE_SETTINGS });
+          lastServerValueRef.current = {} as StoreSettings;
           return;
         }
-        const raw = snap.data() as Partial<StoreSettings>;
-        setSettings({ ...DEFAULT_STORE_SETTINGS, ...raw });
+        const server = normalizeRead(snap.data());
+        console.info(
+          '[useRealtimeStoreSettings.svcp] path:',
+          `stores/${storeId}/settings/config`,
+          'keys:',
+          Object.keys((snap.data() || {}))
+        );
+        lastServerValueRef.current = server;
+        // サーバから来た差分をドラフトにマージ（編集中でも新規キーは取り込む）
+        setValue((prev) => ({ ...(prev as StoreSettings), ...(server as StoreSettings) }));
+        // ここでドラフトを無条件に上書きしない。ユーザー編集中の値は維持する。
+        // （編集中にサーバが更新されても破壊しないため）
       },
       (err) => {
-        console.warn('[useRealtimeStoreSettings] onSnapshot error:', err);
-      },
+        setError(err);
+      }
     );
 
     unsubRef.current = unsub;
 
-    // アンマウント時 / storeId 変更時に購読解除
     return () => {
       if (unsubRef.current) {
         unsubRef.current();
         unsubRef.current = null;
       }
     };
-  }, [storeId]);
+  }, [ref, normalizeRead]);
 
-  return settings;
+  // areas（なければ空配列）
+  const areas = useMemo(() => {
+    return (((value as any)?.areas ?? []) as any[]);
+  }, [ (value as any)?.areas ]);
+
+  // table -> areaIds（重複所属OK）
+  const tableToAreas = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    const list = (((value as any)?.areas ?? []) as any[]);
+    list.forEach((a: any) => {
+      const areaId = String(a?.id ?? '');
+      (a?.tables ?? []).forEach((t: any) => {
+        const key = String(t);
+        if (!map[key]) map[key] = [];
+        if (areaId && !map[key].includes(areaId)) map[key].push(areaId);
+      });
+    });
+    return map;
+  }, [ (value as any)?.areas ]);
+
+  // 画面からの部分更新
+  const patch = useCallback((p: Partial<StoreSettings>) => {
+    setValue((prev) => ({ ...(prev as StoreSettings), ...p }));
+  }, []);
+
+  // Firestore へ保存（merge） — 画面側から上書き値も受け取れるように
+  const save = useCallback(async (override?: StoreSettings) => {
+    setIsSaving(true);
+    try {
+      const ref = doc(db, 'stores', storeId as string, 'settings', 'config');
+      const payload = (override ?? value ?? {}) as StoreSettings;
+
+      console.info(
+        '[useRealtimeStoreSettings.save] path:',
+        `stores/${storeId}/settings/config`,
+        'keys:',
+        Object.keys(payload || {})
+      );
+
+      await setDoc(ref, { ...payload, updatedAt: serverTimestamp() }, { merge: true });
+    } finally {
+      setIsSaving(false);
+    }
+  }, [storeId, value]);
+
+  return { value, areas, tableToAreas, patch, save, loading, error, isSaving };
 };

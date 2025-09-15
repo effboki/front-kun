@@ -4,7 +4,7 @@
 // ──────────────────────────────────────────────────────────────
 
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore, persistentLocalCache } from 'firebase/firestore';
+import { getFirestore } from 'firebase/firestore';
 import {
   doc,
   getDoc,
@@ -120,15 +120,15 @@ export const firebaseConfig = {
 
 // アプリ／DB を初期化＆エクスポート
 export const app = initializeApp(firebaseConfig);
-// NOTE: Firestore v9+ new SDK: `initializeFirestore` with `persistentLocalCache()`
-// already enables IndexedDB persistence. Do NOT also call `enableIndexedDbPersistence`,
-// or you will get "SDK cache is already specified" at runtime.
-// NOTE: SDK v11+ removed useFetchStreams; experimentalForceLongPolling is sufficient for most setups.
-export const db = initializeFirestore(app, {
-  localCache: persistentLocalCache(),
-  // 接続安定化オプション（ローカルや一部ネットワークでの backend 到達不可対策）
-  experimentalForceLongPolling: true,
-});
+// NOTE: デバッグ（保留書き込みや複数タブ競合の切り分け）のため、まずは無印の getFirestore を使用
+//       必要であれば下の initializeFirestore（persistentLocalCache 有効）のブロックに戻せます。
+export const db = getFirestore(app);
+// --- 以前の永続キャッシュ有効パターン（必要になったら復帰） ---
+// export const db = initializeFirestore(app, {
+//   localCache: persistentLocalCache(),
+//   // 接続安定化オプション（ローカルや一部ネットワークでの backend 到達不可対策）
+//   experimentalForceLongPolling: true,
+// });
 
 // ─────────────────────────────────────────────
 // 既存ローカルストレージ版 API も引き継ぎ
@@ -188,63 +188,35 @@ export function saveStoreSettings(obj: StoreSettings): void {
  * Firestore から店舗設定 (eatOptions / drinkOptions / courses / tables / positions / tasksByPosition) を取得。
  * ドキュメントが無い場合は空の設定を返す。
  */
-export async function loadStoreSettings(): Promise<{
-  eatOptions: string[];
-  drinkOptions: string[];
-  courses: any[];
-  tables: any[];
-  positions: string[];
-  tasksByPosition: Record<string, Record<string, string[]>>;
-}> {
+export async function loadStoreSettings(): Promise<Partial<StoreSettings>> {
   try {
-    // ドキュメントツリー自動生成
+    // ルート店舗ドキュメントだけ最低限保証
     await ensureStoreDoc(getStoreId());
     const ref = doc(db, 'stores', getStoreId(), 'settings', 'config');
     const snap = await getDoc(ref);
 
-    // ── ドキュメントが存在しなければデフォルトを生成 ──
     if (!snap.exists()) {
-      const defaults = {
-        eatOptions: ['⭐︎', '⭐︎⭐︎'],
-        drinkOptions: ['スタ', 'プレ'],
-        courses: [],
-        tables: [],
-        positions: [],
-        tasksByPosition: {},
-      };
+      // 空ドキュメントを用意（デフォルトは注入しない）
       try {
-        await setDoc(ref, defaults, { merge: true }); // 初回のみ作成
+        await setDoc(ref, {}, { merge: true });
       } catch (e) {
-        console.warn('[loadStoreSettings] setDoc failed (likely offline):', e);
+        console.warn('[loadStoreSettings] setDoc(empty) failed (offline?):', e);
       }
-      return defaults;
+      return {};
     }
 
-    const data = snap.data() as any;
-    return {
-      eatOptions: data.eatOptions ?? ['⭐︎', '⭐︎⭐︎'],
-      drinkOptions: data.drinkOptions ?? ['スタ', 'プレ'],
-      courses: data.courses ?? [],
-      tables: data.tables ?? [],
-      positions: data.positions ?? [],
-      tasksByPosition: data.tasksByPosition ?? {},
-    };
+    // 変換・デフォルト注入は呼び出し側に任せる（as-is で返却）
+    return snap.data() as Partial<StoreSettings>;
   } catch (err) {
     console.error('loadStoreSettings failed', err);
   }
-  // フォールバック: localStorage
-  return getStoreSettings();
-}
-
-/** settings(変更分) が prev(既存) と異なるフィールドを持つか判定 */
-function shallowDiffExists(
-  patch: Partial<StoreSettings>,
-  prev: Partial<StoreSettings>
-): boolean {
-  return Object.entries(patch).some(([k, v]) => {
-    const prevVal = (prev as any)[k];
-    return JSON.stringify(v) !== JSON.stringify(prevVal);
-  });
+  // フォールバック: localStorage（形は as-is でない可能性あり）
+  try {
+    const cached = getStoreSettings();
+    return cached as Partial<StoreSettings>;
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -254,48 +226,66 @@ function shallowDiffExists(
 export async function saveStoreSettingsTx(
   settings: Partial<StoreSettings>,
 ): Promise<void> {
-  // 取引内で生成し、外でも参照できるように宣言しておく
-  let full = {} as StoreSettings;
-
   // オフライン時はキューに積んで終了
-  if (!navigator.onLine) {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
     enqueueOp({ type: 'storeSettings', payload: settings });
     return;
   }
 
-  // ── 既存ドキュメントを先に取得して差分が無ければ書き込みスキップ ──
   const ref = doc(db, 'stores', getStoreId(), 'settings', 'config');
-  const snapPrev = await getDoc(ref);
-  const prevData: Partial<StoreSettings> = snapPrev.exists()
-    ? (snapPrev.data() as Partial<StoreSettings>)
-    : {};
 
-  if (!shallowDiffExists(settings, prevData)) {
-    console.info('[saveStoreSettingsTx] no diff, skip write');
-    return;
+  // 送信前に浅いクローン（まずは受け取り shape を保つ）
+  const payload: Partial<StoreSettings> & Record<string, any> = { ...settings };
+
+  // === Deep sanitize (Firestore が禁止する undefined を全除去) ===
+  // - トップレベル: undefined のキーは削除
+  // - 配列: undefined / null を除去し、空配列になったらキーごと削除
+  // - tasksByPosition: ネスト内配列の undefined / null を除去。空の配列・空の内側オブジェクトを落とし、
+  //   最終的に空オブジェクトならキーごと削除
+  const safe: Record<string, any> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) continue; // Firestore は undefined を禁止
+
+    if (Array.isArray(value)) {
+      const filtered = value.filter((x) => x !== undefined && x !== null);
+      if (filtered.length === 0) continue; // 空で上書きしない
+      safe[key] = filtered;
+      continue;
+    }
+
+    if (key === 'tasksByPosition' && value && typeof value === 'object' && !Array.isArray(value)) {
+      const tbp: Record<string, Record<string, string[]>> = {};
+      for (const [pos, cmap] of Object.entries(value as Record<string, any>)) {
+        if (!cmap || typeof cmap !== 'object') continue;
+        const inner: Record<string, string[]> = {};
+        for (const [course, arr] of Object.entries(cmap as Record<string, any>)) {
+          if (!Array.isArray(arr)) continue;
+          const filtered = (arr as any[]).filter((x) => x !== undefined && x !== null).map((x) => String(x));
+          if (filtered.length > 0) inner[String(course)] = filtered;
+        }
+        if (Object.keys(inner).length > 0) tbp[String(pos)] = inner;
+      }
+      if (Object.keys(tbp).length > 0) safe[key] = tbp;
+      continue;
+    }
+
+    // それ以外のオブジェクトやプリミティブはそのまま
+    safe[key] = value;
   }
 
-  await runTransaction(db, async (trx) => {
-    const snap = await trx.get(ref);
-    const prev = snap.exists()
-      ? (snap.data() as Partial<StoreSettings>)
-      : {};
-
-    // まず DEFAULT と prev を合成して「完全型」を作ってから、差分(settings)で上書き
-    const prevSafe: StoreSettings = {
-      ...DEFAULT_STORE_SETTINGS,
-      ...prev,
-    };
-
-    full = {
-      ...prevSafe,
-      ...settings,
-    } as StoreSettings;
-    trx.set(ref, full, { merge: true });
-  });
+  // そのまま merge 保存（差分チェック等は行わない）
+  await setDoc(ref, safe, { merge: true });
   await waitForPendingWrites(db);
-  // ローカルキャッシュも更新
-  saveStoreSettings(full);
+
+  // ローカルキャッシュ更新（Firestore の merge イメージに合わせる）
+  try {
+    const cached = getStoreSettings();
+    const full = { ...cached, ...safe } as StoreSettings;
+    saveStoreSettings(full);
+  } catch {
+    // 失敗しても payload を保存しておけば次回起動時に復元可能
+    saveStoreSettings(safe as StoreSettings);
+  }
 }
 
 // ── 溜め込んだ opsQueue を Firestore へ一括反映 ──────────────

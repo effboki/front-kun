@@ -52,6 +52,28 @@ export interface CourseDef {
   tasks: TaskDef[];
 }
 
+/** エリア定義 */
+export type AreaDef = {
+  id: string;        // 例: 'area_1f'
+  name: string;      // 例: '1F'
+  tables: string[];  // 重複所属OK方針
+  color?: string;
+  icon?: string;
+};
+
+/** 店舗設定の保存フォーマット（アプリ側） */
+export type StoreSettingsValue = {
+  courses?: CourseDef[];                    // コース定義
+  positions?: string[];                     // ポジション名一覧
+  tables?: string[];                        // 卓番号（文字列）
+  tasksByPosition?: Record<string, string[]>; // ポジション→表示タスク
+  eatOptions?: string[];                    // 食べ放題など
+  drinkOptions?: string[];                  // 飲み放題など
+  plans?: string[];                         // 任意のプラン名
+  updatedAt?: unknown;                      // サーバ側で付与されることがある
+  areas?: AreaDef[];                        // ★ 追加: エリア設定
+};
+
 // ------------ 数値パッドで編集するフィールド種別 -----------------
 export type NumPadField =
   | 'table'

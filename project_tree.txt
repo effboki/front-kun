@@ -1,0 +1,31 @@
+
+/Users/nagi/front-kun
+├──  firebase.json
+├── .env.local
+├── .firebaserc
+├── .git
+├── .gitignore
+├── .next
+├── README.md
+├── eslint.config.mjs
+├── firebase-debug.log
+├── firebase.json
+├── functions
+├── next-env.d.ts
+├── next.config.ts
+├── node_modules
+├── package-lock.json
+├── package.json
+├── postcss.config.cjs
+├── project_tree.txt
+├── public
+├── seedFirestore.js
+├── src
+├── tailwind.config.cjs
+└── tsconfig.json
+
+directory: 6 file: 17
+
+
+
+[2K[1G
