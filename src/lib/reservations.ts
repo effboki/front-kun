@@ -3,6 +3,22 @@ import { enqueueOp, flushQueuedOps } from './opsQueue';
 
 console.log('[reservations.ts] module loaded, storeId=', getStoreId());
 
+// Remove all `undefined` fields (recursively). Firestore rejects `undefined`.
+const omitUndefinedDeep = (obj: any): any => {
+  if (obj === undefined) return undefined;
+  if (obj === null) return null;
+  if (Array.isArray(obj)) return obj.map(omitUndefinedDeep);
+  if (typeof obj === 'object') {
+    const out: any = {};
+    for (const k of Object.keys(obj)) {
+      const v = (obj as any)[k];
+      if (v !== undefined) out[k] = omitUndefinedDeep(v);
+    }
+    return out;
+  }
+  return obj;
+};
+
 /** 当日の日付 "YYYY-MM-DD" を返すヘルパー */
 function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
@@ -37,6 +53,7 @@ export async function updateReservationFS(
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     try {
       Object.entries(patch || {}).forEach(([field, value]) => {
+        if (value === undefined) return; // skip undefined for safety
         enqueueOp({ type: 'update', id: docId, field, value });
       });
       if (timeShiftDelta) {
@@ -71,9 +88,19 @@ export async function updateReservationFS(
       });
     }
 
+    const sanitizedPatch: Record<string, unknown> = {};
+    Object.entries(patch || {}).forEach(([key, value]) => {
+      if (value === undefined) return;
+      if (typeof value === 'string') {
+        sanitizedPatch[key] = value;
+        return;
+      }
+      sanitizedPatch[key] = value;
+    });
+
+    const updatePayload = omitUndefinedDeep({ ...sanitizedPatch, ...shiftPayload });
     await updateDoc(ref, {
-      ...(patch || {}),
-      ...shiftPayload,
+      ...updatePayload,
       version: increment(1),
       updatedAt: serverTimestamp(),
     });
@@ -91,6 +118,7 @@ export async function updateReservationFS(
     // 失敗時は必ずキューに退避（オフライン時と同じ扱い）
     try {
       Object.entries(patch || {}).forEach(([field, value]) => {
+        if (value === undefined) return; // skip undefined for safety
         enqueueOp({ type: 'update', id: docId, field, value });
       });
       if (timeShiftDelta) {
@@ -174,14 +202,14 @@ export async function addReservationFS(data: any): Promise<void> {
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     enqueueOp({
       type: 'add',
-      payload: {
+      payload: omitUndefinedDeep({
         ...data,
         // NEWバッジ用。未指定ならクライアント時刻で埋める（後続オンライン追加時は serverTimestamp に統一）
         createdAt: (data as any)?.createdAt ?? Date.now(),
         // 以降の表示安定のために更新時刻と楽観バージョンを付与
         updatedAt: Date.now(),
         version: (typeof (data as any)?.version === 'number' ? (data as any).version : 0) + 1,
-      },
+      }),
     });
     return;
   }
@@ -196,16 +224,13 @@ export async function addReservationFS(data: any): Promise<void> {
     const { doc, setDoc, waitForPendingWrites, serverTimestamp } = await import('firebase/firestore');
     const ref = doc(db, 'stores', storeId, 'reservations', docId);
 
-    await setDoc(
-      ref,
-      {
-        ...data,
-        version: (typeof data.version === 'number' ? data.version : 0) + 1,
-        createdAt: (data as any)?.createdAt ?? serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
+    const payload = omitUndefinedDeep({
+      ...data,
+      version: (typeof data.version === 'number' ? data.version : 0) + 1,
+      createdAt: (data as any)?.createdAt ?? serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    await setDoc(ref, payload, { merge: true });
 
     await waitForPendingWrites(db);
     try {
@@ -216,7 +241,7 @@ export async function addReservationFS(data: any): Promise<void> {
   } catch (err) {
     console.error('[addReservationFS] online add failed, enqueueing fallback:', err);
     try {
-      enqueueOp({ type: 'add', payload: { ...data } });
+      enqueueOp({ type: 'add', payload: omitUndefinedDeep({ ...data }) });
     } catch (e2) {
       console.error('[addReservationFS] enqueue fallback failed:', e2);
     }

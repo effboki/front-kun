@@ -1,5 +1,3 @@
-
-
 'use client';
 
 // src/hooks/useReservationsData.ts
@@ -8,9 +6,12 @@
 
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import type { Reservation } from '@/types';
-import { useRealtimeReservations } from './useRealtimeReservations';
-import { fetchAllReservationsOnce } from '@/lib/reservations';
+import { listenReservationsByDay } from '@/lib/firestoreReservations';
 import type { WaveSourceReservation } from '@/lib/waveSelectors';
+import { selectScheduleItems } from '@/lib/scheduleSelectors';
+import type { CourseDef } from '@/types/settings';
+import { startOfDayMs, msToHHmmFromDay } from '@/lib/time';
+
 
 // --- キャッシュの schema version ---
 const RES_CACHE_VERSION = 1;
@@ -85,7 +86,7 @@ function useDebouncedCacheWriter(storeId: string) {
   return write;
 }
 
-export function useReservationsData(storeId: string) {
+export function useReservationsData(storeId: string, opts?: { courses?: CourseDef[]; visibleTables?: string[]; dayStartMs?: number; schedule?: { dayStartHour?: number; dayEndHour?: number } }) {
   // 1) 初期値：キャッシュから復元（あれば）
   const [reservations, setReservations] = useState<Reservation[]>(() => readCache(storeId) ?? []);
   const [initialized, setInitialized] = useState<boolean>(() => (readCache(storeId) ? true : false));
@@ -93,43 +94,85 @@ export function useReservationsData(storeId: string) {
 
   const writeCacheDebounced = useDebouncedCacheWriter(storeId);
 
-  // live（hook内にガードあり：初回の cache-empty は流れない）
-  const { data: liveData, initialized: liveInit, error: liveErr } = useRealtimeReservations(storeId);
-
-  // onceFetch は live が到着するまでだけ採用
-  const onceAppliedRef = useRef(false);
-  const liveAppliedRef = useRef(false);
-
-  // 2) onceFetch（初回のみ / live 未到着時のみ採用）
+  // 2) Firestore live 購読：dayStartMs が必須（Date.now フォールバックはしない）
   useEffect(() => {
-    let aborted = false;
-    (async () => {
-      try {
-        if (liveInit || onceAppliedRef.current) return; // live 優先／二重防止
-        const list = await fetchAllReservationsOnce(storeId);
-        if (aborted) return;
-        if (!liveInit && !onceAppliedRef.current) {
-          onceAppliedRef.current = true;
-          setReservations(list as Reservation[]);
-          setInitialized(true);
-          writeCacheDebounced(list as Reservation[]);
-        }
-      } catch (e: any) {
-        if (!aborted) setError(e instanceof Error ? e : new Error(String(e)));
-      }
-    })();
-    return () => { aborted = true; };
-  }, [storeId, liveInit, writeCacheDebounced]);
+    const d0 = opts?.dayStartMs;
+    if (!Number.isFinite(d0 as number)) {
+      // dayStartMs が無い場合は購読しない（呼び出し側でセット必須）
+      return;
+    }
+    // schedule に基づく表示幅（時間）を計算。なければ 24h。
+    const s = opts?.schedule;
+    const hasScheduleHours = Number.isFinite(s?.dayStartHour as number) && Number.isFinite(s?.dayEndHour as number) && (Number(s?.dayEndHour) > Number(s?.dayStartHour));
+    const hours = hasScheduleHours ? (Number(s?.dayEndHour) - Number(s?.dayStartHour)) : 24;
+    const rangeEndMs = (d0 as number) + hours * 60 * 60 * 1000;
+    const base0 = startOfDayMs(d0 as number);
 
-  // 3) live 到着：以後 live を正として反映（空も含む）
-  useEffect(() => {
-    if (!liveInit || liveAppliedRef.current) return;
-    liveAppliedRef.current = true;
-    const arr = Array.isArray(liveData) ? (liveData as Reservation[]) : [];
-    setReservations(arr);
-    setInitialized(true);
-    writeCacheDebounced(arr);
-  }, [liveInit, liveData, writeCacheDebounced]);
+    let off: void | (() => void);
+    try {
+      off = listenReservationsByDay(storeId, d0 as number, rangeEndMs, (rows) => {
+        // UI 互換フィールドを付与してから state へ
+        const uiRows = (Array.isArray(rows) ? rows : []).map((r: any) => {
+          const timeHHmm = msToHHmmFromDay(Number(r?.startMs ?? 0), base0);
+          // 既存 UI が参照している time が無ければ補完
+          const time = timeHHmm;
+          // course の正規化と courseName の同期
+          const courseRaw = (r?.course ?? r?.courseName ?? '') as any;
+          const course = typeof courseRaw === 'string' ? courseRaw : String(courseRaw ?? '');
+          const courseName = (typeof r?.courseName === 'string' && r.courseName.trim() !== '') ? r.courseName : course;
+          // undefined を流さないように丸める
+          const name = typeof r?.name === 'string' ? r.name : '';
+          const tables = Array.isArray(r?.tables)
+            ? r.tables.map((t: any) => String(t)).filter((t: string) => t.trim() !== '')
+            : [];
+          // 単一卓（予約リスト向け）を安全に補完
+          const table = (typeof r?.table === 'string' && r.table.trim() !== '')
+            ? r.table
+            : (tables[0] ?? '');
+          // 人数を number で正規化（未設定は 0）
+          const g = Number(r?.guests);
+          const guests = Number.isFinite(g) ? Math.trunc(g) : 0;
+          const drinkLabel = typeof r?.drinkLabel === 'string' ? r.drinkLabel : '';
+          const eatLabel = typeof r?.eatLabel === 'string' ? r.eatLabel : '';
+          const memo = typeof r?.memo === 'string' ? r.memo : '';
+
+          // NEW: 作成から15分は「新規」フラグ（緑ドット）を出せるように期限を持たせる
+          const createdAtMsRaw = Number(r?.createdAtMs);
+          const createdAtMs = Number.isFinite(createdAtMsRaw) ? Math.trunc(createdAtMsRaw) : 0;
+          const freshUntilMs = createdAtMs + 15 * 60 * 1000;
+
+          // NEW: 変更から15分は「編集」フラグ（オレンジドット）の期限
+          const updatedAtMsRaw = Number(r?.updatedAtMs);
+          const updatedAtMs = Number.isFinite(updatedAtMsRaw) ? Math.trunc(updatedAtMsRaw) : 0;
+          const editedUntilMs = updatedAtMs + 15 * 60 * 1000;
+
+          return {
+            ...r,
+            timeHHmm,
+            time,
+            name,
+            course,
+            courseName,
+            tables,
+            table,
+            guests,
+            drinkLabel,
+            eatLabel,
+            memo,
+            freshUntilMs,
+            editedUntilMs,
+          } as Reservation;
+        }) as Reservation[];
+
+        setReservations(uiRows);
+        setInitialized(true);
+        writeCacheDebounced(uiRows);
+      });
+    } catch (e: any) {
+      setError(e instanceof Error ? e : new Error(String(e)));
+    }
+    return () => { if (off) off(); };
+  }, [storeId, opts?.dayStartMs, opts?.schedule?.dayStartHour, opts?.schedule?.dayEndHour, writeCacheDebounced]);
 
   // 4) 画面からの直接更新時もキャッシュへ（setReservations をラップして使う想定なら不要）
   useEffect(() => {
@@ -138,17 +181,49 @@ export function useReservationsData(storeId: string) {
     writeCacheDebounced(reservations);
   }, [reservations, initialized, writeCacheDebounced]);
 
-  // live のエラー反映
-  useEffect(() => {
-    if (liveErr) setError(liveErr);
-  }, [liveErr]);
-
   // 外部からも state を更新できるように安定化コールバックを返す
   const setReservationsStable = useCallback((updater: Reservation[] | ((prev: Reservation[]) => Reservation[])) => {
     setReservations((prev) => (typeof updater === 'function' ? (updater as any)(prev) : updater));
   }, []);
 
-  return { reservations, initialized, setReservations: setReservationsStable, error } as const;
+  // 5) スケジュール表示用に正規化（コース滞在時間・可視卓フィルタ・競合マーキング）
+  // NOTE:
+  // - dayStartMs を必ず貫通させる（予約の 'HH:mm' → 基準日の絶対msへ変換）
+  // - 依存配列にも opts?.dayStartMs を入れて、設定変更（例: dayStartHour）の即時反映を保証
+  const scheduleItems = useMemo(() => {
+    const base = selectScheduleItems(
+      reservations,
+      opts?.courses,
+      opts?.visibleTables,
+      opts?.dayStartMs,
+    ) as any[];
+
+    // id -> freshUntilMs の辞書をつくる
+    const freshMap: Record<string, number> = {};
+    (reservations as any[]).forEach((r) => {
+      if (r && typeof r.id === 'string' && Number.isFinite(Number(r.freshUntilMs))) {
+        freshMap[r.id] = Math.trunc(Number(r.freshUntilMs));
+      }
+    });
+
+    // id -> editedUntilMs の辞書
+    const editedMap: Record<string, number> = {};
+    (reservations as any[]).forEach((r) => {
+      if (r && typeof r.id === 'string' && Number.isFinite(Number((r as any).editedUntilMs))) {
+        editedMap[r.id] = Math.trunc(Number((r as any).editedUntilMs));
+      }
+    });
+
+    // scheduleItems 側にも同じフィールドを付与（描画でそのまま使えるように）
+    return (Array.isArray(base) ? base : []).map((it: any) => {
+      const fid = typeof it?.id === 'string' ? it.id : undefined;
+      const fusedFresh = (fid && freshMap[fid] != null) ? freshMap[fid] : it?.freshUntilMs;
+      const fusedEdited = (fid && editedMap[fid] != null) ? editedMap[fid] : it?.editedUntilMs;
+      return { ...it, freshUntilMs: fusedFresh, editedUntilMs: fusedEdited };
+    });
+  }, [reservations, opts?.courses, opts?.visibleTables, opts?.dayStartMs]);
+
+  return { reservations, scheduleItems, initialized, setReservations: setReservationsStable, error } as const;
 }
 
 // ===== Wave 用セレクタフック =====

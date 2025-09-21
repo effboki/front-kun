@@ -10,6 +10,8 @@ export type CourseTask = {
 
 export type CourseDef = {
   name: string;
+  /** 滞在時間（分）。未指定時はアプリ側のデフォルト（例: 120分）を適用 */
+  stayMinutes?: number;
   tasks: CourseTask[];
 };
 
@@ -19,6 +21,11 @@ export type AreaDef = {
   tables: string[];  // 重複所属OK
   color?: string;
   icon?: string;
+};
+
+export type ScheduleConfig = {
+  dayStartHour: number; // 0-47 を想定（跨ぎ運用も許容）
+  dayEndHour: number;   // 0-47 を想定（跨ぎ運用も許容）
 };
 
 // ========== MiniTasks / Wave (新規) ==========
@@ -52,6 +59,7 @@ export type StoreSettings = {
   areas?: AreaDef[];
   miniTasksByPosition?: Record<string, MiniTaskTemplate[]>;
   wave?: WaveConfig;
+  schedule?: ScheduleConfig;
   updatedAt?: number;
 };
 
@@ -70,6 +78,7 @@ export type StoreSettingsValue = {
   drinkOptions?: string[];
   miniTasksByPosition?: Record<string, MiniTaskTemplate[]>;
   wave?: WaveConfig;
+  schedule?: ScheduleConfig;
 };
 
 // ========== 変換ユーティリティ ==========
@@ -98,7 +107,9 @@ export const sanitizeCourses = (arr: unknown): CourseDef[] => {
       })
       .filter((v): v is CourseTask => !!v)
       .sort((a, b) => a.timeOffset - b.timeOffset);
-    out.push({ name, tasks });
+    const stayRaw = Number((c as any)?.stayMinutes);
+    const stayMinutes = Number.isFinite(stayRaw) && stayRaw > 0 ? stayRaw : undefined;
+    out.push({ name, stayMinutes, tasks });
   }
   return out;
 };
@@ -121,6 +132,41 @@ const toStringList = (v: unknown): string[] => {
   return (v as any[])
     .map((s) => (typeof s === 'string' ? s.trim() : ''))
     .filter((s) => !!s);
+};
+
+const pruneUndefined = <T>(value: T): T => {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => pruneUndefined(item))
+      .filter((item) => item !== undefined) as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      if (val === undefined) continue;
+      const cleaned = pruneUndefined(val);
+      if (cleaned !== undefined) result[key] = cleaned;
+    }
+    return result as unknown as T;
+  }
+  return value;
+};
+/** tables を安全に正規化（unknown -> string[]）
+ * - 文字列/数値を toString().trim() で統一
+ * - 空要素は除去
+ * - 先勝ちで重複除去（順序維持）
+ */
+export const sanitizeTables = (v: unknown): string[] => {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const x of v as any[]) {
+    const s = String(x ?? '').trim();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
 };
 
 /** tasksByPosition の配列要素を文字列に限定（undefined/null を除去） */
@@ -200,6 +246,20 @@ const sanitizeWave = (obj: unknown): WaveConfig | undefined => {
   };
 };
 
+/** schedule を安全に正規化（unknown -> ScheduleConfig | undefined） */
+const sanitizeSchedule = (obj: unknown): ScheduleConfig | undefined => {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const n = (v: any) => {
+    const num = Number(v);
+    return Number.isFinite(num) ? Math.floor(num) : NaN;
+  };
+  const clamp = (v: number) => Math.min(47, Math.max(0, v)); // 0-47 を許容
+  const s = clamp(n((obj as any).dayStartHour));
+  const e = clamp(n((obj as any).dayEndHour));
+  if (Number.isNaN(s) || Number.isNaN(e)) return undefined;
+  return { dayStartHour: s, dayEndHour: e };
+};
+
 /** areas を安全に正規化（unknown -> AreaDef[]） */
 export const sanitizeAreas = (arr: unknown): AreaDef[] => {
   if (!Array.isArray(arr)) return [];
@@ -225,7 +285,7 @@ export const toUISettings = (fs: StoreSettings): StoreSettingsValue => {
   const positions = Array.from(new Set(toPositionNames(fs?.positions)));
 
   // tables/plans/eatOptions/drinkOptions は文字列配列化
-  const tables: string[] = toStringList(fs?.tables);
+  const tables: string[] = sanitizeTables(fs?.tables);
   const plans: string[] = toStringList(fs?.plans);
   const eatOptions: string[] = toStringList(fs?.eatOptions);
   const drinkOptions: string[] = toStringList(fs?.drinkOptions);
@@ -242,8 +302,9 @@ export const toUISettings = (fs: StoreSettings): StoreSettingsValue => {
   const miniTasksByPosition: Record<string, MiniTaskTemplate[]> =
     sanitizeMiniTasksByPosition((fs as any)?.miniTasksByPosition) ?? {};
   const waveCfg = sanitizeWave((fs as any)?.wave);
+  const schedule = sanitizeSchedule((fs as any)?.schedule);
 
-  return { courses, positions, tables, plans, tasksByPosition, eatOptions, drinkOptions, areas, miniTasksByPosition, wave: waveCfg };
+  return { courses, positions, tables, plans, tasksByPosition, eatOptions, drinkOptions, areas, miniTasksByPosition, wave: waveCfg, schedule };
 };
 
 /**
@@ -255,7 +316,7 @@ export const toFirestorePayload = (ui: StoreSettingsValue): StoreSettings => {
   const courses = sanitizeCourses(ui.courses);
 
   const positions = toPositionNames(ui.positions);
-  const tables = toStringList(ui.tables);
+  const tables = sanitizeTables(ui.tables);
   const plans = toStringList(ui.plans);
   const eatOptions = toStringList(ui.eatOptions);
   const drinkOptions = toStringList(ui.drinkOptions);
@@ -265,22 +326,25 @@ export const toFirestorePayload = (ui: StoreSettingsValue): StoreSettings => {
 
   const miniTasksByPosition = sanitizeMiniTasksByPosition((ui as any)?.miniTasksByPosition);
   const wave = sanitizeWave((ui as any)?.wave);
+  const schedule = sanitizeSchedule((ui as any)?.schedule);
 
   const payload: StoreSettings = {
-    courses: courses.length > 0 ? courses : undefined,
-    positions: positions.length > 0 ? positions : undefined,
-    tables: tables.length > 0 ? tables : undefined,
-    plans: plans.length > 0 ? plans : undefined,
-    eatOptions: eatOptions.length > 0 ? eatOptions : undefined,
-    drinkOptions: drinkOptions.length > 0 ? drinkOptions : undefined,
-    tasksByPosition: tasksByPosition,
-    areas: areas.length > 0 ? areas : undefined,
-    miniTasksByPosition,
-    wave,
+    courses,
+    positions,
+    tables,
+    plans,
+    eatOptions,
+    drinkOptions,
+    areas,
     updatedAt: Date.now(),
   };
 
-  return payload;
+  if (tasksByPosition) payload.tasksByPosition = tasksByPosition;
+  if (miniTasksByPosition) payload.miniTasksByPosition = miniTasksByPosition;
+  if (wave) payload.wave = wave;
+  if (schedule) payload.schedule = schedule;
+
+  return pruneUndefined(payload);
 };
 
 // ========== 既定値 & UI既定適用 ==========

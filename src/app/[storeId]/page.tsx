@@ -1,7 +1,7 @@
 'use client';
 
 import React, { memo } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { toggleTaskComplete } from '@/lib/reservations';
 import { renameCourseTx } from '@/lib/courses';
 import { db } from '@/lib/firebase';
@@ -12,7 +12,7 @@ import { flushQueuedOps } from '@/lib/opsQueue';
 // 📌 Policy: UI preview must NOT read/write r.pendingTable. Preview state lives only in pendingTables.
 
 import type { StoreSettings, StoreSettingsValue } from '@/types/settings';
-import { toUISettings } from '@/types/settings';
+import { toUISettings, toFirestorePayload } from '@/types/settings';
 import { useState, ChangeEvent, FormEvent, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   ensureServiceWorkerRegistered,
@@ -33,10 +33,14 @@ import CourseStartSection from './_components/CourseStartSection';
 import type { ResOrder, Reservation, PendingTables, NumPadField, TaskDef, CourseDef } from '@/types';
 
 import TasksSection from './_components/TasksSection';
+import ScheduleView from './_components/schedule/ScheduleView'; // NOTE: render with storeSettings={settingsDraft}
+import { parseTimeToMinutes, formatMinutesToTime, startOfDayMs } from '@/lib/time';
 import StoreSettingsContent from "./_components/settings/StoreSettingsContent";
 import PreopenSettingsContent from "./_components/preopen/PreopenSettingsContent";
 
 import type { AreaDef } from '@/types';
+import { useReservationMutations } from '@/hooks/useReservationMutations';
+type BottomTab = 'reservations' | 'schedule' | 'tasks' | 'courseStart';
 
 /** ラベル比較の正規化（前後空白 / 全角半角 / 大文字小文字の揺れを吸収） */
 const normalizeLabel = (s: string): string =>
@@ -133,7 +137,7 @@ const RootNumPad: React.FC<RootNumPadProps> = ({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30">
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/30">
       <div className="w-full sm:w-[420px] bg-white rounded-t-2xl sm:rounded-2xl shadow-xl p-4">
         {/* プレビュー（新規は“後の卓”だけを大きく表示：○.○卓） */}
         <div className="mb-2">
@@ -272,9 +276,37 @@ export default function Home() {
 // ────────────────────────────────────────────────────────────────────────────────────
 
 function HomeBody() {
-  // ── Bottom tabs: 予約リスト / タスク表 / コース開始時間表
-  const [bottomTab, setBottomTab] =
-    useState<'reservations' | 'tasks' | 'courseStart'>('reservations');
+  // ── Bottom tabs: 予約リスト / タスク表 / コース開始時間表 / スケジュール
+  const [bottomTab, setBottomTab] = useState<BottomTab>('reservations');
+
+  // ---- schedule tab routing helpers (layout.tsx が ?tab=schedule を見て表示を切替) ----
+  const router = useRouter();
+  const search = useSearchParams();
+
+
+  const clearScheduleTab = React.useCallback(() => {
+    try {
+      const q = new URLSearchParams(search ? (search as any) : undefined);
+      q.delete('tab');
+      const s = q.toString();
+      router.push(s ? `?${s}` : '.', { scroll: false } as any);
+    } catch {
+      router.push('.', { scroll: false } as any);
+    }
+  }, [router, search]);
+
+  // URLの `?tab=` と bottomTab を同期（schedule を含む）
+  React.useEffect(() => {
+    try {
+      const t = search?.get('tab');
+      if (t === 'reservations' || t === 'tasks' || t === 'courseStart' || t === 'schedule') {
+        setBottomTab(t as BottomTab);
+      }
+    } catch {
+      // noop
+    }
+  }, [search]);
+
 
   // サイドメニューの選択状態（既存の既定値はそのまま）
   const [selectedMenu, setSelectedMenu] = useState<string>('予約リスト×タスク表');
@@ -284,11 +316,13 @@ function HomeBody() {
   // メイン画面へ戻す
   const goMain = () => setSelectedMenu('予約リスト×タスク表');
   // 下部タブを押したとき：設定画面ならメインに戻してからタブ切替
-  const handleBottomTabClick = (tab: 'reservations' | 'tasks' | 'courseStart') => {
+  const handleBottomTabClick = (tab: BottomTab) => {
     setBottomTab(tab);
     if (isSettings) {
       goMain(); // 設定画面を閉じてメインへ
     }
+    // 他タブに移動したら ?tab=schedule を外す（layout.tsx が表示を切替）
+    clearScheduleTab();
   };
 
   // ── 店舗設定（分割UI）用のドラフト状態（子コンポーネントに丸ごと渡す）
@@ -386,6 +420,23 @@ const [baselineSettings, setBaselineSettings] =
   const storeId = params?.storeId;
   // 読み込み前はフォールバック
   const id = typeof storeId === 'string' ? storeId : 'default';
+  // Day-start baseline (ms): derived from settingsDraft.schedule.dayStartHour; fallback 15:00
+  const dayStartMs = React.useMemo(() => {
+    const startHour =
+      typeof settingsDraft?.schedule?.dayStartHour === 'number'
+        ? settingsDraft.schedule.dayStartHour
+        : 15;
+    const now = new Date();
+    const d0 = new Date(now);
+    d0.setHours(startHour, 0, 0, 0);
+    return d0.getTime();
+  }, [settingsDraft?.schedule?.dayStartHour]);
+const {
+  createReservation: createReservationMut,
+  updateReservation: updateReservationMut,
+  deleteReservation: deleteReservationMut,
+} = useReservationMutations(id as string, { dayStartMs });
+  
 
   // 名前空間付き localStorage キー定義
   const ns        = `front-kun-${id}`;
@@ -639,14 +690,15 @@ useEffect(() => {
   nsSetJSON('drinkOptions', drinkOptions);
 }, [drinkOptions]);
 
-  //
+
   // ─── 2.2 予約(来店) の状態管理（統合フック） ────────────────────────────
   const {
     reservations,
     initialized: reservationsInitialized,
     setReservations,
     error: reservationsError,
-  } = useReservationsData(id as string);
+    scheduleItems, // ← 追加：スケジュール用アイテム
+  } = useReservationsData(id as string, { dayStartMs }); // pass dayStartMs to ensure absolute-ms mapping
 
   // ── Early loading guard ───────────────────────────────
   const loading = settingsLoading === true;
@@ -819,7 +871,7 @@ const tableToAreasLocal = React.useMemo(() => {
   }, []);
   const hasLoadedStore = useRef(false); // 店舗設定を 1 回だけ取得
   // ---- field updater (hoisted before use) ----
-function updateReservationField(
+async function updateReservationField(
   id: string,
   field:
     | 'time'
@@ -838,6 +890,31 @@ function updateReservationField(
     | 'departed',
   value: string | number | { [key: string]: boolean } | boolean | string[]
 ) {
+  // ⏱ 時刻変更は startMs と同時更新（当日0:00基準で安全に計算）
+  if (field === 'time') {
+    const hhmm = String(value).trim();
+    const mins = parseTimeToMinutes(hhmm);          // '20:00' -> 1200
+    const base0 = startOfDayMs(dayStartMs);         // 当日の 0:00（ローカル）
+    const newStartMs = base0 + mins * 60_000;
+
+    // ① ローカル状態を楽観更新（表示を即時反映）
+    setReservations((prev) => {
+      const next = prev.map((r) =>
+        r.id === id ? { ...r, time: hhmm, startMs: newStartMs } : r
+      );
+      persistReservations(next);
+      writeReservationsCache(next);
+      return next;
+    });
+
+    // ② Firestore へも time と startMs を同時に保存（ミューテーション経由）
+    try {
+      await updateReservationMut(id, { time: hhmm, startMs: newStartMs } as any);
+    } catch {
+      /* noop */
+    }
+    return; // 他の汎用分岐を通さない
+  }
   setReservations((prev) => {
     const next = prev.map((r) => {
       if (r.id !== id) return r;
@@ -1119,20 +1196,9 @@ const batchAdjustTaskTime = (
 };
 
 
+
   // 来店チェック用 state
   //
-  // ─── 2.4 時刻操作ヘルパー ────────────────────────────────────────────────────
-  //
-
-  const parseTimeToMinutes = (time: string): number => {
-    const [hh, mm] = time.split(':').map(Number);
-    return hh * 60 + mm;
-  };
-  const formatMinutesToTime = (minutes: number): string => {
-    const hh = Math.floor(minutes / 60);
-    const mm = minutes % 60;
-    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
-  };
 
   /** デバイスID（ローカル一意）を取得・生成 */
   const getDeviceId = (): string => {
@@ -1265,7 +1331,7 @@ const togglePaymentChecked = useCallback((id: string) => {
   const addReservationRef = useRef<((e: FormEvent) => Promise<void>) | null>(null);
   useEffect(() => {
     // 依存配列なし：レンダー後に最新の関数を格納（宣言順の制約を回避）
-    addReservationRef.current = addReservation;
+    addReservationRef.current = addReservationV2;
   });
 
   // deleteReservation も後方で宣言されるため、初期値は null にしておく
@@ -1337,6 +1403,54 @@ const onToggleEditTableMode = useCallback(() => {
     },
     [],
   );
+  // ─── 予約追加 ──────────────────────────────
+  const addReservationV2 = async (e: FormEvent) => {
+    e.preventDefault();
+
+    // --- 時刻 → 分 → 絶対ms（当日の 0:00 基準で安全に計算） ---
+    const mins = parseTimeToMinutes(newResTime);
+    const base0 = startOfDayMs(dayStartMs);
+    const startMs = base0 + mins * 60_000;
+
+    // --- コース名の解決（入力→選択中→先頭コース→未選択） ---
+    const inputCourse = String(newResCourse ?? '').trim();
+    const selectedCourseLabel = String(selectedCourse ?? '').trim();
+    const firstCourseLabel =
+      Array.isArray(courses) && courses[0]?.name ? String(courses[0].name).trim() : '';
+    const courseLabel = inputCourse || selectedCourseLabel || firstCourseLabel || '未選択';
+
+    // --- guests / table / tables を正規化 ---
+    const guestsNum = Math.trunc(Number(newResGuests) || 0);
+    const tableStr = String(newResTable ?? '');
+    const tablesArr = Array.isArray(newResTables) && newResTables.length > 0
+      ? newResTables.map(String)
+      : (tableStr ? [tableStr] : []);
+
+    // Firestore には必ず number(ms) の startMs を保存
+    await createReservationMut({
+      startMs,
+      time: newResTime,
+      table: tableStr,
+      tables: tablesArr,
+      guests: guestsNum,
+      name: newResName,
+      course: courseLabel,          // UI と表示用
+      courseName: courseLabel,      // 後方互換（集計側が参照する場合あり）
+      eat: newResEat,
+      drink: newResDrink,
+      notes: newResNotes,
+    } as any);
+
+    // 入力クリア（任意）
+    setNewResTable('');
+    setNewResTables([]);
+    setNewResName('');
+    setNewResCourse('');
+    setNewResEat('');
+    setNewResDrink('');
+    setNewResGuests('' as any);
+    setNewResNotes('');
+  };
   // ─── 2.1 コース・タスクの定義・状態管理 ─────────────────────────────────────
   //
 
@@ -1671,7 +1785,8 @@ const handleStoreSave = React.useCallback(async () => {
     console.info('[handleStoreSave] saving to', `stores/${id}/settings/config`, 'keys:', Object.keys(draftForSave || {}));
 
     // フック経由の保存（唯一の経路）
-    await saveSettings(draftForSave as any);
+    const payload = toFirestorePayload(draftForSave);
+    await saveSettings(payload);
 
     // baseline & ローカルキャッシュ更新
     setBaselineSettings(draftForSave);
@@ -3403,7 +3518,7 @@ const onNumPadConfirm = () => {
           />
         </div>
       )}
-      <main className="pt-12 p-4 space-y-6">
+      <main className="pt-12 p-4 space-y-6 pb-24">
         
       
       {/* ─────────────── 店舗設定セクション ─────────────── */}
@@ -3514,6 +3629,30 @@ const onNumPadConfirm = () => {
     setEditedMarks={setEditedMarks}
   />
 )}
+{/* ───────────── スケジュール（外部コンポーネント） start ─────────────  */}
+{!isSettings && bottomTab === 'schedule' && (
+  <div className="-mx-4">
+    <ScheduleView
+      storeSettings={settingsDraft}
+      dayStartMs={startOfDayMs(dayStartMs)}
+      items={scheduleItems}
+      coursesOptions={courses}
+      tablesOptions={presetTablesView}
+      eatOptions={eatOptions}
+      drinkOptions={drinkOptions}
+      onSave={async (data, id) => {
+        if (id) {
+          await updateReservationMut(id, data);
+        } else {
+          await createReservationMut(data);
+        }
+      }}
+      onDelete={async (id) => {
+        await deleteReservationMut(id);
+      }}
+    />
+  </div>
+)}
 {/* ───────────── タスク表セクション（外部コンポーネント） start ───────────── */}
 {!isSettings && bottomTab === 'tasks' && (
   <div className="">
@@ -3530,8 +3669,6 @@ const onNumPadConfirm = () => {
 />
   </div>
 )}
-{/* ───────────────────────────── タスク表セクション（外部コンポーネント） end ───────────────────────────── */}
-
       {/* ─────────────── 5. 数値パッドモーダル ─────────────── */}
       {numPadState && (
         <RootNumPad
@@ -3600,16 +3737,8 @@ const onNumPadConfirm = () => {
 {/* ─────────────── テーブル管理セクション ─────────────── */}
 
  {/* ─ BottomTab: 予約リスト / タスク表 / コース開始時間表 ─ */}
- {/* 下部固定タブぶんの余白を確保（高さはタブ＋下余白に合わせて調整OK） */}
-<div aria-hidden className="h-24" />
-{/* 画面下の余白を白で塗りつぶす（タブを上げたぶん透け防止） */}
-<div
-  aria-hidden
-  className="fixed inset-x-0 bottom-0 bg-white z-30"
-  style={{ height: '2rem' }} // ← ここを footer の bottom-* と同じ高さに合わせる
-/>
-<footer className="fixed bottom-7 inset-x-0 z-40 border-t bg-white">
-  <div className="max-w-6xl mx-auto grid grid-cols-3">
+<footer className="fixed bottom-0 inset-x-0 z-50 bg-white border-t">
+  <div className="max-w-6xl mx-auto grid grid-cols-4">
     <button
       type="button"
       onClick={() => handleBottomTabClick('reservations')}
@@ -3623,6 +3752,18 @@ const onNumPadConfirm = () => {
     >
       予約リスト
     </button>
+    {/* ▼ スケジュールタブ */}
+<button
+  type="button"
+  onClick={() => handleBottomTabClick('schedule')}
+  className={[
+    'py-3 text-sm font-medium border-l border-r',
+    bottomTab === 'schedule' ? 'text-blue-600' : 'text-gray-600 hover:bg-gray-50',
+  ].join(' ')}
+  aria-pressed={bottomTab === 'schedule'}
+>
+  スケジュール
+</button>
     <button
       type="button"
       onClick={() => handleBottomTabClick('tasks')}

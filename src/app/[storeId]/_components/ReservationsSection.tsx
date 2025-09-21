@@ -2,6 +2,7 @@
 import React, { memo } from 'react';
 import type { ResOrder, Reservation, PendingTables } from '@/types';
 import type { FormEvent, Dispatch, SetStateAction } from 'react';
+import { parseTimeToMinutes } from '@/lib/time';
 
 // 共通ヘルプ文言（食/飲 iボタン）
 const EAT_DRINK_INFO_MESSAGE =
@@ -74,7 +75,7 @@ const NumPad: React.FC<NumPadProps> = ({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30">
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/30">
       <div className="w-full sm:w-[420px] bg-white rounded-t-2xl sm:rounded-2xl shadow-xl p-4">
         {/* プレビュー表示（大きめ＆淡背景） */}
         <div className="mb-2">
@@ -193,9 +194,12 @@ const NumPad: React.FC<NumPadProps> = ({
 // ────────────────────────────────────────────────
 
 
+// Reservation objects enriched by useReservationsData: adds timeHHmm for display compatibility
+type ReservationCompat = Reservation & { timeHHmm?: string };
+
 type Props = {
   /** 画面に表示する予約（すでに親でフィルタ＆ソート済み） */
-  reservations: Reservation[];
+  reservations: ReservationCompat[];
 
   /** 並び順コントロール */
   resOrder: ResOrder;
@@ -358,14 +362,38 @@ const ReservationsSection: React.FC<Props> = ({
     return () => clearInterval(id);
   }, []);
 
-  React.useEffect(() => {
-    if (initialRenderRef.current) {
-      // 初回レンダでは既存分を「既知」として登録（ドットは付けない）
+    React.useEffect(() => {
+      if (initialRenderRef.current) {
+        // 初回レンダでは既存分を「既知」として登録（ドットは付けない）
+        reservations.forEach((r) => {
+          seenRef.current.add(r.id);
+          const snap = JSON.stringify({
+            time: r.time,
+            table: (r.table ?? r.tables?.[0] ?? ''),
+            name: r.name ?? '',
+            course: r.course ?? '',
+            eat: r.eat ?? '',
+            drink: r.drink ?? '',
+            guests: Number(r.guests) || 0,
+            notes: r.notes ?? '',
+          });
+          prevSnapshotRef.current.set(r.id, snap);
+        });
+        initialRenderRef.current = false;
+        return;
+      }
+      // 新しく現れたIDのみローカルで「NEW打刻」
       reservations.forEach((r) => {
-        seenRef.current.add(r.id);
-        const snap = JSON.stringify({
+        if (!seenRef.current.has(r.id)) {
+          seenRef.current.add(r.id);
+          localNewRef.current.set(r.id, Date.now());
+        }
+      });
+      // 既存IDの変化を検知して「編集打刻」
+      reservations.forEach((r) => {
+        const curr = JSON.stringify({
           time: r.time,
-          table: r.table,
+          table: (r.table ?? r.tables?.[0] ?? ''),
           name: r.name ?? '',
           course: r.course ?? '',
           eat: r.eat ?? '',
@@ -373,37 +401,13 @@ const ReservationsSection: React.FC<Props> = ({
           guests: Number(r.guests) || 0,
           notes: r.notes ?? '',
         });
-        prevSnapshotRef.current.set(r.id, snap);
+        const prev = prevSnapshotRef.current.get(r.id);
+        if (prev && prev !== curr) {
+          setEditedMarks((m) => ({ ...m, [r.id]: Date.now() }));
+        }
+        prevSnapshotRef.current.set(r.id, curr);
       });
-      initialRenderRef.current = false;
-      return;
-    }
-    // 新しく現れたIDのみローカルで「NEW打刻」
-    reservations.forEach((r) => {
-      if (!seenRef.current.has(r.id)) {
-        seenRef.current.add(r.id);
-        localNewRef.current.set(r.id, Date.now());
-      }
-    });
-    // 既存IDの変化を検知して「編集打刻」
-    reservations.forEach((r) => {
-      const curr = JSON.stringify({
-        time: r.time,
-        table: r.table,
-        name: r.name ?? '',
-        course: r.course ?? '',
-        eat: r.eat ?? '',
-        drink: r.drink ?? '',
-        guests: Number(r.guests) || 0,
-        notes: r.notes ?? '',
-      });
-      const prev = prevSnapshotRef.current.get(r.id);
-      if (prev && prev !== curr) {
-        setEditedMarks((m) => ({ ...m, [r.id]: Date.now() }));
-      }
-      prevSnapshotRef.current.set(r.id, curr);
-    });
-  }, [reservations]);
+    }, [reservations]);
 
   // === 新規追加のデフォ時刻を「前回選んだ時刻」にする ===
   const LAST_TIME_KEY = 'frontkun:lastNewResTime';
@@ -446,11 +450,6 @@ const ReservationsSection: React.FC<Props> = ({
     }
   }, [reservations.length, timeOptions, newResTime, setNewResTime]);
   // 並び替えヘルパー
-  const parseTimeToMinutes = (t: string) => {
-    const [hh, mm] = (t || '').split(':').map((n) => parseInt(n, 10));
-    if (Number.isNaN(hh) || Number.isNaN(mm)) return Number.MAX_SAFE_INTEGER;
-    return hh * 60 + mm;
-  };
   const getCreatedAtMs = (r: any): number => {
     // Firestore Timestamp
     if (r?.createdAt?.toMillis) return r.createdAt.toMillis();
@@ -469,15 +468,27 @@ const ReservationsSection: React.FC<Props> = ({
     }
     return 0;
   };
+  // A案: 予約リストの時刻は live 値基準。ソートは startMs(絶対ms) を最優先し、旧 time 文字列はあくまでフォールバック。
+  // 時刻ソート用の安全キー（ms）
+  const getStartKeyMs = (r: any): number => {
+    const ms = Number((r as any)?.startMs);
+    if (Number.isFinite(ms) && ms > 0) return ms;
+    // フォールバック：HH:mm（分）→ ms に換算
+    const mins = parseTimeToMinutes((r as any)?.time);
+    return (Number.isFinite(mins) ? mins : 0) * 60_000;
+  };
   // 予約リストの最終並び（セクション内で最終決定）
   const finalReservations = React.useMemo(() => {
     const arr = [...reservations];
     if (resOrder === 'time') {
-      arr.sort((a, b) => parseTimeToMinutes(a.time) - parseTimeToMinutes(b.time));
+      // startMs（絶対ms）を優先し、なければ HH:mm を ms に換算して比較
+      arr.sort((a, b) => getStartKeyMs(a) - getStartKeyMs(b));
     } else if (resOrder === 'table') {
       const ta = (x: any) => {
-        const v = editTableMode ? (pendingTables?.[x.id]?.nextList?.[0] ?? x.table) : (x.pendingTable ?? x.table);
-        const n = Number(v);
+        const base = editTableMode
+          ? (pendingTables?.[x.id]?.nextList?.[0] ?? x.table ?? x.tables?.[0])
+          : (x.pendingTable ?? x.table ?? x.tables?.[0]);
+        const n = Number(base ?? '');
         return Number.isFinite(n) ? n : 0;
       };
       arr.sort((a, b) => ta(a) - ta(b));
@@ -1237,16 +1248,28 @@ const ReservationsSection: React.FC<Props> = ({
             <tbody>
               {finalReservations.map((r, idx) => {
                 const prev = finalReservations[idx - 1];
-                const isBlockStart = !prev || prev.time !== r.time;
+                const prevTimeStr = prev ? prev.time : undefined;
+                const currTimeStr = r.time;
+                const isBlockStart = !prev || prevTimeStr !== currTimeStr;
                 const padY = isBlockStart ? 'py-1.5' : 'py-1';
-                const createdMsRow = getCreatedAtMs(r);
-                const localNewMs = localNewRef.current.get(r.id) ?? 0;
-                const isNew = (nowTick - createdMsRow <= NEW_THRESHOLD) || (nowTick - localNewMs <= NEW_THRESHOLD);
+                // NEW/FRESH: 15分以内は freshUntilMs（createdAtMs + 15分）基準で判定
+                const freshUntil = Number((r as any).freshUntilMs)
+                  || (getCreatedAtMs(r) ? getCreatedAtMs(r) + NEW_THRESHOLD : 0)
+                  || (((localNewRef.current.get(r.id) ?? 0)) + NEW_THRESHOLD);
+                const isFresh = Number.isFinite(freshUntil) && freshUntil > 0 && nowTick <= freshUntil;
+
+                // Edited: 直近15分以内の更新をオレンジドットで表示
                 const editedMs = editedMarks[r.id] ?? 0;
                 const isEdited = nowTick - editedMs <= NEW_THRESHOLD;
                 const borderClass =
-                  !prev || prev.time !== r.time ? 'border-t-4 border-gray-300' : 'border-b border-gray-300';
-                const displayTableRow = editTableMode ? (pendingTables[r.id]?.nextList?.[0] ?? r.table) : (r.pendingTable ?? r.table);
+                  !prev || prevTimeStr !== currTimeStr ? 'border-t-4 border-gray-300' : 'border-b border-gray-300';
+                // Normalized string for table
+                const tableStr = String(r.table ?? r.tables?.[0] ?? '');
+                const displayTable =
+                  editTableMode
+                    ? (pendingTables[r.id]?.nextList?.[0] ?? tableStr)
+                    : (r.pendingTable ?? tableStr);
+                const displayTableStr = String(displayTable);
 
                 return (
                   <tr
@@ -1256,11 +1279,12 @@ const ReservationsSection: React.FC<Props> = ({
                     }${
                       checkedDepartures.includes(r.id) ? 'bg-gray-300 text-gray-400 ' : ''
                     }${borderClass} text-center ${
-                      firstRotatingId[displayTableRow] === r.id ? 'text-red-500' : ''
+                      firstRotatingId[displayTableStr] === r.id ? 'text-red-500' : ''
                     }${editTableMode && tablesForMove.includes(r.id) ? 'bg-amber-50 ' : ''}`}
                   >
                     {/* 来店時刻セル */}
                     <td className={`border px-1 ${padY}`}>
+                    {/* NOTE: A案 - 入力値は常に live 値（r.time）を使う。スナップショット値には依存しない。 */}
                       <select
                         value={r.time}
                         onChange={(e) => updateReservationField(r.id, 'time', e.target.value)}
@@ -1277,34 +1301,29 @@ const ReservationsSection: React.FC<Props> = ({
                     {/* 卓番セル */}
                     <td className={`border px-1 ${padY} text-center`}>
                       <div className="relative inline-flex items-center justify-center w-full">
-                        {(isNew || isEdited) && (
+                        {(isFresh || isEdited) && (
                           <span
                             className={
                               `pointer-events-none absolute left-0.5 top-0.5 z-10 block w-1.5 h-1.5 rounded-full border border-white shadow-sm ` +
-                              (isNew ? 'bg-green-500' : 'bg-amber-500')
+                              (isFresh ? 'bg-green-500' : 'bg-amber-500')
                             }
-                            aria-label={isNew ? '新規' : '変更'}
-                            title={isNew ? '新規' : '変更'}
+                            aria-label={isFresh ? '新規' : '変更'}
+                            title={isFresh ? '新規' : '変更'}
                           />
                         )}
                         {(() => {
-                          // ✅ 編集モード中は pendingTables が無ければ「元の卓番号 r.table」を表示
-                          //   通常時は（これまで通り）r.pendingTable があればそれを優先
-                          const displayTable = editTableMode
-  ? (pendingTables[r.id]?.nextList?.[0] ?? r.table)
-  : (r.pendingTable ?? r.table);
-
+                          // Normalized table string already computed above
                           return (
                             <input
                               type="text"
                               readOnly
-                              value={displayTable}
+                              value={displayTableStr}
                               onClick={() => {
                                 if (editTableMode) {
                                   if (!tablesForMove.includes(r.id)) {
                                     setPendingTables((prev) => ({
                                       ...prev,
-                                      [r.id]: { old: r.table, nextList: [r.table] },
+                                      [r.id]: { old: tableStr, nextList: [tableStr] },
                                     }));
                                   } else {
                                     setPendingTables((prev) => {
@@ -1344,7 +1363,7 @@ const ReservationsSection: React.FC<Props> = ({
                     {/* コースセル */}
                     <td className={`border px-1 ${padY}`}>
                       <select
-                        value={r.course}
+                        value={r.course ?? ''}
                         onChange={(e) => updateReservationField(r.id, 'course', e.target.value)}
                         className="border px-1 py-0.5 rounded text-sm"
                       >
@@ -1394,7 +1413,7 @@ const ReservationsSection: React.FC<Props> = ({
                     <td className={`border px-1 ${padY}`}>
                       <input
                         type="text"
-                        value={r.guests}
+                        value={String(r.guests ?? '')}
                         readOnly
                         onClick={() => openNumPad({ id: r.id, field: 'guests', value: '' })}
                         className="border px-1 py-0.5 w-8 rounded text-sm !text-center cursor-pointer"

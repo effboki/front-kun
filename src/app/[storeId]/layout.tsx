@@ -140,7 +140,10 @@ export default function StoreLayout({
       <div className="fixed right-0 top-0 h-12 w-0 z-[100]">
         <BellMenu />
       </div>
+
+      {/* 既存画面は常に表示（下タブやサイドメニューを残す） */}
       {children}
+
     </MiniTaskProvider>
   );
 }

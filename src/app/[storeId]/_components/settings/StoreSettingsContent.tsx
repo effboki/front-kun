@@ -61,7 +61,7 @@ export type StoreSettingsContentProps = {
 // ============== component ==============
 export default function StoreSettingsContent({ value, onChange, onSave, isSaving, baseline }: StoreSettingsContentProps) {
   // navigation (drill-in style)
-  type View = 'root' | 'courses' | 'positions' | 'tables' | 'tablesTables' | 'tablesAreas' | 'eatdrink' | 'minitasks' | 'wavesettings';
+  type View = 'root' | 'courses' | 'positions' | 'tables' | 'tablesTables' | 'tablesAreas' | 'eatdrink' | 'minitasks' | 'wavesettings' | 'schedule';
   const [view, setView] = useState<View>('root');
 
   // derived arrays
@@ -880,6 +880,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
         )}
         <ListItem label={<span>ミニタスク</span>} onClick={() => setView('minitasks')} />
         <ListItem label={<span>波設定</span>} onClick={() => setView('wavesettings')} />
+        <ListItem label={<span>スケジュール設定</span>} onClick={() => setView('schedule')} />
         <div className={`sticky bottom-0 z-10 border-t bg-white/90 backdrop-blur p-4 ${isDirty ? 'shadow-[0_-6px_12px_rgba(0,0,0,0.06)]' : ''}`}>
           <button
             type="button"
@@ -919,6 +920,17 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     );
   }
 
+  // --- Schedule settings page (stub) ---
+  if (view === 'schedule') {
+    return (
+      <SubPageShell title="スケジュール設定">
+        <div className="text-sm text-gray-600 space-y-2">
+          <p>店舗の <strong>スケジュール表示時間</strong>（開始・終了）や <strong>コース滞在時間</strong> の既定を設定します。</p>
+          <p className="text-xs text-gray-500">※ このページの詳細UIは後続フェーズで実装します。</p>
+        </div>
+      </SubPageShell>
+    );
+  }
 
   // --- Courses page ---
   if (view === 'courses') {

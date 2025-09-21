@@ -1,0 +1,246 @@
+'use client';
+
+import { useMemo } from 'react';
+import {
+  createReservation as createDoc,
+  patchReservation as patchDoc,
+  deleteReservation as deleteDoc,
+  type ReservationDoc,
+} from '@/lib/firestoreReservations';
+import { parseTimeToMinutes, startOfDayMs, msToHHmmFromDay } from '@/lib/time';
+
+export type ReservationCreateInput = {
+  startMs: number; // 予約開始（エポックms）
+  tables: string[]; // 卓（複数可）
+  table?: string; // 単一卓（UI 入力の便宜）
+  guests: number; // 人数
+  name?: string;
+  courseName?: string;
+  drinkAllYouCan?: boolean;
+  foodAllYouCan?: boolean;
+  drinkLabel?: string;
+  eatLabel?: string;
+  memo?: string;
+  durationMin?: number; // 任意: 指定があれば保存
+  endMs?: number; // 任意: 指定があれば保存
+  time?: string;
+  notes?: string;
+  course?: string;
+  drink?: string;
+  eat?: string;
+};
+
+export type ReservationPatch = Partial<ReservationCreateInput> & Record<string, unknown>;
+
+/**
+ * Firestore I/O: stores/{storeId}/reservations/{reservationId}
+ * すべて number(ms) で保存。toISOString()/Timestamp は使用しない。
+ */
+export function useReservationMutations(storeId: string, options?: { dayStartMs?: number }) {
+  // --- sanitize helpers ---
+  const toStr = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String(v));
+  const trimOrEmpty = (v: unknown) => toStr(v).trim();
+  const toNum = (v: unknown) => (typeof v === 'number' ? v : Number(v));
+  const toBool = (v: unknown) => !!v;
+  const toTables = (v: any) => (Array.isArray(v) ? v : v ? [v] : []).map((s) => String(s)).filter(Boolean);
+
+  // ---- create ----
+  async function createReservation(input: ReservationCreateInput): Promise<string> {
+    // startMs: 既に number 指定があれば尊重。無ければ dayStartMs + HH:mm
+    let startMs: number | undefined;
+    const startMsCandidate = toNum(input.startMs);
+    if (Number.isFinite(startMsCandidate)) {
+      startMs = Math.trunc(startMsCandidate);
+    } else {
+      const t = trimOrEmpty((input as any).time);
+      if (t) {
+        const mins = parseTimeToMinutes(t);
+        const base0 = startOfDayMs(options?.dayStartMs ?? Date.now());
+        startMs = Math.trunc(base0 + mins * 60_000);
+      }
+    }
+    if (!Number.isFinite(startMs as number)) {
+      throw new Error('startMs (number) or time (HH:mm) is required');
+    }
+    const guests = Math.trunc(Number(input.guests) || 0);
+    const tableSingle = String((input as any).table ?? '');
+    const tablesSrc = Array.isArray(input.tables)
+      ? input.tables
+      : (tableSingle ? [tableSingle] : []);
+    const tablesNorm = toTables(tablesSrc);
+
+    const payload: ReservationDoc & { id?: string } = {
+      startMs,
+      endMs: input.endMs != null ? toNum(input.endMs) : undefined,
+      durationMin: input.durationMin != null ? Math.trunc(toNum(input.durationMin)) : undefined,
+      tables: tablesNorm,
+      table: tableSingle || (tablesNorm[0] ?? ''),
+      name: trimOrEmpty(input.name),
+      courseName: trimOrEmpty(input.courseName) || undefined,
+      drinkAllYouCan: toBool(input.drinkAllYouCan),
+      foodAllYouCan: toBool(input.foodAllYouCan),
+      drinkLabel: trimOrEmpty(input.drinkLabel),
+      eatLabel: trimOrEmpty(input.eatLabel),
+      memo: trimOrEmpty(input.memo),
+    } as any;
+
+    // --- course/courseName を正規化して同値を保存 ---
+    {
+      const courseNameNorm = trimOrEmpty((input as any).course ?? input.courseName);
+      const courseLabel = courseNameNorm || '未選択';
+      (payload as any).course = courseLabel;     // UI 互換フィールド
+      payload.courseName = courseLabel;          // 正規フィールド
+    }
+
+    // guests を number で保存（未設定は 0）
+    (payload as any).guests = guests;
+
+    // UI-互換のフィールド time と notes（必要なら memo も）を保存
+    (payload as any).time = trimOrEmpty((input as any).time) || undefined;
+    (payload as any).notes = trimOrEmpty((input as any).notes ?? (input as any).memo);
+
+    // guests も一緒に保存したい場合は payload に追記
+    //(payload as any).guests = Number.isFinite(toNum(input.guests)) ? Math.trunc(toNum(input.guests)) : 0;
+
+    // client-side mirror (serverTimestamp is appended in adapter)
+    (payload as any).createdAtMs = Date.now();
+
+    const id = await createDoc(storeId, payload);
+    return id;
+  }
+
+  // ---- update (partial) ----
+  async function updateReservation(id: string, patch: ReservationPatch): Promise<void> {
+    const p: any = {};
+
+    const guests = Math.trunc(Number((patch as any).guests) || 0);
+    const tableStr = String((patch as any).table ?? '');
+    const tablesNorm = Array.isArray((patch as any).tables)
+      ? (patch as any).tables.map(String)
+      : (tableStr ? [tableStr] : []);
+
+    if (patch.startMs != null) {
+      const n = toNum(patch.startMs);
+      if (!Number.isFinite(n)) throw new Error('startMs must be a finite number');
+      p.startMs = n;
+    }
+    if (patch.endMs != null) {
+      const n = toNum(patch.endMs);
+      if (!Number.isFinite(n)) throw new Error('endMs must be a finite number');
+      p.endMs = n;
+    }
+    if (patch.durationMin != null) {
+      const n = toNum(patch.durationMin);
+      if (!Number.isFinite(n)) throw new Error('durationMin must be a finite number');
+      p.durationMin = Math.trunc(n);
+    }
+
+    if (p.startMs == null && typeof (patch as any).time === 'string' && (patch as any).time) {
+      const mins = parseTimeToMinutes(String((patch as any).time));
+      const base0 = startOfDayMs(options?.dayStartMs ?? Date.now());
+      p.startMs = Math.trunc(base0 + mins * 60_000);
+    }
+
+    if (patch.tables) p.tables = tablesNorm;
+    if ('table' in patch) {
+      p.table = tableStr;
+      if (!p.tables) p.tables = tablesNorm;
+    }
+
+    if ('name' in patch) p.name = trimOrEmpty(patch.name);
+
+    // --- course/courseName を正規化して同値に ---
+    if ('course' in patch || 'courseName' in patch) {
+      const courseNameNorm = trimOrEmpty((patch as any).course ?? patch.courseName);
+      const courseLabel = courseNameNorm || '未選択';
+      p.courseName = courseLabel;
+      (p as any).course = courseLabel;
+    }
+
+    if ('drinkAllYouCan' in patch) p.drinkAllYouCan = toBool(patch.drinkAllYouCan);
+    if ('foodAllYouCan' in patch) p.foodAllYouCan = toBool(patch.foodAllYouCan);
+
+    if ('drinkLabel' in patch) p.drinkLabel = trimOrEmpty(patch.drinkLabel);
+    if ('eatLabel' in patch) p.eatLabel = trimOrEmpty(patch.eatLabel);
+
+    if ('memo' in patch) p.memo = trimOrEmpty(patch.memo);
+
+    if ('notes' in patch) (p as any).notes = trimOrEmpty((patch as any).notes);
+    if ('time' in patch) (p as any).time = trimOrEmpty((patch as any).time);
+
+    if ('guests' in patch) (p as any).guests = guests;
+
+    // --- sync display time (HH:mm) with startMs when it changes ---
+    // We intentionally override any incoming `time` to ensure consistency.
+    if (p.startMs != null) {
+      const base0 = startOfDayMs(options?.dayStartMs ?? p.startMs);
+      (p as any).time = msToHHmmFromDay(p.startMs, base0);
+    }
+
+    // client-side mirror (serverTimestamp is appended in adapter)
+    (p as any).updatedAtMs = Date.now();
+
+    await patchDoc(storeId, id, p as Partial<ReservationDoc>);
+  }
+
+  // ---- set (upsert) ----
+  async function setReservation(id: string, input: ReservationCreateInput): Promise<void> {
+    let startMs: number | undefined;
+    const startMsCandidate = toNum(input.startMs);
+    if (Number.isFinite(startMsCandidate)) {
+      startMs = Math.trunc(startMsCandidate);
+    } else {
+      const t = trimOrEmpty((input as any).time);
+      if (t) {
+        const mins = parseTimeToMinutes(t);
+        const base0 = startOfDayMs(options?.dayStartMs ?? Date.now());
+        startMs = Math.trunc(base0 + mins * 60_000);
+      }
+    }
+    if (!Number.isFinite(startMs as number)) {
+      throw new Error('startMs is required and must be a finite number');
+    }
+    const guests = Math.trunc(Number(input.guests) || 0);
+    const tableSingle = String((input as any).table ?? '');
+    const tablesSrc = Array.isArray(input.tables)
+      ? input.tables
+      : (tableSingle ? [tableSingle] : []);
+    const tablesNorm = toTables(tablesSrc);
+
+    const __courseNameNorm = trimOrEmpty((input as any).course ?? input.courseName);
+    const __courseLabel = __courseNameNorm || '未選択';
+
+    await createDoc(storeId, {
+      id,
+      startMs,
+      endMs: input.endMs != null ? toNum(input.endMs) : undefined,
+      durationMin: input.durationMin != null ? Math.trunc(toNum(input.durationMin)) : undefined,
+      tables: tablesNorm,
+      table: tableSingle || (tablesNorm[0] ?? ''),
+      name: trimOrEmpty(input.name),
+      course: __courseLabel as any,
+      courseName: __courseLabel,
+      drinkAllYouCan: toBool(input.drinkAllYouCan),
+      foodAllYouCan: toBool(input.foodAllYouCan),
+      drinkLabel: trimOrEmpty(input.drinkLabel),
+      eatLabel: trimOrEmpty(input.eatLabel),
+      memo: trimOrEmpty(input.memo),
+      guests,
+      time: trimOrEmpty((input as any).time) || undefined,
+      notes: trimOrEmpty((input as any).notes ?? (input as any).memo),
+      createdAtMs: Date.now(),
+    } as any);
+  }
+
+  // ---- delete ----
+  async function deleteReservation(id: string): Promise<void> {
+    await deleteDoc(storeId, id);
+  }
+
+  return {
+    createReservation,
+    updateReservation,
+    setReservation,
+    deleteReservation,
+  };
+}

@@ -2,6 +2,7 @@
 
 import React from 'react';
 import type { Reservation, CourseDef } from '@/types';
+import { parseTimeToMinutes } from '@/lib/time';
 
 type Props = {
   groupedStartTimes: Record<
@@ -26,10 +27,6 @@ type Props = {
   firstRotatingId?: Record<string, string>;
 };
 
-const parseTimeToMinutes = (time: string): number => {
-  const [h, m] = time.split(':').map(Number);
-  return h * 60 + m;
-};
 
 const CourseStartSection: React.FC<Props> = React.memo((props) => {
   const {
@@ -206,6 +203,7 @@ const CourseStartSection: React.FC<Props> = React.memo((props) => {
       {/* タイムスロットごとの一覧 */}
       <div className="space-y-6">
         {keys.map((timeKey) => (
+          // timeKey はすでに安全な "HH:MM" キー（r.time ?? r.timeHHmm に対応）であることに注意
           <div key={timeKey} className="border-2 border-gray-300 rounded-md p-3 bg-white shadow-sm">
             {/* 時刻ヘッダー + 合計 */}
             <div className="mb-2 flex items-center justify-between">
@@ -233,15 +231,18 @@ const CourseStartSection: React.FC<Props> = React.memo((props) => {
                 const courseCount = group.reservations.length;
                 const courseGuests = group.reservations.reduce((s, r) => s + (Number(r.guests) || 0), 0);
 
+                // --- フォールバック：コース名が空/undefined の場合は '未選択' に寄せる ---
+                const courseLabel = (group.courseName && group.courseName.trim()) ? group.courseName : '未選択';
+
                 return (
                   <div
-                    key={group.courseName + timeKey}
+                    key={courseLabel + timeKey}
                     className="flex flex-wrap items-center gap-2 border rounded-md px-2 py-1 bg-gray-50 hover:bg-gray-100/50 transition-colors"
                   >
                     {/* コース名 + コース内合計 */}
                     <span className="inline-flex items-center gap-1.5">
                       <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-indigo-500" />
-                      <span className="text-sm font-semibold text-gray-800 tracking-tight">{group.courseName}</span>
+                      <span className="text-sm font-semibold text-gray-800 tracking-tight">{courseLabel}</span>
                     </span>
                     <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50/70 px-2 py-0.5 text-[11px] font-medium text-emerald-700/90 ring-1 ring-inset ring-emerald-200/70">
                       <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
@@ -258,8 +259,9 @@ const CourseStartSection: React.FC<Props> = React.memo((props) => {
                             const gb = Number(b.guests) || 0;
                             if (gb !== ga) return gb - ga; // 人数の多い順
                           }
-                          const ta = Number(a.table) || 0;
-                          const tb = Number(b.table) || 0;
+                          // 卓番のフォールバック：a.table -> a.tables[0] -> 0
+                          const ta = Number((a.table ?? (Array.isArray(a.tables) ? a.tables[0] : '')) || 0) || 0;
+                          const tb = Number((b.table ?? (Array.isArray(b.tables) ? b.tables[0] : '')) || 0) || 0;
                           return ta - tb; // 卓番の小さい順
                         })
                         .map((r) => (
@@ -269,7 +271,7 @@ const CourseStartSection: React.FC<Props> = React.memo((props) => {
                           >
                             {showTableStart ? (
                               <>
-                                <span className="tabular-nums">{r.table}</span>
+                                <span className="tabular-nums">{String((r.table ?? (Array.isArray(r.tables) ? r.tables[0] : '')) ?? '')}</span>
                                 {showGuestsAll ? (
                                   <span className="text-black">({Number(r.guests) || 0})</span>
                                 ) : null}
