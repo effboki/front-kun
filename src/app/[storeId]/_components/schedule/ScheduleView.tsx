@@ -147,7 +147,7 @@ const leftColW = isTablet ? 64 : 56;
     pointerId: null,
   });
   const lockOriginRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
-  const AXIS_LOCK_THRESHOLD_PX = 4;
+  const AXIS_LOCK_THRESHOLD_PX = 12;
   const scrollIdleTimerRef = useRef<number | null>(null);
   const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
   const didAutoCenterRef = useRef(false);
@@ -285,7 +285,8 @@ const leftColW = isTablet ? 64 : 56;
 
     if (scrollAxisRef.current === 'x') {
       const lockedTop = lockOriginRef.current.top;
-      if (Math.abs(currentTop - lockedTop) > 0.5) {
+      const enforce = pointerStateRef.current.active || scrollAxisSourceRef.current === 'wheel';
+      if (enforce && Math.abs(currentTop - lockedTop) > 0.5) {
         el.scrollTop = lockedTop;
       }
       scrollPosRef.current.left = el.scrollLeft;
@@ -296,7 +297,8 @@ const leftColW = isTablet ? 64 : 56;
       }
     } else if (scrollAxisRef.current === 'y') {
       const lockedLeft = lockOriginRef.current.left;
-      if (Math.abs(currentLeft - lockedLeft) > 0.5) {
+      const enforce = pointerStateRef.current.active || scrollAxisSourceRef.current === 'wheel';
+      if (enforce && Math.abs(currentLeft - lockedLeft) > 0.5) {
         el.scrollLeft = lockedLeft;
       }
       scrollPosRef.current.left = lockedLeft;
@@ -1062,15 +1064,17 @@ const handleDragMove = useCallback((e: any) => {
       }
     }
     pointerStateRef.current = { x: 0, y: 0, active: false, pointerId: null };
-    releaseScrollAxisLock('pointer');
     if (el) {
-      el.style.overflowX = 'auto';
-      el.style.overflowY = 'auto';
-      (el.style as any).touchAction = 'pan-x pan-y';
       scrollPosRef.current = { left: el.scrollLeft, top: el.scrollTop };
       lockOriginRef.current = { left: el.scrollLeft, top: el.scrollTop };
     }
-  }, [releaseScrollAxisLock]);
+    clearScrollIdleTimer();
+    if (scrollAxisRef.current) {
+      scheduleScrollIdleReset('scroll', 240);
+    } else {
+      applyScrollLock(null);
+    }
+  }, [applyScrollLock, clearScrollIdleTimer, scheduleScrollIdleReset]);
 
   // Wheel axis lock (desktop trackpad/mouse)
   const handleWheelLock = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
