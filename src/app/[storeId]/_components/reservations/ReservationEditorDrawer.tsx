@@ -3,6 +3,10 @@
 import * as React from 'react';
 import { createPortal } from 'react-dom';
 
+import type { CourseDef } from '@/types/settings';
+import type { Reservation } from '@/types/reservation';
+import { parseTimeToMinutes, formatMinutesToTime } from '@/lib/time';
+
 /**
  * ReservationEditorDrawer
  * 右側ドロワーで予約の新規作成・編集を行う汎用コンポーネント。
@@ -32,9 +36,10 @@ export type ReservationInput = {
   drinkLabel?: string;
   eatLabel?: string;
   memo?: string;
+  durationMin?: number;
 };
 
-export type CourseOption = { name: string; stayMinutes?: number };
+export type CourseOption = CourseDef;
 
 type Props = {
   open: boolean;
@@ -52,6 +57,16 @@ type Props = {
   drinkOptions?: string[];
   /** スケジュール対象日の 00:00:00.000 (ローカル) 。未指定なら今日の 0:00 */
   dayStartMs?: number;
+  /** 予約の最新スナップショット（タスク編集用に利用） */
+  reservationDetail?: Reservation | null;
+  /** タスク完了フラグの更新 */
+  onUpdateReservationField?: (
+    id: string,
+    field: 'completed' | 'arrived' | 'paid' | 'departed',
+    value: Record<string, boolean> | boolean
+  ) => void;
+  /** タスク単位の時間調整 */
+  onAdjustTaskTime?: (id: string, label: string, delta: number) => void;
   /** 保存ハンドラ（親で Firestore I/O を実装）。返り値は新規作成時のID（任意） */
   onSave?: (data: ReservationInput, id?: string | null) => Promise<string | void>;
   /** 削除ハンドラ（編集時のみ表示） */
@@ -119,6 +134,17 @@ const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 
 const MINUTE_MS = 60 * 1000;
 
+// 滞在分の候補（5分刻み）。既定は 30〜240分
+const buildStayMinOptions = (min = 30, max = 240, step = 5) => {
+  const out: number[] = [];
+  for (let m = min; m <= max; m += step) out.push(m);
+  return out;
+};
+const getCourseStayMin = (courseName?: string, courses?: CourseOption[], fallback?: number) => {
+  const stay = courses?.find((c) => c.name === courseName)?.stayMinutes;
+  return Number.isFinite(stay) ? (stay as number) : (fallback ?? 60);
+};
+
 const rangesOverlap = (aStart: number, aEnd: number, bStart: number, bEnd: number) =>
   Math.max(aStart, bStart) < Math.min(aEnd, bEnd);
 
@@ -154,6 +180,9 @@ export default function ReservationEditorDrawer(props: Props) {
     eatOptions: eatOptionsProp,
     drinkOptions: drinkOptionsProp,
     dayStartMs,
+    reservationDetail,
+    onUpdateReservationField,
+    onAdjustTaskTime,
     onSave,
     onDelete,
     reservationsSnapshot,
@@ -161,6 +190,13 @@ export default function ReservationEditorDrawer(props: Props) {
   } = props;
 
   const day0 = React.useMemo(() => dayStartMs ?? toStartOfDayLocal(), [dayStartMs]);
+
+  const [activeTab, setActiveTab] = React.useState<'reservation' | 'tasks'>('reservation');
+
+  React.useEffect(() => {
+    if (!open) return;
+    setActiveTab('reservation');
+  }, [open, reservationId]);
 
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => { setMounted(true); }, []);
@@ -212,6 +248,7 @@ export default function ReservationEditorDrawer(props: Props) {
   const [guests, setGuests] = React.useState<number>(initial?.guests ?? 2);
   const [name, setName] = React.useState<string>(initial?.name ?? '');
   const [courseName, setCourseName] = React.useState<string>(initial?.courseName ?? '');
+  const [stayMinutes, setStayMinutes] = React.useState<number | null>(initial?.durationMin ?? null);
   const [drinkLabel, setDrinkLabel] = React.useState<string>(toText(initial?.drinkLabel));
   const [eatLabel,  setEatLabel]    = React.useState<string>(toText(initial?.eatLabel));
   const [memo, setMemo] = React.useState<string>(initial?.memo ?? '');
@@ -254,7 +291,13 @@ export default function ReservationEditorDrawer(props: Props) {
     closePad();
   };
 
+  React.useEffect(() => {
+    if (activeTab === 'reservation') return;
+    if (padTarget) setPadTarget(null);
+  }, [activeTab, padTarget]);
+
   const timeOptions = React.useMemo(() => buildTimeOptions(), []);
+  const stayMinOptions = React.useMemo(() => buildStayMinOptions(30, 240, 5), []);
   const availableDrinkOptions = React.useMemo(() => (Array.isArray(drinkOptionsProp) ? drinkOptionsProp.map(String) : []), [drinkOptionsProp]);
   const availableEatOptions = React.useMemo(() => (Array.isArray(eatOptionsProp) ? eatOptionsProp.map(String) : []), [eatOptionsProp]);
   const normalizedTimeOptions = React.useMemo(() => {
@@ -281,7 +324,9 @@ export default function ReservationEditorDrawer(props: Props) {
     if (!tables || tables.length === 0) { setConflicts([]); return; }
 
     const start = hhmmToMsFromDay(time, day0);
-    const end = computeEndMsFromInputs(start, courseName || initial?.courseName, coursesOptions, defaultStayMinutes);
+    const end = (stayMinutes != null)
+      ? start + stayMinutes * MINUTE_MS
+      : computeEndMsFromInputs(start, courseName || initial?.courseName, coursesOptions, defaultStayMinutes);
     const selected = new Set(tables.map(String));
 
     const list = reservationsSnapshot.filter((r) => {
@@ -291,7 +336,7 @@ export default function ReservationEditorDrawer(props: Props) {
       return shared && rangesOverlap(start, end, r.startMs, rEnd);
     });
     setConflicts(list);
-  }, [open, reservationsSnapshot, tables, time, day0, courseName, initial?.courseName, reservationId, coursesOptions, defaultStayMinutes]);
+  }, [open, reservationsSnapshot, tables, time, day0, courseName, initial?.courseName, reservationId, coursesOptions, defaultStayMinutes, stayMinutes]);
 
   // --- Handlers ---
   const orderByOptions = React.useCallback((arr: string[]) => {
@@ -328,6 +373,7 @@ export default function ReservationEditorDrawer(props: Props) {
     setGuests(initial?.guests ?? 2);
     setName(initial?.name ?? '');
     setCourseName(initial?.courseName ?? '');
+    setStayMinutes(initial?.durationMin ?? null);
     setDrinkLabel(
       hasText(initial?.drinkLabel)
         ? toText(initial?.drinkLabel)
@@ -339,7 +385,7 @@ export default function ReservationEditorDrawer(props: Props) {
         : (initial?.foodAllYouCan ? (availableEatOptions[0] ?? '食べ放題') : '')
     );
     setMemo(initial?.memo ?? '');
-  }, [open, reservationId, initial?.startMs, initial?.tables, initial?.table, initial?.guests, initial?.name, initial?.courseName, initial?.drinkAllYouCan, initial?.foodAllYouCan, initial?.drinkLabel, initial?.eatLabel, initial?.memo, day0, orderByOptions, availableDrinkOptions, availableEatOptions]);
+  }, [open, reservationId, initial?.startMs, initial?.tables, initial?.table, initial?.guests, initial?.name, initial?.courseName, initial?.durationMin, initial?.drinkAllYouCan, initial?.foodAllYouCan, initial?.drinkLabel, initial?.eatLabel, initial?.memo, day0, orderByOptions, availableDrinkOptions, availableEatOptions]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -359,6 +405,8 @@ export default function ReservationEditorDrawer(props: Props) {
     const drinkLabelFinal = drinkAllFinal ? (safeTrim(drinkLabel) || defaultDrinkLabel) : '';
     const eatLabelFinal   = eatAllFinal   ? (safeTrim(eatLabel)   || defaultEatLabel)   : '';
 
+    const durationForSave = stayMinutes != null ? Math.max(5, stayMinutes) : undefined;
+
     const input: ReservationInput = {
       startMs: hhmmToMsFromDay(time, day0),
       tables: selectedTables,
@@ -370,6 +418,7 @@ export default function ReservationEditorDrawer(props: Props) {
       drinkLabel: drinkLabelFinal,
       eatLabel: eatLabelFinal,
       memo: memo.trim() || undefined,
+      durationMin: durationForSave,
     };
 
     try {
@@ -398,6 +447,22 @@ export default function ReservationEditorDrawer(props: Props) {
     }
   };
 
+  const canEditTasks = Boolean(
+    reservationId &&
+      reservationDetail &&
+      typeof onUpdateReservationField === 'function' &&
+      typeof onAdjustTaskTime === 'function'
+  );
+
+  const labelledById = activeTab === 'reservation' ? 'drawer-tab-reservation' : 'drawer-tab-tasks';
+  const isReservationTab = activeTab === 'reservation';
+
+  const triggerFormSubmit = React.useCallback(() => {
+    const form = asideRef.current?.querySelector('form');
+    if (!form) return;
+    form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+  }, []);
+
   // --- UI ---
   const drawer = (
     <div
@@ -420,20 +485,46 @@ export default function ReservationEditorDrawer(props: Props) {
       <aside
         ref={asideRef}
         className={[
-          'absolute right-0 top-0 h-full w-[min(90vw,420px)] bg-white shadow-xl',
+          'absolute right-0 top-0 h-full w-[min(90vw,420px)] bg-slate-50 shadow-xl',
           'transition-transform duration-200 ease-out',
           open ? 'translate-x-0' : 'translate-x-full',
           'flex flex-col',
         ].join(' ')}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="drawerTitle"
+        aria-labelledby={labelledById}
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="px-4 py-3 border-b flex items-center justify-between">
-          <h2 id="drawerTitle" className="text-base font-semibold">
-            {reservationId ? '予約を編集' : '予約を追加'}
-          </h2>
+        <header className="px-4 py-3 border-b flex items-center justify-between bg-slate-50">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              id="drawer-tab-reservation"
+              onClick={() => setActiveTab('reservation')}
+              aria-pressed={activeTab === 'reservation'}
+              className={`px-3 py-1.5 rounded-md text-sm font-semibold transition ${
+                activeTab === 'reservation'
+                  ? 'bg-white text-slate-900 shadow'
+                  : 'bg-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {reservationId ? '予約を編集' : '予約を追加'}
+            </button>
+            <button
+              type="button"
+              id="drawer-tab-tasks"
+              onClick={() => canEditTasks && setActiveTab('tasks')}
+              aria-pressed={activeTab === 'tasks'}
+              disabled={!canEditTasks}
+              className={`px-3 py-1.5 rounded-md text-sm font-semibold transition ${
+                activeTab === 'tasks'
+                  ? 'bg-white text-slate-900 shadow'
+                  : 'bg-transparent text-slate-500 hover:text-slate-700'
+              } ${!canEditTasks ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              タスク編集
+            </button>
+          </div>
           <button
             type="button"
             onClick={onClose}
@@ -444,7 +535,7 @@ export default function ReservationEditorDrawer(props: Props) {
           </button>
         </header>
 
-        {conflicts && conflicts.length > 0 && (
+        {isReservationTab && conflicts && conflicts.length > 0 && (
           <div className="px-4 pt-3">
             <div className="rounded border border-amber-400 bg-amber-50 text-amber-900 px-3 py-2">
               <div className="font-medium">⚠️ 同じ卓で時間が重なっています（保存は可能）</div>
@@ -459,91 +550,118 @@ export default function ReservationEditorDrawer(props: Props) {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="flex-1 overflow-auto px-4 py-4 space-y-4">
-          {/* 来店時間 */}
-          <div className="flex items-center gap-2">
-            <label className="w-[7em] shrink-0 text-sm font-medium">来店時間</label>
-            <select
-              value={time}
-              onChange={(e) => setTime(e.currentTarget.value)}
-              className="flex-1 rounded border px-3 py-2"
-              required
-            >
-              {normalizedTimeOptions.map((opt) => (
-                <option key={opt} value={opt}>{opt}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* 人数 */}
-          <div className="flex items-center gap-2">
-            <label className="w-[7em] shrink-0 text-sm font-medium">人数</label>
-            <input
-              id="reservation-guests"
-              name="guests"
-              type="text"
-              inputMode="numeric"
-              pattern="\\d*"
-              enterKeyHint="done"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              min={1}
-              readOnly
-              value={guests > 0 ? String(guests) : ''}
-              onClick={() => openPad('guests', guests > 0 ? String(guests) : '')}
-              onFocus={() => openPad('guests', guests > 0 ? String(guests) : '')}
-              className="flex-1 rounded border px-3 py-2 text-[16px]"
-              required
-              aria-label="人数"
-              placeholder="例: 4"
-            />
-          </div>
-
-          {/* 氏名 */}
-          <div className="flex items-center gap-2">
-            <label className="w-[7em] shrink-0 text-sm font-medium">氏名</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.currentTarget.value)}
-              className="flex-1 rounded border px-3 py-2"
-              placeholder="山田 太郎"
-            />
-          </div>
-
-          {/* コース */}
-          <div className="flex items-center gap-2">
-            <label className="w-[7em] shrink-0 text-sm font-medium">コース</label>
-            {coursesOptions && coursesOptions.length > 0 ? (
+        <div className="flex-1 overflow-auto">
+          {isReservationTab ? (
+            <form onSubmit={handleSubmit} className="px-4 py-4 space-y-4">
+              {/* 来店時間・人数・氏名（グループ） */}
+          <div className="rounded-md border border-sky-200 bg-sky-50/70 p-3 space-y-3">
+            <div className="mb-1 text-xs font-semibold text-sky-700">来店・人数・氏名</div>
+            {/* 来店時間 + 人数（同一行） */}
+            <div className="grid grid-cols-[auto_1fr_auto_5.75rem] items-center gap-2">
+              <label className="text-sm font-medium whitespace-nowrap">来店時間</label>
               <select
-                className="flex-1 rounded border px-3 py-2"
-                value={courseName}
-                onChange={(e) => setCourseName(e.currentTarget.value)}
+                value={time}
+                onChange={(e) => setTime(e.currentTarget.value)}
+                className="min-w-0 w-full rounded border px-2 py-2"
+                required
               >
-                <option value="">未選択</option>
-                {coursesOptions.map((c) => (
-                  <option key={c.name} value={c.name}>{c.name}</option>
+                {normalizedTimeOptions.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>
-            ) : (
+              <label className="text-sm font-medium whitespace-nowrap text-right">人数</label>
+              <input
+                id="reservation-guests"
+                name="guests"
+                type="text"
+                inputMode="numeric"
+                pattern="\\d*"
+                enterKeyHint="done"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                min={1}
+                readOnly
+                value={guests > 0 ? String(guests) : ''}
+                onClick={() => openPad('guests', guests > 0 ? String(guests) : '')}
+                onFocus={() => openPad('guests', guests > 0 ? String(guests) : '')}
+                className="w-full rounded border px-2 py-2 text-[16px] text-right"
+                required
+                aria-label="人数"
+                placeholder="例: 4"
+              />
+            </div>
+            {/* 氏名 */}
+            <div className="flex items-center gap-2 min-w-0">
+              <label className="w-[7em] shrink-0 text-sm font-medium">氏名</label>
               <input
                 type="text"
-                className="flex-1 rounded border px-3 py-2"
-                placeholder="コース名"
-                value={courseName}
-                onChange={(e) => setCourseName(e.currentTarget.value)}
+                value={name}
+                onChange={(e) => setName(e.currentTarget.value)}
+                className="flex-1 min-w-0 rounded border px-3 py-2"
+                placeholder="山田 太郎"
               />
-            )}
+            </div>
           </div>
 
-          {/* 飲み放題 / 食べ放題（同一行） */}
-          <div className="grid grid-cols-2 gap-2">
+          {/* コース・飲み/食べ放題（グループ） */}
+          <div className="rounded-md border border-emerald-200 bg-emerald-50/70 p-3 space-y-3">
+            <div className="mb-1 text-xs font-semibold text-emerald-700">コース・飲み放題・食べ放題</div>
+            {/* コース */}
             <div className="flex items-center gap-2">
-              <label className="w-[5.5em] shrink-0 text-sm font-medium">飲み放題</label>
-              {availableDrinkOptions.length > 0 ? (
+              <label className="w-[7em] shrink-0 text-sm font-medium">コース</label>
+              {coursesOptions && coursesOptions.length > 0 ? (
                 <select
                   className="flex-1 rounded border px-3 py-2"
+                  value={courseName}
+                  onChange={(e) => setCourseName(e.currentTarget.value)}
+                >
+                  <option value="">未選択</option>
+                  {coursesOptions.map((c) => (
+                    <option key={c.name} value={c.name}>{c.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  className="flex-1 rounded border px-3 py-2"
+                  placeholder="コース名"
+                  value={courseName}
+                  onChange={(e) => setCourseName(e.currentTarget.value)}
+                />
+              )}
+            </div>
+            {/* 滞在時間（予約ごとに上書き可能） */}
+            <div className="flex items-center gap-2">
+              <label className="w-[7em] shrink-0 text-sm font-medium">滞在時間</label>
+              <select
+                className="w-[12rem] max-w-full rounded border px-3 py-2"
+                value={stayMinutes != null ? String(stayMinutes) : 'auto'}
+                onChange={(e) => {
+                  const v = e.currentTarget.value;
+                  if (v === 'auto') {
+                    setStayMinutes(null);
+                  } else {
+                    const n = parseInt(v, 10);
+                    setStayMinutes(Number.isFinite(n) ? n : null);
+                  }
+                }}
+              >
+                {/* 「自動」はコースの既定分をそのまま具体値で表示 */}
+                <option value="auto">
+                  {`${getCourseStayMin(courseName || initial?.courseName, coursesOptions, defaultStayMinutes)}分`}
+                </option>
+                {stayMinOptions.map((m) => (
+                  <option key={m} value={m}>{m}分</option>
+                ))}
+              </select>
+            </div>
+            {/* 飲み放題 / 食べ放題（同一行・コンパクト） */}
+            <div className="grid grid-cols-[auto_1fr_auto_1fr] items-center gap-1.5">
+              <label className="whitespace-nowrap w-[4.2em] text-sm font-medium">飲み放題</label>
+              {availableDrinkOptions.length > 0 ? (
+                <select
+                  className="min-w-0 w-full rounded border px-2 py-1.5 text-[14px]"
                   value={drinkLabel}
                   onChange={(e) => setDrinkLabel(e.currentTarget.value)}
                 >
@@ -555,18 +673,16 @@ export default function ReservationEditorDrawer(props: Props) {
               ) : (
                 <input
                   type="text"
-                  className="flex-1 rounded border px-3 py-2"
+                  className="min-w-0 w-full rounded border px-2 py-1.5 text-[14px]"
                   placeholder="プラン名（空で未選択）"
                   value={drinkLabel}
                   onChange={(e) => setDrinkLabel(e.currentTarget.value)}
                 />
               )}
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="w-[5.5em] shrink-0 text-sm font-medium">食べ放題</label>
+              <label className="whitespace-nowrap w-[4.2em] text-sm font-medium text-right pr-1">食べ放題</label>
               {availableEatOptions.length > 0 ? (
                 <select
-                  className="flex-1 rounded border px-3 py-2"
+                  className="min-w-0 w-full rounded border px-2 py-1.5 text-[14px]"
                   value={eatLabel}
                   onChange={(e) => setEatLabel(e.currentTarget.value)}
                 >
@@ -578,7 +694,7 @@ export default function ReservationEditorDrawer(props: Props) {
               ) : (
                 <input
                   type="text"
-                  className="flex-1 rounded border px-3 py-2"
+                  className="min-w-0 w-full rounded border px-2 py-1.5 text-[14px]"
                   placeholder="プラン名（空で未選択）"
                   value={eatLabel}
                   onChange={(e) => setEatLabel(e.currentTarget.value)}
@@ -588,10 +704,8 @@ export default function ReservationEditorDrawer(props: Props) {
           </div>
 
           {/* 卓（複数選択） */}
-          <div>
-            <div className="mb-1">
-              <label className="block text-sm font-medium">卓（複数選択可）</label>
-            </div>
+          <div className="rounded-md border border-violet-200 bg-violet-50/70 p-3">
+            <div className="mb-2 text-xs font-semibold text-violet-700">卓（複数選択可）</div>
             <div className="flex items-center gap-2 mb-2">
               <button type="button" onClick={selectAllTables} className="text-xs px-2 py-1 border rounded">全選択</button>
               <button type="button" onClick={clearAllTables} className="text-xs px-2 py-1 border rounded">全解除</button>
@@ -634,19 +748,39 @@ export default function ReservationEditorDrawer(props: Props) {
             )}
           </div>
 
-          {/* メモ */}
-          <div className="flex items-center gap-2">
-            <label className="w-[7em] shrink-0 text-sm font-medium">メモ</label>
-            <textarea
-              className="flex-1 rounded border px-3 py-2 min-h-[80px]"
-              value={memo}
-              onChange={(e) => setMemo(e.currentTarget.value)}
-              placeholder="アレルギー、席希望など"
-            />
+          {/* 備考（グループ） */}
+          <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3">
+            <div className="mb-2 text-xs font-semibold text-amber-700">備考</div>
+            <div className="flex items-center gap-2">
+              <label className="w-[7em] shrink-0 text-sm font-medium">メモ</label>
+              <textarea
+                className="flex-1 rounded border px-3 py-2 min-h-[80px]"
+                value={memo}
+                onChange={(e) => setMemo(e.currentTarget.value)}
+                placeholder="アレルギー、席希望など"
+              />
+            </div>
           </div>
-        </form>
+            </form>
+          ) : (
+            <div className="px-4 py-4">
+              {canEditTasks && reservationDetail ? (
+                <ReservationTaskEditor
+                  reservation={reservationDetail}
+                  courses={coursesOptions}
+                  onUpdateCompleted={onUpdateReservationField}
+                  onAdjustTaskTime={onAdjustTaskTime}
+                />
+              ) : (
+                <div className="rounded-md border border-dashed border-slate-200 bg-white p-4 text-sm text-slate-500">
+                  タスク編集は既存の予約で利用できます。保存済みの予約を開いてください。
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
-        <div className="px-4 py-3 border-t flex items-center justify-between gap-3">
+        <div className="px-4 py-3 border-t flex items-center justify-between gap-3 bg-slate-50">
           {reservationId ? (
             <button
               type="button"
@@ -658,20 +792,28 @@ export default function ReservationEditorDrawer(props: Props) {
           ) : <span />}
 
           <div className="flex items-center gap-2">
-            <button type="button" onClick={onClose} className="px-3 py-2 text-sm text-gray-600 hover:text-gray-800">
-              キャンセル
-            </button>
-            <button
-              type="submit"
-              onClick={(e) => {
-                // form の submit をトリガ
-                const form = (e.currentTarget.closest('aside') as HTMLElement)?.querySelector('form') as HTMLFormElement | null;
-                form?.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
-              }}
-              className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
-            >
-              保存
-            </button>
+            {isReservationTab ? (
+              <>
+                <button type="button" onClick={onClose} className="px-3 py-2 text-sm text-gray-600 hover:text-gray-800">
+                  キャンセル
+                </button>
+                <button
+                  type="button"
+                  onClick={triggerFormSubmit}
+                  className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  保存
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
+              >
+                閉じる
+              </button>
+            )}
           </div>
         </div>
       {/* Numeric Pad Overlay for Tables / Guests */}
@@ -714,4 +856,239 @@ export default function ReservationEditorDrawer(props: Props) {
   );
 
   return mounted ? createPortal(drawer, document.body) : drawer;
+}
+
+type ReservationTaskEditorProps = {
+  reservation: Reservation;
+  courses?: CourseOption[];
+  onUpdateCompleted?: (id: string, field: 'completed', value: Record<string, boolean>) => void;
+  onAdjustTaskTime?: (id: string, label: string, delta: number) => void;
+};
+
+const SHIFT_OPTIONS = [-15, -10, -5, 5, 10, 15];
+
+const shallowEqualRecord = (a: Record<string, any>, b: Record<string, any>) => {
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+};
+
+function ReservationTaskEditor({
+  reservation,
+  courses,
+  onUpdateCompleted,
+  onAdjustTaskTime,
+}: ReservationTaskEditorProps) {
+  const rawCourse = (reservation.course ?? (reservation as any).courseName ?? '').trim();
+  const courseDef = rawCourse && Array.isArray(courses)
+    ? courses.find((c) => c.name === rawCourse)
+    : undefined;
+  const tasks = Array.isArray(courseDef?.tasks) ? courseDef!.tasks : [];
+  const baseMinutes = React.useMemo(() => {
+    const baseStr = (reservation as any).timeHHmm ?? reservation.time ?? '';
+    let mins = parseTimeToMinutes(baseStr);
+    if ((!baseStr || mins === 0) && typeof (reservation as any).startMs === 'number') {
+      const startMs = Number((reservation as any).startMs);
+      const day0 = toStartOfDayLocal(startMs);
+      mins = Math.round((startMs - day0) / 60000);
+    }
+    return mins;
+  }, [reservation]);
+
+  const [optimisticCompleted, setOptimisticCompleted] = React.useState<Record<string, boolean>>({});
+  const [optimisticShift, setOptimisticShift] = React.useState<Record<string, number>>({});
+  const [shiftMenuFor, setShiftMenuFor] = React.useState<string | null>(null);
+
+  const completedMetaRef = React.useRef<{ id: string; version?: number } | null>(null);
+  const shiftMetaRef = React.useRef<{ id: string; version?: number } | null>(null);
+
+  React.useEffect(() => {
+    const fromProps = reservation.completed ? { ...reservation.completed } : {};
+    const version = reservation.version;
+    const meta = completedMetaRef.current;
+    const isNewReservation = !meta || meta.id !== reservation.id;
+    const versionChanged = !isNewReservation && version !== undefined && version !== meta.version;
+    if (isNewReservation || versionChanged) {
+      completedMetaRef.current = { id: reservation.id, version };
+      setOptimisticCompleted(fromProps);
+    }
+  }, [reservation.id, reservation.completed, reservation.version]);
+
+  React.useEffect(() => {
+    const fromProps = reservation.timeShift ? { ...reservation.timeShift } : {};
+    const version = reservation.version;
+    const meta = shiftMetaRef.current;
+    const isNewReservation = !meta || meta.id !== reservation.id;
+    const versionChanged = !isNewReservation && version !== undefined && version !== meta.version;
+    if (isNewReservation || versionChanged) {
+      shiftMetaRef.current = { id: reservation.id, version };
+      setOptimisticShift(fromProps);
+    }
+  }, [reservation.id, reservation.timeShift, reservation.version]);
+
+  const completedMap = optimisticCompleted;
+  const shiftMap = optimisticShift;
+
+  if (!rawCourse) {
+    return (
+      <div className="rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-600">
+        コースが未選択のため、編集できるタスクがありません。
+      </div>
+    );
+  }
+
+  if (tasks.length === 0) {
+    return (
+      <div className="rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-600">
+        コース「{rawCourse}」にはタスクが設定されていません。
+      </div>
+    );
+  }
+
+  const handleToggle = (key: string, next: boolean) => {
+    const updated = { ...optimisticCompleted, [key]: next };
+    setOptimisticCompleted(updated);
+    onUpdateCompleted?.(reservation.id, 'completed', updated);
+  };
+
+  const handleShift = (label: string, delta: number) => {
+    const current = optimisticShift[label] ?? reservation.timeShift?.[label] ?? 0;
+    const updated = { ...optimisticShift, [label]: current + delta };
+    setOptimisticShift(updated);
+    onAdjustTaskTime?.(reservation.id, label, delta);
+  };
+
+  type TaskEntry = {
+    label: string;
+    offset: number;
+    bgColor?: string;
+    shift: number;
+    timeKey: string;
+    compKey: string;
+    done: boolean;
+  };
+
+  const entries: TaskEntry[] = tasks
+    .map((task) => {
+      const shift = Number(shiftMap?.[task.label] ?? 0);
+      const absMin = baseMinutes + task.timeOffset + shift;
+      const timeKey = formatMinutesToTime(absMin);
+      const compKey = `${timeKey}_${task.label}_${rawCourse}`;
+      const done = Boolean(completedMap?.[compKey]);
+      return {
+        label: task.label,
+        offset: task.timeOffset,
+        bgColor: task.bgColor,
+        shift,
+        timeKey,
+        compKey,
+        done,
+      };
+    })
+    .sort((a, b) => a.offset - b.offset);
+
+  const grouped = entries.reduce<Record<string, TaskEntry[]>>((acc, entry) => {
+    if (!acc[entry.timeKey]) acc[entry.timeKey] = [];
+    acc[entry.timeKey].push(entry);
+    return acc;
+  }, {});
+
+  const sortedKeys = Object.keys(grouped).sort(
+    (a, b) => parseTimeToMinutes(a) - parseTimeToMinutes(b)
+  );
+
+  const guestTotal = reservation.guests ?? 0;
+
+  const tables = (() => {
+    const arr = Array.isArray((reservation as any)?.tables)
+      ? ((reservation as any).tables as string[])
+      : undefined;
+    if (arr && arr.length > 0) return arr.map(String);
+    const single = (reservation as any)?.table;
+    return single ? [String(single)] : [];
+  })();
+
+  return (
+    <section className="space-y-4 text-sm">
+      {sortedKeys.map((timeKey, idx) => {
+        const list = grouped[timeKey] ?? [];
+        const accent = list[0]?.bgColor ?? 'bg-gray-100/80';
+        return (
+          <div
+            key={timeKey}
+            className={`border-b pb-2 ${idx === sortedKeys.length - 1 ? 'border-b-0 pb-0' : ''}`}
+          >
+            <div className="text-gray-900 font-semibold text-lg mb-2">{timeKey}</div>
+            <div className="space-y-2">
+              {list.map((task) => {
+                const shiftLabel = task.shift === 0 ? '調整なし' : `${task.shift > 0 ? '+' : ''}${task.shift}分`;
+                const plannedTime = formatMinutesToTime(baseMinutes + task.offset);
+                return (
+                  <div key={task.compKey} className={`p-2 rounded mb-2 ${accent}`}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-semibold">{task.label}</span>
+                      <span className="text-xs text-gray-600">（計{guestTotal}人）</span>
+                      <div className="ml-auto relative inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setShiftMenuFor(shiftMenuFor === task.compKey ? null : task.compKey)}
+                          className="px-2 py-0.5 bg-gray-300 rounded text-xs"
+                        >
+                          時間変更
+                        </button>
+                        {shiftMenuFor === task.compKey && (
+                          <div className="absolute right-0 top-full mt-1 z-20 bg-white border rounded shadow grid grid-cols-3 gap-1 p-1">
+                            {SHIFT_OPTIONS.map((delta) => (
+                              <button
+                                key={delta}
+                                type="button"
+                                onClick={() => {
+                                  handleShift(task.label, delta);
+                                  setShiftMenuFor(null);
+                                }}
+                                className={`inline-flex items-center justify-center px-2 py-1 rounded text-xs border text-center whitespace-nowrap min-w-[3rem] leading-tight ${
+                                  delta > 0
+                                    ? 'bg-green-50 hover:bg-green-100 border-green-300 text-green-700'
+                                    : 'bg-red-50 hover:bg-red-100 border-red-300 text-red-700'
+                                }`}
+                              >
+                                {delta > 0 ? `＋${delta}` : `${delta}`}分
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleToggle(task.compKey, !task.done)}
+                          aria-pressed={task.done}
+                          className={`px-2 py-0.5 rounded text-sm text-white ${
+                            task.done ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-yellow-500 hover:bg-yellow-600'
+                          }`}
+                        >
+                          完了
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      <div
+                        className={`border px-2 py-1 rounded text-sm ${task.done ? 'opacity-70 text-gray-600 line-through' : ''}`}
+                        title={`予定 ${plannedTime} → 現在 ${task.timeKey}（${shiftLabel}）`}
+                      >
+                        {tables[0] ?? '-'}
+                        <span className="ml-1 text-xs text-gray-600">({reservation.guests ?? 0})</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </section>
+  );
 }

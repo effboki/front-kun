@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
-import type { ScheduleItem, ScheduleRange } from '@/types/schedule';
+import type { ScheduleItem } from '@/types/schedule';
 import type { StoreSettingsValue } from '@/types/settings';
+import type { Reservation } from '@/types/reservation';
 import { SLOT_MS, snap5m } from '@/lib/schedule';
 import { startOfDayMs } from '@/lib/time';
 import ReservationEditorDrawer, { type ReservationInput, type CourseOption } from '../reservations/ReservationEditorDrawer';
@@ -55,9 +56,9 @@ const STICKY_TOP_PX = 48; // 必要なら 70 等に調整
 const BOTTOM_TAB_PX = 70;
 
 type Props = {
-  /** 表示開始/終了の“時”（0-24想定）。未指定は 10-23 */
-  dayStartHour?: number;
-  dayEndHour?: number;
+  /** 表示開始/終了の“時”（0-24想定）。親から渡される（この子では既定値を持たない） */
+  scheduleStartHour?: number;
+  scheduleEndHour?: number;
   /** 可視卓（営業前設定と合わせる） */
   tables?: string[];
   /** 直接 items を渡したい場合に使用（なければ空配列） */
@@ -74,6 +75,16 @@ type Props = {
   drinkOptions?: string[];
   storeSettings?: StoreSettingsValue;
   dayStartMs?: number; // 基準日の開始ms（外から渡す）
+  reservations?: Reservation[];
+  onUpdateReservationField?: (
+    id: string,
+    field: 'completed' | 'arrived' | 'paid' | 'departed',
+    value: Record<string, boolean> | boolean
+  ) => void;
+  onAdjustTaskTime?: (id: string, label: string, delta: number) => void;
+  onToggleArrival?: (id: string) => void;
+  onTogglePayment?: (id: string) => void;
+  onToggleDeparture?: (id: string) => void;
 };
 
 /**
@@ -81,8 +92,8 @@ type Props = {
  * 将来分割しやすいように、内部小コンポーネントを同ファイル内に定義。
  */
 export default function ScheduleView({
-  dayStartHour = 10,
-  dayEndHour = 23,
+  scheduleStartHour,
+  scheduleEndHour,
   tables: tablesProp,
   items,
   rowHeightPx = 44,
@@ -94,6 +105,12 @@ export default function ScheduleView({
   drinkOptions,
   storeSettings,
   dayStartMs,
+  reservations,
+  onUpdateReservationField,
+  onAdjustTaskTime,
+  onToggleArrival,
+  onTogglePayment,
+  onToggleDeparture,
 }: Props) {
   // --- 列幅・端末判定 ---
 const headerH = 40; // 時刻ヘッダーの高さ(px)
@@ -119,19 +136,26 @@ const leftColW = isTablet ? 64 : 56;
   const [scrolled, setScrolled] = useState({ x: false, y: false });
   const headerLeftOverlayRef = useRef<HTMLDivElement | null>(null);
   const scrollRaf = useRef<number | null>(null);
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    const nx = el.scrollLeft > 1;
-    const ny = el.scrollTop > 1;
-    setScrolled(prev => (prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny }));
-    if (headerLeftOverlayRef.current) {
-      const x = el.scrollLeft;
-      if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
-      scrollRaf.current = requestAnimationFrame(() => {
-        if (headerLeftOverlayRef.current) {
-          headerLeftOverlayRef.current.style.transform = `translateX(${x}px)`;
-        }
-      });
+  // ===== Scroll container axis-lock (screen-level) =====
+  const scrollParentRef = useRef<HTMLDivElement | null>(null);
+  const scrollAxisRef = useRef<'x' | 'y' | null>(null);
+  const scrollAxisSourceRef = useRef<'pointer' | 'wheel' | 'scroll' | null>(null);
+  const pointerStateRef = useRef<{ x: number; y: number; active: boolean; pointerId: number | null }>({
+    x: 0,
+    y: 0,
+    active: false,
+    pointerId: null,
+  });
+  const lockOriginRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
+  const AXIS_LOCK_THRESHOLD_PX = 4;
+  const scrollIdleTimerRef = useRef<number | null>(null);
+  const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
+  const didAutoCenterRef = useRef(false);
+
+  const clearScrollIdleTimer = useCallback(() => {
+    if (scrollIdleTimerRef.current) {
+      window.clearTimeout(scrollIdleTimerRef.current);
+      scrollIdleTimerRef.current = null;
     }
   }, []);
 
@@ -189,6 +213,121 @@ const leftColW = isTablet ? 64 : 56;
   const [reassign, setReassign] = useState<{ base: ScheduleItem & { _startCol: number; _spanCols: number; _row?: number; _table?: string; _key?: string }; selected: string[]; original: string[] } | null>(null);
   // --- ポップオーバー座標 ---
   const [actionBubble, setActionBubble] = useState<{ left: number; top: number } | null>(null);
+  // Axis-lock for DnD (x or y). Decided per drag and reset on end.
+  const axisLockRef = useRef<'x' | 'y' | null>(null);
+
+  const applyScrollLock = useCallback((axis: 'x' | 'y' | null) => {
+    const el = scrollParentRef.current;
+    if (!el) return;
+    if (axis === 'x') {
+      el.style.overflowX = 'auto';
+      el.style.overflowY = 'hidden';
+      (el.style as any).touchAction = 'pan-x';
+    } else if (axis === 'y') {
+      el.style.overflowX = 'hidden';
+      el.style.overflowY = 'auto';
+      (el.style as any).touchAction = 'pan-y';
+    } else {
+      el.style.overflowX = 'auto';
+      el.style.overflowY = 'auto';
+      (el.style as any).touchAction = 'auto';
+    }
+  }, []);
+
+  const releaseScrollAxisLock = useCallback((source?: 'pointer' | 'wheel' | 'scroll') => {
+    if (source && scrollAxisSourceRef.current && scrollAxisSourceRef.current !== source) return;
+    scrollAxisRef.current = null;
+    scrollAxisSourceRef.current = null;
+    applyScrollLock(null);
+    clearScrollIdleTimer();
+  }, [applyScrollLock, clearScrollIdleTimer]);
+
+  const scheduleScrollIdleReset = useCallback((source: 'wheel' | 'scroll', delay = 160) => {
+    clearScrollIdleTimer();
+    scrollIdleTimerRef.current = window.setTimeout(() => {
+      releaseScrollAxisLock(source);
+    }, delay) as unknown as number;
+  }, [clearScrollIdleTimer, releaseScrollAxisLock]);
+
+  const lockScrollAxis = useCallback((axis: 'x' | 'y', source: 'pointer' | 'wheel' | 'scroll', el: HTMLDivElement, origin?: { left: number; top: number }) => {
+    scrollAxisRef.current = axis;
+    scrollAxisSourceRef.current = source;
+
+    const base = origin ?? { left: el.scrollLeft, top: el.scrollTop };
+
+    if (axis === 'x') {
+      lockOriginRef.current = { left: el.scrollLeft, top: base.top };
+      if (Math.abs(el.scrollTop - lockOriginRef.current.top) > 0.5) {
+        el.scrollTop = lockOriginRef.current.top;
+      }
+      scrollPosRef.current = { left: el.scrollLeft, top: lockOriginRef.current.top };
+    } else {
+      lockOriginRef.current = { left: base.left, top: el.scrollTop };
+      if (Math.abs(el.scrollLeft - lockOriginRef.current.left) > 0.5) {
+        el.scrollLeft = lockOriginRef.current.left;
+      }
+      scrollPosRef.current = { left: lockOriginRef.current.left, top: el.scrollTop };
+    }
+
+    applyScrollLock(axis);
+  }, [applyScrollLock]);
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const axis = scrollAxisRef.current;
+    const prev = scrollPosRef.current;
+    const currentLeft = el.scrollLeft;
+    const currentTop = el.scrollTop;
+
+    if (!axis) {
+      const dx = Math.abs(currentLeft - prev.left);
+      const dy = Math.abs(currentTop - prev.top);
+
+      if (dx >= AXIS_LOCK_THRESHOLD_PX || dy >= AXIS_LOCK_THRESHOLD_PX) {
+        const source: 'pointer' | 'scroll' = pointerStateRef.current.active ? 'pointer' : 'scroll';
+        const origin = pointerStateRef.current.active ? lockOriginRef.current : prev;
+        const nextAxis: 'x' | 'y' = dx > dy ? 'x' : 'y';
+        lockScrollAxis(nextAxis, source, el, origin);
+      } else {
+        scrollPosRef.current = { left: currentLeft, top: currentTop };
+      }
+    }
+
+    if (scrollAxisRef.current === 'x') {
+      const lockedTop = lockOriginRef.current.top;
+      if (Math.abs(currentTop - lockedTop) > 0.5) el.scrollTop = lockedTop;
+      scrollPosRef.current.left = el.scrollLeft;
+      scrollPosRef.current.top = lockedTop;
+      const source = scrollAxisSourceRef.current;
+      if (source === 'wheel' || source === 'scroll') {
+        scheduleScrollIdleReset(source);
+      }
+    } else if (scrollAxisRef.current === 'y') {
+      const lockedLeft = lockOriginRef.current.left;
+      if (Math.abs(currentLeft - lockedLeft) > 0.5) el.scrollLeft = lockedLeft;
+      scrollPosRef.current.left = lockedLeft;
+      scrollPosRef.current.top = el.scrollTop;
+      const source = scrollAxisSourceRef.current;
+      if (source === 'wheel' || source === 'scroll') {
+        scheduleScrollIdleReset(source);
+      }
+    } else {
+      scrollPosRef.current = { left: currentLeft, top: currentTop };
+    }
+
+    const nx = el.scrollLeft > 1;
+    const ny = el.scrollTop > 1;
+    setScrolled(prev => (prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny }));
+    if (headerLeftOverlayRef.current) {
+      const x = el.scrollLeft;
+      if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
+      scrollRaf.current = requestAnimationFrame(() => {
+        if (headerLeftOverlayRef.current) {
+          headerLeftOverlayRef.current.style.transform = `translateX(${x}px)`;
+        }
+      });
+    }
+  }, [lockScrollAxis, scheduleScrollIdleReset]);
 
   const applyOptimistic = useCallback((id: string, patch: OptimisticPatch) => {
     if (!id || !patch) return;
@@ -267,13 +406,45 @@ const leftColW = isTablet ? 64 : 56;
     });
   }, [items]);
 
+  // === コース規定の滞在時間 → 分（fallback 120） ===
+  const getCourseStayMin = useCallback((course?: string | null) => {
+    if (!course) return 120;
+    const name = String(course);
+    const opts = (coursesOptions ?? []) as any[];
+    const found = opts.find((o) => {
+      const v = String((o?.value ?? o?.name ?? o?.label ?? '') || '');
+      return v === name;
+    });
+    const raw =
+      (found?.stayMin ??
+        found?.durationMin ??
+        found?.minutes ??
+        found?.duration ??
+        found?.stay ??
+        found?.lengthMin);
+    const n = Math.trunc(Number(raw));
+    return Number.isFinite(n) && n > 0 ? n : 120;
+  }, [coursesOptions]);
+
+  // === 予約の終了 ms を計算（durationMin を優先。無ければコース規定）===
+  const computeEndMsFor = useCallback((it: any) => {
+    const start = Math.max(0, Number(it?.startMs ?? 0));
+    const over = it?.durationMin;
+    const minutes =
+      over != null && Number.isFinite(Number(over))
+        ? Math.trunc(Number(over))
+        : getCourseStayMin(it?.course ?? it?.courseName);
+    const mins = Math.max(5, minutes); // 最低 5 分
+    return start + mins * 60_000;
+  }, [getCourseStayMin]);
+
   // 4.5) 同卓 & 時間重複の衝突インデックス（⚠️表示用）
   const conflictSet = useMemo(() => {
     // tableId -> intervals [{ key, startMs, endMs }]
     const perTable: Record<string, { key: string; startMs: number; endMs: number }[]> = {};
     for (const it of data) {
       const start = it.startMs;
-      const end = it.endMs;
+      const end = computeEndMsFor(it);
       if (!(end > start)) continue;
       for (const t of it.tables) {
         const tt = String(t);
@@ -297,35 +468,80 @@ const leftColW = isTablet ? 64 : 56;
       }
     }
     return out;
-  }, [data]);
+  }, [data, computeEndMsFor]);
 
-  // Props優先（未指定なら店舗設定 → それも無ければ 10–23）
-  const effectiveStartHour = (dayStartHour ?? storeSettings?.schedule?.dayStartHour ?? 10);
-  const effectiveEndHour   = (dayEndHour   ?? storeSettings?.schedule?.dayEndHour   ?? 23);
-  const range = useMemo<ScheduleRange>(() => {
-    const now = new Date();
-    const start = new Date(now);
-    start.setHours(effectiveStartHour, 0, 0, 0);
-    const end = new Date(start);
-    // 例: 15 -> 24（同日内）/ 22 -> 6（翌日またぎ）/ 17 -> 26（数値で翌日表現）対応
-    const rawEndHour = effectiveEndHour <= effectiveStartHour ? effectiveEndHour + 24 : effectiveEndHour;
-    end.setHours(rawEndHour, 0, 0, 0);
-    return { startMs: start.getTime(), endMs: end.getTime() };
-  }, [effectiveStartHour, effectiveEndHour]);
+  // === 基準日 0:00ms（親から渡される dayStartMs があればそれを使用） ===
+  const day0 = useMemo(() => startOfDayMs(dayStartMs ?? Date.now()), [dayStartMs]);
 
-  // 3) 列数（5分 = 1 列）
-  const nCols = Math.max(1, Math.round((range.endMs - range.startMs) / SLOT_MS));
+  // 親から渡された表示時間（子では既定値を持たない）
+  const anchorStartMs = useMemo(() => {
+    const sh = Math.trunc(Number(scheduleStartHour));
+    return day0 + (Number.isFinite(sh) ? sh : 0) * 60 * 60 * 1000;
+  }, [day0, scheduleStartHour]);
+
+  const rangeEndMs = useMemo(() => {
+    const eh = Math.trunc(Number(scheduleEndHour));
+    return day0 + (Number.isFinite(eh) ? eh : 0) * 60 * 60 * 1000;
+  }, [day0, scheduleEndHour]);
+
+  // 3) 列数（5分 = 1 列）: (時間差 * 60分) / SLOT_MIN = (時間差 * 3600000) / SLOT_MS
+  const nCols = useMemo(() => {
+    const sh = Number(scheduleStartHour);
+    const eh = Number(scheduleEndHour);
+    const diffMs = (eh - sh) * 60 * 60 * 1000; // 親で整合性を担保（必要ならeh>shに）
+    return Math.max(1, Math.round(diffMs / SLOT_MS));
+  }, [scheduleStartHour, scheduleEndHour, SLOT_MS]);
+
+  useEffect(() => {
+    didAutoCenterRef.current = false;
+  }, [anchorStartMs, rangeEndMs, nCols, colW, leftColW]);
+
+  useEffect(() => {
+    if (didAutoCenterRef.current) return;
+    const el = scrollParentRef.current;
+    if (!el) return;
+    if (!(nowMs >= anchorStartMs && nowMs <= rangeEndMs)) {
+      didAutoCenterRef.current = true;
+      return;
+    }
+
+    const viewport = el.clientWidth;
+    const contentWidth = leftColW + nCols * colW;
+    if (!viewport || contentWidth <= viewport) {
+      didAutoCenterRef.current = true;
+      return;
+    }
+
+    const offsetInTimeline = ((nowMs - anchorStartMs) / SLOT_MS) * colW;
+    const desired = leftColW + offsetInTimeline - viewport / 2;
+    const maxScroll = Math.max(0, contentWidth - viewport);
+    const nextLeft = Math.max(0, Math.min(desired, maxScroll));
+
+    if (!Number.isFinite(nextLeft)) {
+      didAutoCenterRef.current = true;
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      const target = scrollParentRef.current;
+      if (!target) return;
+      target.scrollLeft = nextLeft;
+      scrollPosRef.current.left = nextLeft;
+      scrollPosRef.current.top = target.scrollTop;
+      lockOriginRef.current.left = nextLeft;
+      lockOriginRef.current.top = target.scrollTop;
+      didAutoCenterRef.current = true;
+    });
+  }, [nowMs, anchorStartMs, rangeEndMs, nCols, colW, leftColW]);
+
   // 1時間あたりのカラム数（SLOT_MS=5分なら 12）と、1時間のピクセル幅
   const colsPerHour = Math.round((60 * 60 * 1000) / SLOT_MS);
   const hourPx = colW * colsPerHour;
   // 補助縦線（実線）は 30 分固定。タブレットでは 15/45 は別レイヤーで破線オーバーレイ
   const minorSolidStepPx = 6 * colW; // 30分 = 6スロット
 
-  // 描画は常に設定/デフォルトの開始時刻から（10:00–23:00 など）
-  const anchorStartMs = range.startMs; // 描画は常に設定/デフォルトの開始時刻から（10:00–23:00 など）
-
-  // === 当日0:00基準のスロット計算（保存・変換は必ず「その日の0:00」基準） ===
-  const day0 = useMemo(() => startOfDayMs(dayStartMs ?? range.startMs), [dayStartMs, range.startMs]); // 保存・変換は必ず「その日の0:00」基準
+  // 当日0:00基準（保存・変換は必ず「その日の0:00」基準）
+  // （上で day0 を定義済み）
   // anchorStartMs が当日0:00から何スロット目か（5分=1スロット）
   const anchorStartSlotIndex = useMemo(() => Math.round((anchorStartMs - day0) / SLOT_MS), [anchorStartMs, day0]);
 
@@ -374,8 +590,27 @@ const leftColW = isTablet ? 64 : 56;
     return Array.isArray(fromSettings) ? fromSettings.map(String) : [];
   }, [drinkOptions, storeSettings?.drinkOptions]);
 
+  const tableCapacitiesMap = useMemo<Record<string, number>>(() => {
+    const raw = storeSettings?.tableCapacities;
+    if (!raw || typeof raw !== 'object') return {};
+    const out: Record<string, number> = {};
+    for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+      const id = String(key ?? '').trim();
+      if (!id) continue;
+      const num = Number(val);
+      if (!Number.isFinite(num) || num <= 0) continue;
+      out[id] = Math.max(1, Math.round(num));
+    }
+    return out;
+  }, [storeSettings?.tableCapacities]);
+
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<{ id: string | null; initial: Partial<ReservationInput> & { table?: string } } | null>(null);
+
+  const editingReservation = useMemo(() => {
+    if (!editing?.id || !Array.isArray(reservations)) return null;
+    return reservations.find((r) => r.id === editing.id) ?? null;
+  }, [editing?.id, reservations]);
 
   const openEditorFor = useCallback((it: (ScheduleItem & { _table?: string })) => {
     setEditing({
@@ -387,6 +622,7 @@ const leftColW = isTablet ? 64 : 56;
         guests: (it as any).people ?? (it as any).guests ?? 0,
         name: (it as any).name ?? '',
         courseName: (it as any).course,
+        durationMin: (it as any).durationMin ?? null,
         drinkAllYouCan: Boolean((it as any).drink || (it as any).drinkLabel),
         foodAllYouCan: Boolean((it as any).eat || (it as any).eatLabel),
         drinkLabel: (it as any).drinkLabel ?? (it as any).drink ?? '',
@@ -415,8 +651,9 @@ const leftColW = isTablet ? 64 : 56;
     const out: (ScheduleItem & { _startCol: number; _spanCols: number; _row: number; _table?: string; status?: 'warn'; _key?: string })[] = [];
     for (const it of data) {
       // 予約が一切レンジにかからない場合はスキップ
-      const visStart = Math.max(it.startMs, range.startMs);
-      const visEnd = Math.min(it.endMs, range.endMs);
+      const endEff = computeEndMsFor(it);
+      const visStart = Math.max(it.startMs, anchorStartMs);
+      const visEnd = Math.min(endEff, rangeEndMs);
       if (visEnd <= visStart) continue;
       // 5分スナップ（念のため）
       const s = snap5m(visStart);
@@ -433,7 +670,7 @@ const leftColW = isTablet ? 64 : 56;
       }
     }
     return out;
-  }, [data, range.startMs, range.endMs, tableIndex, conflictSet, anchorStartMs]);
+  }, [data, anchorStartMs, rangeEndMs, tableIndex, conflictSet, computeEndMsFor]);
 
   const stacked = useMemo(() => {
     // 同一卓内で時間が重なる予約を縦にずらすためのスタックインデックスを付与
@@ -445,11 +682,12 @@ const leftColW = isTablet ? 64 : 56;
 
     const out: any[] = [];
     for (const [_, arr] of Object.entries(byRow)) {
-      // 開始時刻→終了時刻で安定ソート
-      arr.sort((a, b) => (a.startMs - b.startMs) || (a.endMs - b.endMs));
+      // 開始時刻→終了時刻（計算済みend）で安定ソート
+      arr.sort((a, b) => (a.startMs - b.startMs) || (computeEndMsFor(a) - computeEndMsFor(b)));
       // アクティブ区間（終了時刻と割当て済みスタック番号）
       const active: { end: number; idx: number }[] = [];
       for (const it of arr) {
+        const end = computeEndMsFor(it);
         // 終了したものを除去
         for (let i = active.length - 1; i >= 0; i--) {
           if (active[i].end <= it.startMs) active.splice(i, 1);
@@ -459,12 +697,12 @@ const leftColW = isTablet ? 64 : 56;
         let idx = 0;
         while (used.has(idx)) idx++;
         (it as any)._stackIndex = idx;
-        active.push({ end: it.endMs, idx });
+        active.push({ end, idx });
       }
       out.push(...arr);
     }
     return out;
-  }, [clipped]);
+  }, [clipped, computeEndMsFor]);
 
   const rowStackCount = useMemo(() => {
     const m: Record<string, number> = {};
@@ -532,6 +770,82 @@ const leftColW = isTablet ? 64 : 56;
     setActionBubble({ left, top: topPos });
     setActionMenuOpen(true);
   }, [rowHeightsPx, rowStackCount, effectiveRowH, colW, nCols]);
+
+  // 同じカードが最新データで更新されたら、メニュー表示中でも状態を同期する
+  useEffect(() => {
+    if (!actionTarget) return;
+    const targetId = String(actionTarget.id ?? '');
+    const targetTable = String((actionTarget as any)._table ?? '');
+    const next = (stacked as any[]).find((it) => {
+      if (!it) return false;
+      const sameId = String(it.id ?? '') === targetId;
+      const sameTable = String((it as any)._table ?? '') === targetTable;
+      return sameId && sameTable;
+    });
+
+    if (!next) {
+      setActionTarget(null);
+      setActionMenuOpen(false);
+      return;
+    }
+
+    const keysToSync = [
+      'arrived',
+      'paid',
+      'departed',
+      'freshUntilMs',
+      'editedUntilMs',
+      '_startCol',
+      '_spanCols',
+      '_row',
+      '_table',
+      '_stackIndex',
+      'startMs',
+      'endMs',
+    ];
+
+    const changed = keysToSync.some((key) => (next as any)[key] !== (actionTarget as any)[key]);
+    if (changed) {
+      setActionTarget({ ...(next as any) });
+    }
+  }, [stacked, actionTarget]);
+
+  const handleStatusToggle = useCallback(
+    (kind: 'arrived' | 'paid' | 'departed') => {
+      if (!actionTarget) return;
+      const id = String(actionTarget.id ?? '');
+      if (!id) return;
+      const current = Boolean((actionTarget as any)[kind]);
+      const next = !current;
+
+      if (kind === 'arrived') {
+        if (typeof onToggleArrival === 'function') onToggleArrival(id);
+        else if (typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'arrived', next);
+      } else if (kind === 'paid') {
+        if (typeof onTogglePayment === 'function') onTogglePayment(id);
+        else if (typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'paid', next);
+      } else {
+        if (typeof onToggleDeparture === 'function') onToggleDeparture(id);
+        else if (typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'departed', next);
+      }
+
+      setActionTarget((prev) => {
+        if (!prev || String(prev.id ?? '') !== id) return prev;
+        const updated: any = { ...prev, [kind]: next };
+        if (kind === 'departed' && next) {
+          updated.arrived = false;
+        }
+        return updated;
+      });
+    },
+    [actionTarget, onToggleArrival, onTogglePayment, onToggleDeparture, onUpdateReservationField]
+  );
+
+  const actionStatus = {
+    arrived: Boolean((actionTarget as any)?.arrived),
+    paid: Boolean((actionTarget as any)?.paid),
+    departed: Boolean((actionTarget as any)?.departed),
+  } as const;
 
   const handleDragEnd = useCallback((e: DragEndEvent) => {
     if (!onSave) return;
@@ -633,11 +947,38 @@ const leftColW = isTablet ? 64 : 56;
     }
   }, [onSave, runSave, clipped, colW, startMsFromCol, endMsFromColSpan, durationMinFromSpan, effectiveRowH, tables, setArmedId, rowHeightsPx]);
 
-  // DnD センサー: ドラッグ自体に遅延はかけない（長押しで武装→即ドラッグ）
+// DnD センサー: ドラッグ自体に遅延はかけない（長押しで武装→即ドラッグ）
 const sensors = useSensors(
   useSensor(PointerSensor),
   useSensor(TouchSensor),
 );
+
+// --- Axis lock: decide axis on first movement, keep until drag ends ---
+const handleDragStart = useCallback(() => {
+  axisLockRef.current = null; // ドラッグ開始ごとにリセット
+}, []);
+
+const handleDragMove = useCallback((e: any) => {
+  // まだ軸が決まっていない最初の有意な移動で軸を確定
+  if (axisLockRef.current) return;
+  const dx = Math.abs(e?.delta?.x ?? 0);
+  const dy = Math.abs(e?.delta?.y ?? 0);
+  if (dx >= 1 || dy >= 1) {
+    axisLockRef.current = dx >= dy ? 'x' : 'y';
+  }
+}, []);
+
+  // Modifier that forces movement to a single axis (locks the weaker axis to 0)
+  const axisLockModifier: any = useCallback((args: any) => {
+    const t = args?.transform ?? { x: 0, y: 0, scaleX: 1, scaleY: 1 };
+    const lock = axisLockRef.current;
+    if (lock === 'x') return { ...t, y: 0 };
+    if (lock === 'y') return { ...t, x: 0 };
+    const ax = Math.abs(t.x ?? 0);
+    const ay = Math.abs(t.y ?? 0);
+    if (ax >= ay) return { ...t, y: 0 };
+    return { ...t, x: 0 };
+  }, []);
 
   // 空きマスクリックで新規予約を作成
   const handleGridClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -690,13 +1031,92 @@ const sensors = useSensors(
     setDrawerOpen(true);
   }, [nCols, anchorStartMs, tables, colW, rowHeightsPx, actionMenuOpen]);
 
+  // Pointer-based axis decision (touch/pen/mouse drag on the scroll area)
+  const handleScrollPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    releaseScrollAxisLock();
+    clearScrollIdleTimer();
+    pointerStateRef.current = { x: e.clientX, y: e.clientY, active: true, pointerId: e.pointerId };
+    lockOriginRef.current = { left: el.scrollLeft, top: el.scrollTop };
+    scrollPosRef.current = { left: el.scrollLeft, top: el.scrollTop };
+    el.style.overflowX = 'hidden';
+    el.style.overflowY = 'hidden';
+    (el.style as any).touchAction = 'none';
+    if (typeof el.setPointerCapture === 'function') {
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch (_) {
+        // ignore (unsupported environment)
+      }
+    }
+  }, [releaseScrollAxisLock, clearScrollIdleTimer]);
+
+  const handleScrollPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointerStateRef.current.active || scrollAxisRef.current) return;
+    const dx = Math.abs(e.clientX - pointerStateRef.current.x);
+    const dy = Math.abs(e.clientY - pointerStateRef.current.y);
+    if (dx >= AXIS_LOCK_THRESHOLD_PX || dy >= AXIS_LOCK_THRESHOLD_PX) {
+      const axis: 'x' | 'y' = dx > dy ? 'x' : 'y';
+      lockScrollAxis(axis, 'pointer', e.currentTarget, lockOriginRef.current);
+    }
+  }, [lockScrollAxis]);
+
+  const handleScrollPointerUp = useCallback((e?: React.PointerEvent<HTMLDivElement>) => {
+    const el = e?.currentTarget ?? scrollParentRef.current;
+    const pointerId = e?.pointerId ?? pointerStateRef.current.pointerId;
+    if (el && typeof el.releasePointerCapture === 'function' && pointerId != null) {
+      try {
+        if (el.hasPointerCapture?.(pointerId)) {
+          el.releasePointerCapture(pointerId);
+        }
+      } catch (_) {
+        // ignore (unsupported environment)
+      }
+    }
+    pointerStateRef.current = { x: 0, y: 0, active: false, pointerId: null };
+    releaseScrollAxisLock('pointer');
+    if (el) {
+      el.style.overflowX = 'auto';
+      el.style.overflowY = 'auto';
+      (el.style as any).touchAction = 'auto';
+      scrollPosRef.current = { left: el.scrollLeft, top: el.scrollTop };
+      lockOriginRef.current = { left: el.scrollLeft, top: el.scrollTop };
+    }
+  }, [releaseScrollAxisLock]);
+
+  // Wheel axis lock (desktop trackpad/mouse)
+  const handleWheelLock = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    const target = scrollParentRef.current;
+    if (!target) return;
+    if (!scrollAxisRef.current) {
+      const ax = Math.abs(e.deltaX);
+      const ay = Math.abs(e.deltaY);
+      if (ax === 0 && ay === 0) return;
+      const axis: 'x' | 'y' = ax >= ay ? 'x' : 'y';
+      lockScrollAxis(axis, 'wheel', target, scrollPosRef.current);
+    }
+    scheduleScrollIdleReset('wheel', 220);
+  }, [lockScrollAxis, scheduleScrollIdleReset]);
+
+  useEffect(() => {
+    return () => {
+      clearScrollIdleTimer();
+    };
+  }, [clearScrollIdleTimer]);
+
   const gridHeightPx = rowHeightsPx.reduce((a, b) => a + b, 0);
   return (
     <div className="relative w-full bg-transparent">
       {/* 共通スクロール領域（縦・横ともにこの要素がスクロール親） */}
       <div
+        ref={scrollParentRef}
         className="relative overflow-auto"
         onScroll={handleScroll}
+        onPointerDown={handleScrollPointerDown}
+        onPointerMove={handleScrollPointerMove}
+        onPointerUp={handleScrollPointerUp}
+        onPointerCancel={handleScrollPointerUp}
+        onWheel={handleWheelLock}
         style={{
           // 画面上部のアプリバー分だけ余白を見込んで高さを固定（必要なら調整）
           height: `calc(100vh - ${STICKY_TOP_PX + BOTTOM_TAB_PX}px - env(safe-area-inset-bottom))`,
@@ -714,7 +1134,7 @@ const sensors = useSensors(
         >
           {/* === 上部ヘッダー（左上は常に白／時刻は左余白分だけオフセット）=== */}
           <div
-            className={`sticky top-0 z-30 bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
+            className={`sticky top-0 z-40 bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
             style={{ height: headerH, boxShadow: '0 1px 0 0 #e5e7eb', overflow: 'clip' }}
           >
             <div
@@ -747,7 +1167,7 @@ const sensors = useSensors(
                 }}
               >
                 {/* Now indicator in header */}
-                {nowMs >= range.startMs && nowMs <= range.endMs && (
+                {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
                   <div
                     className="absolute top-0 bottom-0 pointer-events-none z-10"
                     style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colW}px`, zIndex: 5 }}
@@ -755,7 +1175,15 @@ const sensors = useSensors(
                     <div className="h-full border-l-2 border-red-500 opacity-70" />
                   </div>
                 )}
-                <TimelineHeader nCols={nCols} rangeStartMs={anchorStartMs} colW={colW} compact />
+                <TimelineHeader
+                  nCols={nCols}
+                  rangeStartMs={anchorStartMs}
+                  colW={colW}
+                  compact
+                  scheduleStartHour={Number(scheduleStartHour ?? 0)}
+                  scheduleEndHour={Number(scheduleEndHour ?? 0)}
+                  colsPerHour={colsPerHour}
+                />
               </div>
             </div>
           </div>
@@ -768,7 +1196,7 @@ const sensors = useSensors(
               top: headerH,
               width: leftColW,
               height: gridHeightPx,
-              backgroundColor: '#f7f9fc',
+              backgroundColor: '#eff6ff',
             }}
             aria-hidden
           >
@@ -780,13 +1208,13 @@ const sensors = useSensors(
           </div>
           {/* 左の卓番号列（横スクロールしても左に固定。縦は内容と一緒にスクロール） */}
           <div
-            className="sticky left-0 z-20 select-none"
+            className="sticky left-0 bg-sky-50 z-30 select-none"
             style={{
               top: headerH,
               width: leftColW,
               height: gridHeightPx,
               borderRight: '1px solid #cbd5e1',
-              backgroundColor: '#f7f9fc',
+              // backgroundColor removed to use class bg-sky-50 (very light blue)
             }}
           >
             <div className="absolute inset-0 pointer-events-none" aria-hidden>
@@ -800,7 +1228,7 @@ const sensors = useSensors(
               aria-hidden
             />
             <div className="relative z-10">
-              <TableRows tables={tables} rowHeightsPx={rowHeightsPx} />
+              <TableRows tables={tables} rowHeightsPx={rowHeightsPx} capacities={tableCapacitiesMap} />
             </div>
           </div>
 
@@ -812,7 +1240,13 @@ const sensors = useSensors(
           />
 
           {/* タイムライン本体（予約・グリッド線） */}
-          <DndContext sensors={sensors} modifiers={[restrictToParentElement]} onDragEnd={handleDragEnd}>
+          <DndContext
+            sensors={sensors}
+            modifiers={[restrictToParentElement, axisLockModifier]}
+            onDragStart={handleDragStart}
+            onDragMove={handleDragMove}
+            onDragEnd={(e) => { axisLockRef.current = null; handleDragEnd(e); }}
+          >
             <div
               className="absolute z-0"
               style={{
@@ -845,7 +1279,7 @@ const sensors = useSensors(
                 )}
 
                 {/* Now indicator */}
-                {nowMs >= range.startMs && nowMs <= range.endMs && (
+                {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
                   <div
                     className="absolute top-0 bottom-0 pointer-events-none z-[20]"
                     style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colW}px` }}
@@ -887,7 +1321,51 @@ const sensors = useSensors(
                         style={{ borderLeft: '8px solid transparent', borderRight: '8px solid transparent', borderBottom: '8px solid white' }}
                         aria-hidden
                       />
-                      <div className="flex flex-col p-2 gap-1">
+                      <div className="flex flex-col p-2 gap-2">
+                        <div className="flex flex-col gap-1">
+                          <span className="text-[10px] font-semibold tracking-wide text-slate-500 uppercase">状態</span>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              aria-pressed={actionStatus.arrived}
+                              aria-label="来店ステータスを切り替え"
+                              className={`flex-1 rounded-md border px-2 py-1 text-[12px] font-semibold transition-colors ${
+                                actionStatus.arrived
+                                  ? 'border-emerald-600 bg-emerald-600 text-white'
+                                  : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                              }`}
+                              onClick={() => handleStatusToggle('arrived')}
+                            >
+                              来
+                            </button>
+                            <button
+                              type="button"
+                              aria-pressed={actionStatus.paid}
+                              aria-label="会計ステータスを切り替え"
+                              className={`flex-1 rounded-md border px-2 py-1 text-[12px] font-semibold transition-colors ${
+                                actionStatus.paid
+                                  ? 'border-sky-600 bg-sky-600 text-white'
+                                  : 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100'
+                              }`}
+                              onClick={() => handleStatusToggle('paid')}
+                            >
+                              会
+                            </button>
+                            <button
+                              type="button"
+                              aria-pressed={actionStatus.departed}
+                              aria-label="退店ステータスを切り替え"
+                              className={`flex-1 rounded-md border px-2 py-1 text-[12px] font-semibold transition-colors ${
+                                actionStatus.departed
+                                  ? 'border-slate-600 bg-slate-600 text-white'
+                                  : 'border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200'
+                              }`}
+                              onClick={() => handleStatusToggle('departed')}
+                            >
+                              退
+                            </button>
+                          </div>
+                        </div>
                         <button
                           type="button"
                           className="w-full rounded-md border px-3 py-2 text-left hover:bg-gray-50"
@@ -1034,6 +1512,9 @@ const sensors = useSensors(
         dayStartMs={day0} // ドロワーには当日0:00を渡す（表示範囲の開始時刻ではなく）
         onSave={onSave}
         onDelete={onDelete}
+        reservationDetail={editingReservation}
+        onUpdateReservationField={onUpdateReservationField}
+        onAdjustTaskTime={onAdjustTaskTime}
       />
       <style jsx global>{`
         @media print {
@@ -1081,17 +1562,48 @@ function DashedQuarterLines({
 }
 
 
-function TimelineHeader({ nCols, rangeStartMs, colW, compact = false }: { nCols: number; rangeStartMs: number; colW: number; compact?: boolean; }) {
+function TimelineHeader({
+  nCols,
+  rangeStartMs,
+  colW,
+  compact = false,
+  scheduleStartHour,
+  scheduleEndHour,
+  colsPerHour,
+}: {
+  nCols: number;
+  rangeStartMs: number;
+  colW: number;
+  compact?: boolean;
+  scheduleStartHour: number;
+  scheduleEndHour: number;
+  colsPerHour: number;
+}) {
   const hours = useMemo(() => {
     const out: { label: string; colStart: number }[] = [];
-    const colsPerHour = Math.round((60 * 60 * 1000) / SLOT_MS); // 12
-    const startHour = new Date(rangeStartMs).getHours();
-    for (let i = 0; i <= Math.floor(nCols / colsPerHour); i++) {
-      const h = (startHour + i) % 24;
+    // Prefer explicit props; fallback to rangeStartMs-derived hour if missing
+    const startHourProp = Number.isFinite(scheduleStartHour) ? Math.trunc(scheduleStartHour) : new Date(rangeStartMs).getHours();
+    const endHourProp = Number.isFinite(scheduleEndHour)
+      ? Math.trunc(scheduleEndHour)
+      : startHourProp + Math.ceil(nCols / colsPerHour);
+
+    const hoursToRender = Math.max(0, endHourProp - startHourProp);
+    for (let i = 0; i <= hoursToRender; i++) {
+      const h = (startHourProp + i) % 24;
       out.push({ label: `${h}:00`, colStart: 1 + i * colsPerHour });
     }
+
+    // If rounding left a remainder of columns, continue labels to cover the grid width (safety)
+    while ((out.length === 0 ? 0 : out[out.length - 1].colStart) + colsPerHour <= nCols) {
+      const last = out[out.length - 1];
+      if (!last) break;
+      const nextHour = (parseInt(last.label, 10) + 1) % 24;
+      out.push({ label: `${nextHour}:00`, colStart: last.colStart + colsPerHour });
+      if (out.length > 100) break; // safety guard
+    }
+
     return out;
-  }, [nCols, rangeStartMs]);
+  }, [nCols, rangeStartMs, scheduleStartHour, scheduleEndHour, colsPerHour]);
 
   return (
     <div
@@ -1101,12 +1613,11 @@ function TimelineHeader({ nCols, rangeStartMs, colW, compact = false }: { nCols:
         backgroundColor: 'transparent',
       }}
     >
-      {/* 時刻ラベル（毎時） */}
-      {hours.map(h => (
+      {hours.map((h) => (
         <div
           key={h.colStart}
-          className="flex items-center text-base font-semibold text-gray-800 px-1"
-          style={{ gridColumn: `${h.colStart} / span ${Math.round(60 * 60 * 1000 / SLOT_MS)}` }}
+          className={`flex items-center ${compact ? 'text-sm' : 'text-base'} font-semibold text-gray-800 px-1`}
+          style={{ gridColumn: `${h.colStart} / span ${colsPerHour}` }}
         >
           {h.label}
         </div>
@@ -1115,18 +1626,30 @@ function TimelineHeader({ nCols, rangeStartMs, colW, compact = false }: { nCols:
   );
 }
 
-function TableRows({ tables, rowHeightsPx }: { tables: string[]; rowHeightsPx: number[] }) {
+function TableRows({ tables, rowHeightsPx, capacities }: { tables: string[]; rowHeightsPx: number[]; capacities?: Record<string, number> }) {
   return (
     <div className="flex flex-col">
-      {tables.map((t, i) => (
-        <div
-          key={t}
-          className="whitespace-nowrap overflow-hidden text-ellipsis px-2 flex items-center justify-center text-gray-700 font-medium"
-          style={{ height: rowHeightsPx[i] ?? rowHeightsPx[0] ?? 44, boxSizing: 'border-box' }}
-        >
-          <span className="text-sm">{t}</span>
-        </div>
-      ))}
+      {tables.map((t, i) => {
+        const cap = capacities?.[t];
+        const height = rowHeightsPx[i] ?? rowHeightsPx[0] ?? 44;
+        return (
+          <div
+            key={t}
+            className="relative flex h-full w-full flex-col items-center justify-center whitespace-nowrap overflow-hidden text-ellipsis text-gray-700 font-medium leading-tight"
+            style={{ height, boxSizing: 'border-box', padding: '4px 6px' }}
+          >
+            <span className="text-sm leading-tight">{t}</span>
+            {typeof cap === 'number' && cap > 0 && (
+              <span
+                className="pointer-events-none absolute text-[10px] font-normal text-gray-500"
+                style={{ bottom: 2, right: 0 }}
+              >
+                （{cap}名）
+              </span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1163,8 +1686,50 @@ function ReservationBlock({
   const baseId = String(item.id ?? item._key ?? `tmp_${row}_${startCol}`);
   const tableToken = String(item._table ?? row);
   const blockKey = `${baseId}::${tableToken}`;
-  const borderColor = warn ? '#a13e18' : '#1f6b8d';
-  const textAccent = warn ? '#7b3416' : '#134e6b';
+  const raw = item as any;
+  const arrived = Boolean(raw?.arrived);
+  const paid = Boolean(raw?.paid);
+  const departed = Boolean(raw?.departed);
+
+  type VisualState = 'normal' | 'arrived' | 'paid' | 'departed';
+  const state: VisualState = departed ? 'departed' : paid ? 'paid' : arrived ? 'arrived' : 'normal';
+
+  const palette: Record<VisualState, { border: string; accent: string; body: string; left: string; right: string }> = {
+    normal: {
+      border: '#1f6b8d',
+      accent: '#134e6b',
+      body: '#475569',
+      left: '#ffffff',
+      right: '#fef9db',
+    },
+    arrived: {
+      border: '#2f855a',
+      accent: '#276749',
+      body: '#2f4f3b',
+      left: '#e5f6ed',
+      right: '#f3fbf6',
+    },
+    paid: {
+      border: '#1d4ed8',
+      accent: '#1e40af',
+      body: '#213a71',
+      left: '#e6effd',
+      right: '#f1f6fe',
+    },
+    departed: {
+      border: '#94a3b8',
+      accent: '#475569',
+      body: '#526070',
+      left: '#f1f5f9',
+      right: '#f8fafc',
+    },
+  };
+
+  const colors = palette[state];
+  const borderColor = warn ? '#a13e18' : colors.border;
+  const textAccent = warn ? '#7b3416' : colors.accent;
+  const bodyTextClass = state === 'departed' ? 'text-slate-600' : 'text-slate-700';
+  const secondaryTextClass = state === 'departed' ? 'text-slate-500' : 'text-slate-600';
 
   // 長押し判定
   const LONG_PRESS_MS = 900;
@@ -1176,11 +1741,10 @@ function ReservationBlock({
   const guests = typeof guestsRaw === 'number' ? guestsRaw : Number(guestsRaw);
   const guestsLabel = Number.isFinite(guests) && guests > 0 ? `${guests}名` : '';
   const nameRaw = ((item as any).name ?? '').toString().trim();
-  const name = nameRaw.length > 0 ? nameRaw : '';
+  const name = nameRaw.length > 0 ? `${nameRaw}様` : '';
   const course = ((item as any).course ?? '').toString().trim();
   const startLabel = fmtTime(item.startMs);
 
-  const raw = item as any;
   const extractLabel = (value: any): string => {
     if (value == null) return '';
     if (Array.isArray(value)) return value.map(extractLabel).filter(Boolean).join(',');
@@ -1221,8 +1785,8 @@ function ReservationBlock({
   const rowH = Math.max(1, Number(rowHeightPx || 1));
   const perLayerH = Math.max(1, Math.floor(rowH / layers));
 
-  const tx = Math.round((transform?.x ?? 0));
-  const ty = Math.round((transform?.y ?? 0) + stackIndex * perLayerH);
+  const tx = Math.round(transform?.x ?? 0);
+  const ty = Math.round(transform?.y ?? 0) + stackIndex * perLayerH;
   const translate = (tx || ty) ? `translate3d(${tx}px, ${ty}px, 0)` : undefined;
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -1298,12 +1862,14 @@ function ReservationBlock({
       onKeyDown={handleKeyDown}
     >
       <div
-        className={`relative flex h-full w-full flex-col justify-between rounded-[6px] bg-white shadow-[0_1px_2px_rgba(15,23,42,0.1)] ${isArmed ? 'ring-2 ring-sky-400' : ''}`}
+        className={`relative flex h-full w-full flex-col justify-between rounded-[6px] shadow-[0_1px_2px_rgba(15,23,42,0.1)] ${bodyTextClass} ${isArmed ? 'ring-2 ring-sky-400' : ''} ${state === 'departed' ? 'opacity-80' : ''}`}
         style={{
           margin: '0px',
           // バッジ分の余白を右側に確保（被り回避）
           padding: warn ? '6px 44px 6px 10px' : '6px 10px 6px',
           border: `3px solid ${borderColor}`,
+          backgroundColor: colors.left,
+          backgroundImage: `linear-gradient(to right, ${colors.left} 0%, ${colors.left} 50%, ${colors.right} 50%, ${colors.right} 100%)`,
         }}
         {...attributes}
         {...listeners}
@@ -1311,11 +1877,11 @@ function ReservationBlock({
         {(isEdited || isFresh) && (
           <span className={`absolute -top-1 -left-1 h-2.5 w-2.5 rounded-full ring-2 ring-white ${isEdited ? 'bg-amber-500' : 'bg-green-500'}`} />
         )}
-        <div className="grid h-full grid-rows-[auto_1fr_auto] text-[12px] text-slate-700">
+        <div className={`grid h-full grid-rows-[auto_1fr_auto] text-[12px] ${bodyTextClass}`}>
           <div className="flex items-center justify-between text-[12px] font-semibold" style={{ color: textAccent }}>
             <div className="flex items-center gap-2">
-              <span className="font-mono text-[12px] tracking-tight">{startLabel}</span>
-              <span className="font-mono text-[12px] tracking-tight" aria-label="人数">
+              <span className="font-mono text-[13px] tracking-tight leading-none">{startLabel}</span>
+              <span className="font-mono text-[13px] tracking-tight leading-none" aria-label="人数">
                 {guestsLabel || '―'}
               </span>
             </div>
@@ -1325,9 +1891,9 @@ function ReservationBlock({
             </div>
           </div>
           <div className="flex items-center justify-center overflow-hidden" aria-hidden />
-          <div className="flex items-end justify-between text-[11px] text-slate-600">
+          <div className={`flex items-end justify-between text-[11px] ${secondaryTextClass}`}>
             <span className="font-medium truncate max-w-[60%]" aria-label="氏名">{name}</span>
-            <span className="truncate text-right text-[11px] text-slate-600">{course}</span>
+            <span className={`truncate text-right text-[11px] ${secondaryTextClass}`}>{course}</span>
           </div>
         </div>
 

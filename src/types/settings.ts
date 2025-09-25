@@ -23,6 +23,8 @@ export type AreaDef = {
   icon?: string;
 };
 
+export type TableCapacityMap = Record<string, number>;
+
 export type ScheduleConfig = {
   dayStartHour: number; // 0-47 を想定（跨ぎ運用も許容）
   dayEndHour: number;   // 0-47 を想定（跨ぎ運用も許容）
@@ -52,6 +54,7 @@ export type StoreSettings = {
   courses?: any[];
   positions?: (string | { name: string })[];
   tables?: string[];
+  tableCapacities?: TableCapacityMap;
   plans?: string[];
   tasksByPosition?: Record<string, Record<string, string[]>>;
   eatOptions?: string[];
@@ -71,6 +74,7 @@ export type StoreSettingsValue = {
   courses: CourseDef[];
   positions: string[];
   tables: string[];
+  tableCapacities?: TableCapacityMap;
   areas?: AreaDef[];
   plans: string[];
   tasksByPosition?: Record<string, Record<string, string[]>>;
@@ -165,6 +169,23 @@ export const sanitizeTables = (v: unknown): string[] => {
     if (!s || seen.has(s)) continue;
     seen.add(s);
     out.push(s);
+  }
+  return out;
+};
+
+export const sanitizeTableCapacities = (input: unknown, allowed?: string[]): TableCapacityMap => {
+  if (!input || typeof input !== 'object') return {};
+  const allow = allowed ? new Set(allowed.map((id) => String(id))) : null;
+  const out: TableCapacityMap = {};
+  for (const [rawKey, rawVal] of Object.entries(input as Record<string, unknown>)) {
+    const key = String(rawKey ?? '').trim();
+    if (!key) continue;
+    if (allow && !allow.has(key)) continue;
+    const num = Number(rawVal);
+    if (!Number.isFinite(num)) continue;
+    const normalized = Math.max(1, Math.round(num));
+    if (normalized <= 0) continue;
+    out[key] = normalized;
   }
   return out;
 };
@@ -286,6 +307,7 @@ export const toUISettings = (fs: StoreSettings): StoreSettingsValue => {
 
   // tables/plans/eatOptions/drinkOptions は文字列配列化
   const tables: string[] = sanitizeTables(fs?.tables);
+  const tableCapacities = sanitizeTableCapacities((fs as any)?.tableCapacities, tables);
   const plans: string[] = toStringList(fs?.plans);
   const eatOptions: string[] = toStringList(fs?.eatOptions);
   const drinkOptions: string[] = toStringList(fs?.drinkOptions);
@@ -304,7 +326,20 @@ export const toUISettings = (fs: StoreSettings): StoreSettingsValue => {
   const waveCfg = sanitizeWave((fs as any)?.wave);
   const schedule = sanitizeSchedule((fs as any)?.schedule);
 
-  return { courses, positions, tables, plans, tasksByPosition, eatOptions, drinkOptions, areas, miniTasksByPosition, wave: waveCfg, schedule };
+  return {
+    courses,
+    positions,
+    tables,
+    tableCapacities,
+    plans,
+    tasksByPosition,
+    eatOptions,
+    drinkOptions,
+    areas,
+    miniTasksByPosition,
+    wave: waveCfg,
+    schedule,
+  };
 };
 
 /**
@@ -317,6 +352,7 @@ export const toFirestorePayload = (ui: StoreSettingsValue): StoreSettings => {
 
   const positions = toPositionNames(ui.positions);
   const tables = sanitizeTables(ui.tables);
+  const tableCapacities = sanitizeTableCapacities((ui as any)?.tableCapacities, tables);
   const plans = toStringList(ui.plans);
   const eatOptions = toStringList(ui.eatOptions);
   const drinkOptions = toStringList(ui.drinkOptions);
@@ -332,6 +368,7 @@ export const toFirestorePayload = (ui: StoreSettingsValue): StoreSettings => {
     courses,
     positions,
     tables,
+    tableCapacities: Object.keys(tableCapacities).length > 0 ? tableCapacities : undefined,
     plans,
     eatOptions,
     drinkOptions,

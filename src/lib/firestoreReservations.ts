@@ -36,6 +36,49 @@ export const coerceStr = (v: any, fallback = ''): string => {
 export const coerceTables = (v: any): string[] =>
   Array.isArray(v) ? v.map((x) => coerceStr(x)).filter(Boolean) : v ? [coerceStr(v)] : [];
 
+const coerceCompletedMap = (value: any): Record<string, boolean> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Record<string, boolean> = {};
+  Object.entries(value).forEach(([key, raw]) => {
+    if (!key) return;
+    if (typeof raw === 'boolean') {
+      out[key] = raw;
+      return;
+    }
+    if (typeof raw === 'number') {
+      out[key] = raw !== 0;
+      return;
+    }
+    if (typeof raw === 'string') {
+      const norm = raw.trim().toLowerCase();
+      if (!norm) {
+        out[key] = false;
+        return;
+      }
+      if (norm === 'true' || norm === '1' || norm === 'yes') {
+        out[key] = true;
+        return;
+      }
+      if (norm === 'false' || norm === '0' || norm === 'no') {
+        out[key] = false;
+        return;
+      }
+    }
+  });
+  return out;
+};
+
+const coerceTimeShiftMap = (value: any): Record<string, number> | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out: Record<string, number> = {};
+  Object.entries(value).forEach(([key, raw]) => {
+    const num = Number(raw);
+    if (!key || !Number.isFinite(num)) return;
+    out[key] = Math.trunc(num);
+  });
+  return Object.keys(out).length > 0 ? out : undefined;
+};
+
 // Remove all `undefined` fields (recursively). Firestore rejects `undefined`.
 const omitUndefinedDeep = (obj: any): any => {
   if (obj === undefined) return undefined;
@@ -88,6 +131,12 @@ export type ReservationDoc = {
   memo?: string;
   guests?: number;
   table?: string;
+  completed?: Record<string, boolean>;
+  arrived?: boolean;
+  paid?: boolean;
+  departed?: boolean;
+  timeShift?: Record<string, number>;
+  version?: number;
   createdAtMs?: number; // client ms mirror
   updatedAtMs?: number; // client ms mirror
 };
@@ -103,13 +152,20 @@ export const fromSnapshot = (snap: DocumentSnapshot<DocumentData>): ReservationR
     startMs = computeStartMsFromDateAndTime(x.date, x.time);
   }
   const endMs = x.endMs != null ? coerceMs(x.endMs) : undefined;
-  const durationMin = x.durationMin != null ? Math.trunc(Number(x.durationMin)) : (endMs ? Math.trunc((endMs - startMs) / 60000) : undefined);
+  const durationMin =
+    x.durationMin != null
+      ? Math.trunc(Number(x.durationMin))
+      : (endMs ? Math.trunc((endMs - startMs) / 60_000) : undefined);
   const tables = coerceTables(x.tables ?? x.table);
   const table = (x.table != null && String(x.table).trim() !== '') ? String(x.table) : (tables[0] ?? '');
   const g = Number(x.guests);
   const guests = Number.isFinite(g) ? g : 0;
   const createdAtMs = coerceMs(x.createdAtMs) || coerceMs(x.createdAt) || 0;
   const updatedAtMs = coerceMs(x.updatedAtMs) || coerceMs(x.updatedAt) || 0;
+  const completed = coerceCompletedMap(x.completed);
+  const timeShift = coerceTimeShiftMap(x.timeShift);
+  const versionRaw = Number(x.version);
+  const version = Number.isFinite(versionRaw) ? Math.trunc(versionRaw) : undefined;
   return {
     id: snap.id,
     startMs,
@@ -126,6 +182,12 @@ export const fromSnapshot = (snap: DocumentSnapshot<DocumentData>): ReservationR
     drinkLabel: coerceStr(x.drinkLabel),
     eatLabel: coerceStr(x.eatLabel),
     memo: coerceStr(x.memo),
+    completed,
+    arrived: !!x.arrived,
+    paid: !!x.paid,
+    departed: !!x.departed,
+    version,
+    timeShift,
     createdAtMs,
     updatedAtMs,
   };

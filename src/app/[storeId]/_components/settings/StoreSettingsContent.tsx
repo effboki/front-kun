@@ -3,9 +3,11 @@
 import React, { useMemo, useState, useCallback, useRef } from 'react';
 import type { CourseDef, TaskDef } from '@/types';
 import type { AreaDef } from '@/types';
+import { sanitizeTableCapacities } from '@/types/settings';
 import type { StoreSettingsValue } from '@/types/settings';
 import MiniTasksSettings from './MiniTasksSettings';
 import WaveSettings from './WaveSettings';
+import ScheduleSettings from './ScheduleSettings';
 
 // ============== helpers ==============
 const normalizeLabel = (s: string) =>
@@ -68,6 +70,10 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   const courses = useMemo(() => (Array.isArray(value.courses) ? value.courses : []), [value.courses]);
   const positions = useMemo(() => (Array.isArray(value.positions) ? value.positions : []), [value.positions]);
   const presetTables = useMemo(() => (Array.isArray(value.tables) ? value.tables : []), [value.tables]);
+  const tableCapacities = useMemo(
+    () => sanitizeTableCapacities((value as any)?.tableCapacities, presetTables),
+    [value.tableCapacities, presetTables]
+  );
   const eatOptions = useMemo(() => (Array.isArray(value.eatOptions) ? value.eatOptions : []), [value.eatOptions]);
   const drinkOptions = useMemo(() => (Array.isArray(value.drinkOptions) ? value.drinkOptions : []), [value.drinkOptions]);
   const tasksByPosition = useMemo(
@@ -204,19 +210,86 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     setLocalDirty(true);
     onChange({ positions: next });
   }, [onChange]);
-  const setTables = useCallback((next: string[]) => {
+  const applyTableCapacities = useCallback((next: Record<string, number>) => {
+    const cleaned = sanitizeTableCapacities(next, presetTables);
+    const sameSize = Object.keys(cleaned).length === Object.keys(tableCapacities).length;
+    const sameEntries = sameSize && Object.entries(cleaned).every(([key, val]) => tableCapacities[key] === val);
+    if (sameEntries) return;
     setLocalDirty(true);
+    onChange({
+      tableCapacities: Object.keys(cleaned).length > 0 ? cleaned : undefined,
+    } as Partial<StoreSettingsValue>);
+  }, [onChange, presetTables, tableCapacities]);
+
+  const setTables = useCallback((next: string[]) => {
     // 数字キー前提のため、常に数値昇順に並び替え & 重複除去
     const sorted = Array.from(new Set(next.map((n) => String(Number(n)))))
       .sort((a, b) => Number(a) - Number(b));
-    onChange({ tables: sorted });
-  }, [onChange]);
+
+    const sameLength = sorted.length === presetTables.length;
+    const sameOrder = sameLength && sorted.every((tbl, idx) => tbl === presetTables[idx]);
+
+    const filteredCaps: Record<string, number> = {};
+    for (const tbl of sorted) {
+      const cap = tableCapacities[tbl];
+      if (typeof cap === 'number' && Number.isFinite(cap) && cap > 0) {
+        filteredCaps[tbl] = Math.round(cap);
+      }
+    }
+
+    const existingCapsKeys = Object.keys(tableCapacities);
+    const sameCaps =
+      existingCapsKeys.length === Object.keys(filteredCaps).length &&
+      existingCapsKeys.every((key) => tableCapacities[key] === filteredCaps[key]);
+
+    if (sameOrder && sameCaps) return;
+
+    setLocalDirty(true);
+    const patch: Partial<StoreSettingsValue> = {
+      tables: sorted,
+      tableCapacities: Object.keys(filteredCaps).length > 0 ? filteredCaps : undefined,
+    };
+    onChange(patch);
+  }, [onChange, presetTables, tableCapacities]);
   const setTasksByPosition = useCallback(
     (next: Record<string, Record<string, string[]>>) => {
       setLocalDirty(true);
       onChange({ tasksByPosition: next });
     },
     [onChange]
+  );
+
+  const handleTableCapacityChange = useCallback(
+    (tableId: string, rawValue: string) => {
+      const digits = rawValue.replace(/[^0-9]/g, '');
+      const current = tableCapacities[tableId];
+
+      if (!digits) {
+        if (current != null) {
+          const next = { ...tableCapacities };
+          delete next[tableId];
+          applyTableCapacities(next);
+        }
+        return;
+      }
+
+      const numeric = Number(digits);
+      if (!Number.isFinite(numeric) || numeric <= 0) {
+        if (current != null) {
+          const next = { ...tableCapacities };
+          delete next[tableId];
+          applyTableCapacities(next);
+        }
+        return;
+      }
+
+      const normalized = Math.max(1, Math.round(numeric));
+      if (current === normalized) return;
+
+      const next = { ...tableCapacities, [tableId]: normalized };
+      applyTableCapacities(next);
+    },
+    [tableCapacities, applyTableCapacities]
   );
   const setEatOptions = useCallback((next: string[]) => {
     setLocalDirty(true);
@@ -698,7 +771,8 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   // Root list (like iOS Settings top level)
   if (view === 'root') {
     return (
-      <section className="overflow-hidden rounded-md border border-gray-200 bg-white">
+      <div className="min-h-0 flex flex-col gap-4">
+        <section className="rounded-md border border-gray-200 bg-white">
         <ListItem
           label={
             <>
@@ -895,7 +969,8 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
             {isSaving ? '保存中…' : isDirty ? '保存' : '保存済み'}
           </button>
         </div>
-      </section>
+        </section>
+      </div>
     );
   }
   // --- MiniTasks settings page (stub) ---
@@ -920,13 +995,12 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     );
   }
 
-  // --- Schedule settings page (stub) ---
+  // --- Schedule settings page ---
   if (view === 'schedule') {
     return (
       <SubPageShell title="スケジュール設定">
-        <div className="text-sm text-gray-600 space-y-2">
-          <p>店舗の <strong>スケジュール表示時間</strong>（開始・終了）や <strong>コース滞在時間</strong> の既定を設定します。</p>
-          <p className="text-xs text-gray-500">※ このページの詳細UIは後続フェーズで実装します。</p>
+        <div className="text-sm text-gray-600">
+          <ScheduleSettings value={value} onChange={patchRoot} />
         </div>
       </SubPageShell>
     );
@@ -1603,26 +1677,52 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                     </button>
                   </div>
                 </div>
-                <div className="grid gap-1.5 p-0 grid-cols-[repeat(auto-fit,minmax(3.5rem,1fr))]">
-                  {presetTables.map((tbl) =>
-                    tableEditMode ? (
-                      <div key={tbl} className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 bg-white shadow-sm whitespace-nowrap">
-                        <span className="text-sm font-medium tabular-nums">{tbl}</span>
-                        <button
-                          onClick={() => setTables(presetTables.filter((t) => t !== tbl))}
-                          className="ml-0.5 inline-flex items-center justify-center h-6 w-6 rounded-full border border-red-200 bg-red-50 text-red-600 text-[14px] leading-none hover:bg-red-100 hover:text-red-700 active:scale-[.98]"
-                          aria-label={`${tbl} を削除`}
-                          title="削除"
-                        >
-                          ×
-                        </button>
+                <div className="mt-2 space-y-2">
+                  {presetTables.map((tbl) => {
+                    const cap = tableCapacities[tbl];
+                    return (
+                      <div
+                        key={tbl}
+                        className="flex flex-wrap items-center gap-3 rounded-lg border bg-white px-3 py-2 shadow-sm"
+                      >
+                        <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                          <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-sky-100 text-sky-700 font-semibold tabular-nums">
+                            {tbl}
+                          </span>
+                          <span>卓</span>
+                        </div>
+                        <div className="ml-auto flex items-center gap-2 text-sm text-gray-600">
+                          <label className="text-xs uppercase tracking-wide text-gray-400" htmlFor={`table-cap-${tbl}`}>
+                            定員
+                          </label>
+                          <input
+                            id={`table-cap-${tbl}`}
+                            type="number"
+                            min={1}
+                            step={1}
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            placeholder="例: 4"
+                            value={cap != null ? String(cap) : ''}
+                            onChange={(e) => handleTableCapacityChange(tbl, e.currentTarget.value)}
+                            className="w-20 rounded border border-gray-300 px-2 py-1 text-right text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-200"
+                            aria-label={`${tbl}卓の定員`}
+                          />
+                          <span className="text-xs text-gray-500">名</span>
+                        </div>
+                        {tableEditMode && (
+                          <button
+                            onClick={() => setTables(presetTables.filter((t) => t !== tbl))}
+                            className="ml-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-red-200 bg-red-50 text-red-600 text-[14px] leading-none hover:bg-red-100 hover:text-red-700 active:scale-[.98]"
+                            aria-label={`${tbl} を削除`}
+                            title="削除"
+                          >
+                            ×
+                          </button>
+                        )}
                       </div>
-                    ) : (
-                      <div key={tbl} className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 bg-white shadow-sm whitespace-nowrap">
-                        <span className="text-sm font-medium tabular-nums">{tbl}</span>
-                      </div>
-                    )
-                  )}
+                    );
+                  })}
                 </div>
               </div>
             ) : (

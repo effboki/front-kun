@@ -8,6 +8,7 @@ import {
   type ReservationDoc,
 } from '@/lib/firestoreReservations';
 import { parseTimeToMinutes, startOfDayMs, msToHHmmFromDay } from '@/lib/time';
+import { deleteField } from 'firebase/firestore';
 
 export type ReservationCreateInput = {
   startMs: number; // 予約開始（エポックms）
@@ -72,7 +73,6 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
     const payload: ReservationDoc & { id?: string } = {
       startMs,
       endMs: input.endMs != null ? toNum(input.endMs) : undefined,
-      durationMin: input.durationMin != null ? Math.trunc(toNum(input.durationMin)) : undefined,
       tables: tablesNorm,
       table: tableSingle || (tablesNorm[0] ?? ''),
       name: trimOrEmpty(input.name),
@@ -83,6 +83,14 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
       eatLabel: trimOrEmpty(input.eatLabel),
       memo: trimOrEmpty(input.memo),
     } as any;
+
+    // durationMin: save only when explicitly specified (auto = omit)
+    if (input.durationMin != null) {
+      const n = toNum(input.durationMin);
+      if (Number.isFinite(n)) {
+        (payload as any).durationMin = Math.trunc(n);
+      }
+    }
 
     // --- course/courseName を正規化して同値を保存 ---
     {
@@ -129,10 +137,16 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
       if (!Number.isFinite(n)) throw new Error('endMs must be a finite number');
       p.endMs = n;
     }
-    if (patch.durationMin != null) {
-      const n = toNum(patch.durationMin);
-      if (!Number.isFinite(n)) throw new Error('durationMin must be a finite number');
-      p.durationMin = Math.trunc(n);
+    if ('durationMin' in patch) {
+      const v = (patch as any).durationMin;
+      // auto / reset: null, undefined, empty string, or string 'auto'
+      if (v == null || v === '' || (typeof v === 'string' && v.toLowerCase() === 'auto')) {
+        p.durationMin = deleteField() as any;
+      } else {
+        const n = toNum(v);
+        if (!Number.isFinite(n)) throw new Error('durationMin must be a finite number');
+        p.durationMin = Math.trunc(n);
+      }
     }
 
     if (p.startMs == null && typeof (patch as any).time === 'string' && (patch as any).time) {
@@ -210,11 +224,10 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
     const __courseNameNorm = trimOrEmpty((input as any).course ?? input.courseName);
     const __courseLabel = __courseNameNorm || '未選択';
 
-    await createDoc(storeId, {
+    const data: any = {
       id,
       startMs,
       endMs: input.endMs != null ? toNum(input.endMs) : undefined,
-      durationMin: input.durationMin != null ? Math.trunc(toNum(input.durationMin)) : undefined,
       tables: tablesNorm,
       table: tableSingle || (tablesNorm[0] ?? ''),
       name: trimOrEmpty(input.name),
@@ -229,7 +242,12 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
       time: trimOrEmpty((input as any).time) || undefined,
       notes: trimOrEmpty((input as any).notes ?? (input as any).memo),
       createdAtMs: Date.now(),
-    } as any);
+    };
+    if (input.durationMin != null) {
+      const n = toNum(input.durationMin);
+      if (Number.isFinite(n)) data.durationMin = Math.trunc(n);
+    }
+    await createDoc(storeId, data as any);
   }
 
   // ---- delete ----

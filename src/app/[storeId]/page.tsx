@@ -431,6 +431,18 @@ const [baselineSettings, setBaselineSettings] =
     d0.setHours(startHour, 0, 0, 0);
     return d0.getTime();
   }, [settingsDraft?.schedule?.dayStartHour]);
+
+  // Display window for Schedule (parent decides; child does not hardcode)
+  const scheduleStartHour = React.useMemo(() => {
+    const h = Number((settingsDraft as any)?.schedule?.dayStartHour);
+    return Number.isFinite(h) ? h : 10; // fallback 10:00
+  }, [settingsDraft?.schedule?.dayStartHour]);
+
+  const scheduleEndHour = React.useMemo(() => {
+    const h = Number((settingsDraft as any)?.schedule?.dayEndHour);
+    return Number.isFinite(h) ? h : 23; // fallback 23:00
+  }, [settingsDraft?.schedule?.dayEndHour]);
+
 const {
   createReservation: createReservationMut,
   updateReservation: updateReservationMut,
@@ -637,13 +649,26 @@ const getTasks = (c: { tasks?: any }): { timeOffset:number; label:string; bgColo
 
   // 店舗設定（eatOptions / drinkOptions / positions …）をリアルタイム購読
   const {
-  value: serverSettings,
-  areas,
-  tableToAreas,
-  save: saveSettings,
-  loading: settingsLoading,
-  isSaving: isSavingSettings,
-} = useRealtimeStoreSettings(id as string);
+    value: serverSettings,
+    areas,
+    tableToAreas,
+    save: saveSettings,
+    loading: settingsLoading,
+    isSaving: isSavingSettings,
+  } = useRealtimeStoreSettings(id as string);
+  // Stamp to force ScheduleView re-mount when settings or display window changes
+  const schedulePropsKey = React.useMemo(() => {
+    try {
+      const raw: any = (serverSettings as any)?.updatedAt;
+      const updatedMs =
+        raw && typeof raw?.toMillis === 'function'
+          ? raw.toMillis()
+          : (typeof raw === 'number' ? raw : 0);
+      return `sched-${scheduleStartHour}-${scheduleEndHour}-${updatedMs}`;
+    } catch {
+      return `sched-${scheduleStartHour}-${scheduleEndHour}`;
+    }
+  }, [serverSettings, scheduleStartHour, scheduleEndHour]);
     
   // Reflect Firestore realtime settings into UI draft (overwrite on arrival/updates)
   useEffect(() => {
@@ -1104,30 +1129,6 @@ useEffect(() => {
   React.useEffect(() => {
     if (typeof window !== 'undefined') nsSetStr('tasks_filterArea', filterArea);
   }, [filterArea]);
-
-  // Reservations filtered by Area for Tasks tab
-  const reservationsByArea = React.useMemo(() => {
-    const base = Array.isArray(reservations) ? reservations : [];
-    if (filterArea === '全て') return base;
-
-    if (filterArea === '未割当') {
-      // エリアに一切割り当てられていない卓（tableToAreas 無し or 空配列）
-      const assigned = new Set<string>();
-      const map = tableToAreasLocal || {};
-      Object.entries(map).forEach(([t, arr]) => {
-        if (Array.isArray(arr) && arr.length > 0) assigned.add(String(t));
-      });
-      return base.filter(r => !assigned.has(String(r.table)));
-    }
-
-    // areaId 指定：重複所属OK → そのエリアを含む卓のみ
-    const map = tableToAreasLocal || {};
-    return base.filter(r => {
-      const list = map[String(r.table)] || [];
-      return Array.isArray(list) && list.includes(filterArea);
-    });
-  }, [reservations, filterArea, tableToAreasLocal]);
-
   // --- Course Start tab–only: show guests toggle (independent from Tasks tab) ---
 const [csShowGuestsAll, setCsShowGuestsAll] = useState<boolean>(() => nsGetStr('cs_showGuestsAll', '1') === '1');
 
@@ -1380,29 +1381,17 @@ const onToggleEditTableMode = useCallback(() => {
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   // ※依存配列を空にしているためLint警告を無効化（安全に使える想定）
-  const updateReservationFieldCb = useCallback(
-    (
-      id: string,
-      field:
-        | 'time'
-        | 'course'
-        | 'eat'
-        | 'drink'
-        | 'guests'
-        | 'name'
-        | 'notes'
-        | 'date'
-        | 'table'
-        | 'completed'
-        | 'arrived'
-        | 'paid'
-        | 'departed',
-      value: any,
-    ) => {
-      updateReservationFieldRef.current(id, field as any, value);
-    },
-    [],
-  );
+  // ReservationsSection が使う拡張キーも受け取れるように型を拡張
+const updateReservationFieldCb = useCallback((
+  id: string,
+  field:
+    | 'time' | 'course' | 'eat' | 'drink' | 'guests' | 'name' | 'notes' | 'date' | 'table'
+    | 'completed' | 'arrived' | 'paid' | 'departed'
+    | 'eatLabel' | 'drinkLabel' | 'foodAllYouCan' | 'drinkAllYouCan',
+  value: any,
+) => {
+  updateReservationFieldRef.current(id, field as any, value);
+}, []);
   // ─── 予約追加 ──────────────────────────────
   const addReservationV2 = async (e: FormEvent) => {
     e.preventDefault();
@@ -1809,14 +1798,17 @@ const handleStoreSave = React.useCallback(async () => {
 
   // ── Settings: JSX block（新しい handleStoreSave を使用） ─────────
   const renderSettingsContent = (
-    <main className="p-4">
+    <main
+      className="p-4 h-[100dvh] overflow-y-auto overscroll-contain"
+      style={{ WebkitOverflowScrolling: 'touch' }}
+    >
       <StoreSettingsContent
-  value={settingsDraft}
-  onChange={patchSettings}
-  onSave={handleStoreSave}
-  isSaving={isSavingSettings}
-  baseline={baselineSettings}
-/>
+        value={settingsDraft}
+        onChange={patchSettings}
+        onSave={handleStoreSave}
+        isSaving={isSavingSettings}
+        baseline={baselineSettings}
+      />
     </main>
   );
 
@@ -2714,11 +2706,30 @@ const deleteCourse = async () => {
 
   // 2) Tasks タブ専用：コース絞り込みを tasks_filterCourse で適用
   const filteredReservationsTasks = useMemo(() => {
+    const map = tableToAreasLocal || {};
     return filteredByTables.filter((r) => {
+      if (filterArea !== '全て') {
+        const tables = Array.isArray(r.tables) && r.tables.length > 0 ? r.tables : [r.table];
+
+        if (filterArea === '未割当') {
+          const hasAssignedArea = tables.some((t) => {
+            const areasForTable = map[String(t)] || [];
+            return Array.isArray(areasForTable) && areasForTable.length > 0;
+          });
+          if (hasAssignedArea) return false;
+        } else {
+          const matchesArea = tables.some((t) => {
+            const areasForTable = map[String(t)] || [];
+            return Array.isArray(areasForTable) && areasForTable.includes(filterArea);
+          });
+          if (!matchesArea) return false;
+        }
+      }
+
       if (tasksFilterCourse !== '全体' && r.course !== tasksFilterCourse) return false;
       return true;
     });
-  }, [filteredByTables, tasksFilterCourse]);
+  }, [filteredByTables, filterArea, tableToAreasLocal, tasksFilterCourse]);
 
   // 3) コース開始時間表専用：営業前設定フィルタの反映有無 + cs_filterCourse を適用
   const filteredReservationsCourseStart = useMemo(() => {
@@ -3362,10 +3373,10 @@ const onNumPadConfirm = () => {
   groupedTasks,
   sortedTimeKeys,
   courses,
-  // Tasksタブ専用の配列を渡す（エリア絞り込み後）
-  filteredReservations: reservationsByArea,
+  // Tasksタブ専用の配列を渡す（エリア絞り込み後 & コース絞り込み後）
+  filteredReservations: filteredReservationsTasks,
   firstRotatingId,
-}), [groupedTasks, sortedTimeKeys, courses, reservationsByArea, firstRotatingId]);
+}), [groupedTasks, sortedTimeKeys, courses, filteredReservationsTasks, firstRotatingId]);
 
   // --- migrate legacy shared key → split keys (one-time) ---
   React.useEffect(() => {
@@ -3632,7 +3643,9 @@ const onNumPadConfirm = () => {
 {/* ───────────── スケジュール（外部コンポーネント） start ─────────────  */}
 {!isSettings && bottomTab === 'schedule' && (
   <div className="-mx-4">
-    <ScheduleView
+      <ScheduleView
+    scheduleStartHour={scheduleStartHour}
+scheduleEndHour={scheduleEndHour}
       storeSettings={settingsDraft}
       dayStartMs={startOfDayMs(dayStartMs)}
       items={scheduleItems}
@@ -3640,6 +3653,7 @@ const onNumPadConfirm = () => {
       tablesOptions={presetTablesView}
       eatOptions={eatOptions}
       drinkOptions={drinkOptions}
+      reservations={reservations}
       onSave={async (data, id) => {
         if (id) {
           await updateReservationMut(id, data);
@@ -3650,6 +3664,11 @@ const onNumPadConfirm = () => {
       onDelete={async (id) => {
         await deleteReservationMut(id);
       }}
+      onUpdateReservationField={updateReservationFieldCb}
+      onAdjustTaskTime={adjustTaskTime}
+      onToggleArrival={toggleArrivalChecked}
+      onTogglePayment={togglePaymentChecked}
+      onToggleDeparture={toggleDepartureChecked}
     />
   </div>
 )}

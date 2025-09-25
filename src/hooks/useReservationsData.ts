@@ -12,6 +12,27 @@ import { selectScheduleItems } from '@/lib/scheduleSelectors';
 import type { CourseDef } from '@/types/settings';
 import { startOfDayMs, msToHHmmFromDay } from '@/lib/time';
 
+function getCourseStayMin(courseName: string, courses?: CourseDef[]): number | undefined {
+  const name = (courseName ?? '').trim();
+  if (!name) return undefined;
+  const cs = (courses ?? []).find((c) => (c as any)?.name && String((c as any).name).trim() === name);
+  if (!cs) return undefined;
+  const candidates = [
+    (cs as any).durationMin,
+    (cs as any).stayMin,
+    (cs as any).stayMinutes,
+    (cs as any).durationMinutes,
+    (cs as any).minutes,
+    (cs as any).lengthMin,
+    (cs as any).lengthMinutes,
+  ];
+  for (const v of candidates) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return Math.trunc(n);
+  }
+  return undefined;
+}
+
 
 // --- キャッシュの schema version ---
 const RES_CACHE_VERSION = 1;
@@ -113,49 +134,59 @@ export function useReservationsData(storeId: string, opts?: { courses?: CourseDe
       off = listenReservationsByDay(storeId, d0 as number, rangeEndMs, (rows) => {
         // UI 互換フィールドを付与してから state へ
         const uiRows = (Array.isArray(rows) ? rows : []).map((r: any) => {
-          const timeHHmm = msToHHmmFromDay(Number(r?.startMs ?? 0), base0);
-          // 既存 UI が参照している time が無ければ補完
-          const time = timeHHmm;
-          // course の正規化と courseName の同期
-          const courseRaw = (r?.course ?? r?.courseName ?? '') as any;
-          const course = typeof courseRaw === 'string' ? courseRaw : String(courseRaw ?? '');
-          const courseName = (typeof r?.courseName === 'string' && r.courseName.trim() !== '') ? r.courseName : course;
-          // undefined を流さないように丸める
-          const name = typeof r?.name === 'string' ? r.name : '';
+          const startMs = Number(r?.startMs ?? 0);
+          const timeHHmm = msToHHmmFromDay(startMs, base0); // ← 常に startMs から再計算
+          const time = timeHHmm; // 旧 r.time は信用しない
+
           const tables = Array.isArray(r?.tables)
             ? r.tables.map((t: any) => String(t)).filter((t: string) => t.trim() !== '')
             : [];
-          // 単一卓（予約リスト向け）を安全に補完
-          const table = (typeof r?.table === 'string' && r.table.trim() !== '')
-            ? r.table
-            : (tables[0] ?? '');
-          // 人数を number で正規化（未設定は 0）
+          const table = (typeof r?.table === 'string' && r.table.trim() !== '') ? r.table : (tables[0] ?? '');
+
           const g = Number(r?.guests);
           const guests = Number.isFinite(g) ? Math.trunc(g) : 0;
-          const drinkLabel = typeof r?.drinkLabel === 'string' ? r.drinkLabel : '';
-          const eatLabel = typeof r?.eatLabel === 'string' ? r.eatLabel : '';
-          const memo = typeof r?.memo === 'string' ? r.memo : '';
 
-          // NEW: 作成から15分は「新規」フラグ（緑ドット）を出せるように期限を持たせる
+          const courseRaw = (r?.course ?? r?.courseName ?? '') as any;
+          const course = typeof courseRaw === 'string' ? courseRaw : String(courseRaw ?? '');
+          const courseName = (typeof r?.courseName === 'string' && r.courseName.trim() !== '') ? r.courseName : course;
+
+          // 滞在時間：手動 > コース規定 の優先で算出
+          const durRaw = Number((r as any)?.durationMin);
+          const durationMin = Number.isFinite(durRaw) && durRaw > 0 ? Math.trunc(durRaw) : undefined;
+          const courseStay = getCourseStayMin(course, opts?.courses);
+          const effectiveDurationMin = durationMin ?? courseStay; // ← 優先度を固定
+
+          // endMs も用意（scheduleItems 側が使えるように）
+          const endMs = (Number.isFinite(startMs) && Number.isFinite(effectiveDurationMin as any))
+            ? (startMs + (effectiveDurationMin as number) * 60_000)
+            : (Number((r as any)?.endMs) || undefined);
+
+          const drinkLabel = typeof r?.drinkLabel === 'string' ? r.drinkLabel : '';
+          const eatLabel   = typeof r?.eatLabel   === 'string' ? r.eatLabel   : '';
+          const memo       = typeof r?.memo       === 'string' ? r.memo       : '';
+          const name       = typeof r?.name       === 'string' ? r.name       : '';
+
           const createdAtMsRaw = Number(r?.createdAtMs);
           const createdAtMs = Number.isFinite(createdAtMsRaw) ? Math.trunc(createdAtMsRaw) : 0;
           const freshUntilMs = createdAtMs + 15 * 60 * 1000;
 
-          // NEW: 変更から15分は「編集」フラグ（オレンジドット）の期限
           const updatedAtMsRaw = Number(r?.updatedAtMs);
           const updatedAtMs = Number.isFinite(updatedAtMsRaw) ? Math.trunc(updatedAtMsRaw) : 0;
           const editedUntilMs = updatedAtMs + 15 * 60 * 1000;
 
           return {
             ...r,
+            startMs,
+            endMs,
+            durationMin,           // 手動指定（あれば数値）
+            effectiveDurationMin,  // 描画/計算に使う実効値
             timeHHmm,
             time,
-            name,
-            course,
-            courseName,
             tables,
             table,
             guests,
+            course,
+            courseName,
             drinkLabel,
             eatLabel,
             memo,
@@ -214,12 +245,34 @@ export function useReservationsData(storeId: string, opts?: { courses?: CourseDe
       }
     });
 
+    // id -> durationMin / effectiveDurationMin の辞書
+    const durMap: Record<string, { durationMin?: number; effectiveDurationMin?: number }> = {};
+    (reservations as any[]).forEach((r) => {
+      if (!r) return;
+      const rid = typeof (r as any).id === 'string' ? (r as any).id : undefined;
+      if (!rid) return;
+      const dmin = Number((r as any).durationMin);
+      const durationMin = Number.isFinite(dmin) && dmin > 0 ? Math.trunc(dmin) : undefined;
+      const eff = (r as any).effectiveDurationMin;
+      const effectiveDurationMin = Number.isFinite(Number(eff)) ? Math.trunc(Number(eff)) : undefined;
+      durMap[rid] = { durationMin, effectiveDurationMin };
+    });
+
     // scheduleItems 側にも同じフィールドを付与（描画でそのまま使えるように）
     return (Array.isArray(base) ? base : []).map((it: any) => {
       const fid = typeof it?.id === 'string' ? it.id : undefined;
       const fusedFresh = (fid && freshMap[fid] != null) ? freshMap[fid] : it?.freshUntilMs;
       const fusedEdited = (fid && editedMap[fid] != null) ? editedMap[fid] : it?.editedUntilMs;
-      return { ...it, freshUntilMs: fusedFresh, editedUntilMs: fusedEdited };
+      const dm = fid ? durMap[fid] : undefined;
+      return {
+        ...it,
+        freshUntilMs: fusedFresh,
+        editedUntilMs: fusedEdited,
+        // Drawer 初期値用に生の durationMin をそのまま渡す（自動は undefined）
+        durationMin: dm?.durationMin,
+        // 表示・レイアウト用の実効分（必要に応じて使用）
+        effectiveDurationMin: dm?.effectiveDurationMin,
+      };
     });
   }, [reservations, opts?.courses, opts?.visibleTables, opts?.dayStartMs]);
 

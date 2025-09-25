@@ -8,6 +8,9 @@ export interface Reservation {
   /** 卓番号 */
   table: string;
 
+  /** 複数卓（任意） */
+  tables?: string[];
+
   /** コース名 */
   course: string;
 

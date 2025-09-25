@@ -242,7 +242,19 @@ type Props = {
   /** セル更新や行操作用ハンドラ（親の関数をそのまま渡す） */
   updateReservationField: (
     id: string,
-    field: 'time' | 'table' | 'name' | 'course' | 'eat' | 'drink' | 'guests' | 'notes',
+    field:
+      | 'time'
+      | 'table'
+      | 'name'
+      | 'course'
+      | 'eat'
+      | 'drink'
+      | 'guests'
+      | 'notes'
+      | 'eatLabel'
+      | 'drinkLabel'
+      | 'foodAllYouCan'
+      | 'drinkAllYouCan',
     value: any,
   ) => void;
   deleteReservation: (id: string) => void;
@@ -281,6 +293,35 @@ type Props = {
   setNewResNotes: (v: string) => void;
   addReservation: (e: FormEvent) => Promise<void>;
 };
+
+// ---- Eat/Drink normalization (align with ScheduleView fallback) ----
+const extractLabel = (v: any): string => {
+  if (v == null) return '';
+  if (Array.isArray(v)) return v.map(extractLabel).filter(Boolean).join(',');
+  if (typeof v === 'string') return v.trim();
+  if (typeof v === 'number') return String(v);
+  return String(v ?? '').trim();
+};
+
+const getEatValue = (r: any): string =>
+  extractLabel(
+    (typeof r?.eat === 'string' ? r.eat : undefined) ??
+      r?.eatLabel ??
+      r?.eatOption ??
+      r?.reservation?.eatLabel ??
+      (typeof r?.meta?.eat === 'string' ? r.meta.eat : undefined) ??
+      (typeof r?.reservation?.eat === 'string' ? r.reservation.eat : undefined)
+  );
+
+const getDrinkValue = (r: any): string =>
+  extractLabel(
+    (typeof r?.drink === 'string' ? r.drink : undefined) ??
+      r?.drinkLabel ??
+      r?.drinkOption ??
+      r?.reservation?.drinkLabel ??
+      (typeof r?.meta?.drink === 'string' ? r.meta.drink : undefined) ??
+      (typeof r?.reservation?.drink === 'string' ? r.reservation.drink : undefined)
+  );
 
 // ==== Component =============================================================
 
@@ -348,6 +389,8 @@ const ReservationsSection: React.FC<Props> = ({
     setLocalNumPadState(s);
   };
   const closeNumPad = () => setLocalNumPadState(null);
+  // Optimistic inline edits for select boxes (eat/drink) to avoid flicker before server echo
+  const [inlineEdits, setInlineEdits] = React.useState<Record<string, { eat?: string; drink?: string }>>({});
   // NEW判定（直後ドット用のローカル検知）
   const NEW_THRESHOLD = 15 * 60 * 1000; // 15分
   const initialRenderRef = React.useRef(true);
@@ -361,6 +404,25 @@ const ReservationsSection: React.FC<Props> = ({
     const id = setInterval(() => setNowTick(Date.now()), 30_000);
     return () => clearInterval(id);
   }, []);
+
+  // Reconcile optimistic edits when parent "reservations" updates with the same value
+  React.useEffect(() => {
+    setInlineEdits((prev) => {
+      if (!prev || Object.keys(prev).length === 0) return prev;
+      const next = { ...prev };
+      for (const r of reservations) {
+        const entry = next[r.id];
+        if (!entry) continue;
+        const eatMatch = entry.eat !== undefined && entry.eat === getEatValue(r);
+        const drinkMatch = entry.drink !== undefined && entry.drink === getDrinkValue(r);
+        if (eatMatch) delete entry.eat;
+        if (drinkMatch) delete entry.drink;
+        if (!entry.eat && !entry.drink) delete next[r.id];
+        else next[r.id] = entry;
+      }
+      return next;
+    });
+  }, [reservations]);
 
     React.useEffect(() => {
       if (initialRenderRef.current) {
@@ -1270,6 +1332,9 @@ const ReservationsSection: React.FC<Props> = ({
                     ? (pendingTables[r.id]?.nextList?.[0] ?? tableStr)
                     : (r.pendingTable ?? tableStr);
                 const displayTableStr = String(displayTable);
+                // Normalized current values for eat/drink (inline edit takes precedence)
+                const eatCurrent = inlineEdits[r.id]?.eat ?? getEatValue(r);
+                const drinkCurrent = inlineEdits[r.id]?.drink ?? getDrinkValue(r);
 
                 return (
                   <tr
@@ -1379,10 +1444,20 @@ const ReservationsSection: React.FC<Props> = ({
                     {showEatCol && (
                       <td className="border px-1 py-0.5 text-center">
                         <select
-                          value={r.eat || ''}
-                          onChange={(e) => updateReservationField(r.id, 'eat', e.target.value)}
+                          value={eatCurrent}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setInlineEdits((prev) => ({ ...prev, [r.id]: { ...(prev[r.id] || {}), eat: v } }));
+                            updateReservationField(r.id, 'eat', v);
+                            updateReservationField(r.id, 'eatLabel', v as any);
+                            updateReservationField(r.id, 'foodAllYouCan', Boolean(v) as any);
+                          }}
                           className="border px-1 py-0.5 w-14 text-xs rounded"
                         >
+                          {/* 現在値が選択肢に無い場合でも表示できるよう補完 */}
+                          {!eatOptions.includes(eatCurrent) && eatCurrent && (
+                            <option value={eatCurrent}>{eatCurrent}</option>
+                          )}
                           <option value=""></option>
                           {eatOptions.map((opt) => (
                             <option key={opt} value={opt}>
@@ -1395,10 +1470,20 @@ const ReservationsSection: React.FC<Props> = ({
                     {showDrinkCol && (
                       <td className="border px-1 py-0.5 text-center">
                         <select
-                          value={r.drink || ''}
-                          onChange={(e) => updateReservationField(r.id, 'drink', e.target.value)}
+                          value={drinkCurrent}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setInlineEdits((prev) => ({ ...prev, [r.id]: { ...(prev[r.id] || {}), drink: v } }));
+                            updateReservationField(r.id, 'drink', v);
+                            updateReservationField(r.id, 'drinkLabel', v as any);
+                            updateReservationField(r.id, 'drinkAllYouCan', Boolean(v) as any);
+                          }}
                           className="border px-1 py-0.5 w-14 text-xs rounded"
                         >
+                          {/* 現在値が選択肢に無い場合でも表示できるよう補完 */}
+                          {!drinkOptions.includes(drinkCurrent) && drinkCurrent && (
+                            <option value={drinkCurrent}>{drinkCurrent}</option>
+                          )}
                           <option value=""></option>
                           {drinkOptions.map((opt) => (
                             <option key={opt} value={opt}>
@@ -1565,7 +1650,7 @@ const ReservationsSection: React.FC<Props> = ({
                     <select
                       form="new-res-form"
                       value={newResEat}
-                      onChange={(e) => setNewResEat(e.target.value.slice(0, 2))}
+                      onChange={(e) => setNewResEat(e.target.value)}
                       className="border px-1 py-0.5 rounded w-full text-sm"
                     >
                       <option value="">未選択</option>
@@ -1584,7 +1669,7 @@ const ReservationsSection: React.FC<Props> = ({
                     <select
                       form="new-res-form"
                       value={newResDrink}
-                      onChange={(e) => setNewResDrink(e.target.value.slice(0, 2))}
+                      onChange={(e) => setNewResDrink(e.target.value)}
                       className="border px-1 py-0.5 rounded w-full text-sm"
                     >
                       <option value="">未選択</option>

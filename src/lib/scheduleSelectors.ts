@@ -159,6 +159,10 @@ export function mapReservationToScheduleItem(resv: any, dayStartMs: number, cour
   const drink = drinkLabel ? true : toBool(resv.drink ?? resv.drinkPlan ?? resv.hasDrink);
   const eat = eatLabel ? true : toBool(resv.eat ?? resv.buffet ?? resv.hasEat);
 
+  const arrived = toBool(resv.arrived);
+  const paid = toBool(resv.paid);
+  const departed = toBool(resv.departed);
+
   return {
     id: String(resv.id ?? resv.reservationId ?? resv._id ?? cryptoRandomId()),
     name,
@@ -172,6 +176,9 @@ export function mapReservationToScheduleItem(resv: any, dayStartMs: number, cour
     startMs: start,
     endMs: end,
     status: 'normal',
+    arrived,
+    paid,
+    departed,
   };
 }
 

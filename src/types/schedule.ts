@@ -34,6 +34,12 @@ export type ScheduleItem = {
   color?: string;
   /** 警告などの状態（同卓・同時刻の重なりなど） */
   status?: 'normal' | 'warn';
+  /** 来店済み */
+  arrived?: boolean;
+  /** 会計済み */
+  paid?: boolean;
+  /** 退店済み */
+  departed?: boolean;
 };
 
 /** スケジュールの時間範囲（その日の表示ウィンドウ） */

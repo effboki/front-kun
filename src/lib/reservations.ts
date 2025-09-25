@@ -98,9 +98,10 @@ export async function updateReservationFS(
       sanitizedPatch[key] = value;
     });
 
-    const updatePayload = omitUndefinedDeep({ ...sanitizedPatch, ...shiftPayload });
+    const cleanedPatch = omitUndefinedDeep(sanitizedPatch);
     await updateDoc(ref, {
-      ...updatePayload,
+      ...cleanedPatch,
+      ...shiftPayload,
       version: increment(1),
       updatedAt: serverTimestamp(),
     });
