@@ -1046,16 +1046,6 @@ const handleDragMove = useCallback((e: any) => {
     pointerStateRef.current = { x: e.clientX, y: e.clientY, active: true, pointerId: e.pointerId };
     lockOriginRef.current = { left: el.scrollLeft, top: el.scrollTop };
     scrollPosRef.current = { left: el.scrollLeft, top: el.scrollTop };
-    el.style.overflowX = 'hidden';
-    el.style.overflowY = 'hidden';
-    (el.style as any).touchAction = 'none';
-    if (typeof el.setPointerCapture === 'function') {
-      try {
-        el.setPointerCapture(e.pointerId);
-      } catch (_) {
-        // ignore (unsupported environment)
-      }
-    }
   }, [releaseScrollAxisLock, clearScrollIdleTimer]);
 
   const handleScrollPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
