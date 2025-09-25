@@ -54,8 +54,6 @@ function patchSatisfiedByItem(item: any, patch: OptimisticPatch): boolean {
 const STICKY_TOP_PX = 48; // 必要なら 70 等に調整
 // 画面下部のタブバー（フッター）高さ(px)。端末により前後する場合は調整
 const BOTTOM_TAB_PX = 70;
-// スクロール方向の判定に使う閾値(px)
-const AXIS_LOCK_THRESHOLD_PX = 2;
 
 type Props = {
   /** 表示開始/終了の“時”（0-24想定）。親から渡される（この子では既定値を持たない） */
@@ -138,15 +136,28 @@ const leftColW = isTablet ? 64 : 56;
   const [scrolled, setScrolled] = useState({ x: false, y: false });
   const headerLeftOverlayRef = useRef<HTMLDivElement | null>(null);
   const scrollRaf = useRef<number | null>(null);
-  // ===== Scroll container (screen-level) =====
+  // ===== Scroll container axis-lock (screen-level) =====
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
-  // Auto-centering & scroll bookkeeping refs (were referenced below without definition)
-  const didAutoCenterRef = useRef<boolean>(false);
-  const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
+  const scrollAxisRef = useRef<'x' | 'y' | null>(null);
+  const scrollAxisSourceRef = useRef<'pointer' | 'wheel' | 'scroll' | null>(null);
+  const pointerStateRef = useRef<{ x: number; y: number; active: boolean; pointerId: number | null }>({
+    x: 0,
+    y: 0,
+    active: false,
+    pointerId: null,
+  });
   const lockOriginRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
-  const scrollLockAxisRef = useRef<'x' | 'y' | null>(null);
-  const userScrollActiveRef = useRef(false);
-  const wheelResetTimerRef = useRef<number | null>(null);
+  const AXIS_LOCK_THRESHOLD_PX = 4;
+  const scrollIdleTimerRef = useRef<number | null>(null);
+  const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
+  const didAutoCenterRef = useRef(false);
+
+  const clearScrollIdleTimer = useCallback(() => {
+    if (scrollIdleTimerRef.current) {
+      window.clearTimeout(scrollIdleTimerRef.current);
+      scrollIdleTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (headerLeftOverlayRef.current) {
@@ -156,10 +167,6 @@ const leftColW = isTablet ? 64 : 56;
 
   useEffect(() => () => {
     if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
-    if (wheelResetTimerRef.current) {
-      window.clearTimeout(wheelResetTimerRef.current);
-      wheelResetTimerRef.current = null;
-    }
   }, []);
 
   // ===== 行高の自動計算（スマホ：画面に約12行が収まるように） =====
@@ -209,125 +216,118 @@ const leftColW = isTablet ? 64 : 56;
   // Axis-lock for DnD (x or y). Decided per drag and reset on end.
   const axisLockRef = useRef<'x' | 'y' | null>(null);
 
-  // スケジュール閲覧時に縦横スクロールが同時に走らないよう軸をロックする
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    let currentLeft = el.scrollLeft;
-    let currentTop = el.scrollTop;
-
-    if (userScrollActiveRef.current) {
-      if (!scrollLockAxisRef.current) {
-        const deltaLeft = currentLeft - lockOriginRef.current.left;
-        const deltaTop = currentTop - lockOriginRef.current.top;
-        const absX = Math.abs(deltaLeft);
-        const absY = Math.abs(deltaTop);
-        if (absX > AXIS_LOCK_THRESHOLD_PX || absY > AXIS_LOCK_THRESHOLD_PX) {
-          if (absX > absY) {
-            scrollLockAxisRef.current = 'x';
-          } else if (absY > absX) {
-            scrollLockAxisRef.current = 'y';
-          }
-        }
-      }
-
-      if (scrollLockAxisRef.current === 'x') {
-        const lockedTop = lockOriginRef.current.top;
-        if (Math.abs(currentTop - lockedTop) > 0.5) {
-          currentTop = lockedTop;
-          if (el.scrollTop !== lockedTop) el.scrollTop = lockedTop;
-        }
-        lockOriginRef.current.left = currentLeft;
-      } else if (scrollLockAxisRef.current === 'y') {
-        const lockedLeft = lockOriginRef.current.left;
-        if (Math.abs(currentLeft - lockedLeft) > 0.5) {
-          currentLeft = lockedLeft;
-          if (el.scrollLeft !== lockedLeft) el.scrollLeft = lockedLeft;
-        }
-        lockOriginRef.current.top = currentTop;
-      }
+  const applyScrollLock = useCallback((axis: 'x' | 'y' | null) => {
+    const el = scrollParentRef.current;
+    if (!el) return;
+    if (axis === 'x') {
+      el.style.overflowX = 'auto';
+      el.style.overflowY = 'hidden';
+      (el.style as any).touchAction = 'pan-x';
+    } else if (axis === 'y') {
+      el.style.overflowX = 'hidden';
+      el.style.overflowY = 'auto';
+      (el.style as any).touchAction = 'pan-y';
     } else {
-      lockOriginRef.current.left = currentLeft;
-      lockOriginRef.current.top = currentTop;
+      el.style.overflowX = 'auto';
+      el.style.overflowY = 'auto';
+      (el.style as any).touchAction = 'auto';
+    }
+  }, []);
+
+  const releaseScrollAxisLock = useCallback((source?: 'pointer' | 'wheel' | 'scroll') => {
+    if (source && scrollAxisSourceRef.current && scrollAxisSourceRef.current !== source) return;
+    scrollAxisRef.current = null;
+    scrollAxisSourceRef.current = null;
+    applyScrollLock(null);
+    clearScrollIdleTimer();
+  }, [applyScrollLock, clearScrollIdleTimer]);
+
+  const scheduleScrollIdleReset = useCallback((source: 'wheel' | 'scroll', delay = 160) => {
+    clearScrollIdleTimer();
+    scrollIdleTimerRef.current = window.setTimeout(() => {
+      releaseScrollAxisLock(source);
+    }, delay) as unknown as number;
+  }, [clearScrollIdleTimer, releaseScrollAxisLock]);
+
+  const lockScrollAxis = useCallback((axis: 'x' | 'y', source: 'pointer' | 'wheel' | 'scroll', el: HTMLDivElement, origin?: { left: number; top: number }) => {
+    scrollAxisRef.current = axis;
+    scrollAxisSourceRef.current = source;
+
+    const base = origin ?? { left: el.scrollLeft, top: el.scrollTop };
+
+    if (axis === 'x') {
+      lockOriginRef.current = { left: el.scrollLeft, top: base.top };
+      if (Math.abs(el.scrollTop - lockOriginRef.current.top) > 0.5) {
+        el.scrollTop = lockOriginRef.current.top;
+      }
+      scrollPosRef.current = { left: el.scrollLeft, top: lockOriginRef.current.top };
+    } else {
+      lockOriginRef.current = { left: base.left, top: el.scrollTop };
+      if (Math.abs(el.scrollLeft - lockOriginRef.current.left) > 0.5) {
+        el.scrollLeft = lockOriginRef.current.left;
+      }
+      scrollPosRef.current = { left: lockOriginRef.current.left, top: el.scrollTop };
     }
 
-    const nx = currentLeft > 1;
-    const ny = currentTop > 1;
+    applyScrollLock(axis);
+  }, [applyScrollLock]);
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const axis = scrollAxisRef.current;
+    const prev = scrollPosRef.current;
+    const currentLeft = el.scrollLeft;
+    const currentTop = el.scrollTop;
+
+    if (!axis) {
+      const dx = Math.abs(currentLeft - prev.left);
+      const dy = Math.abs(currentTop - prev.top);
+
+      if (dx >= AXIS_LOCK_THRESHOLD_PX || dy >= AXIS_LOCK_THRESHOLD_PX) {
+        const source: 'pointer' | 'scroll' = pointerStateRef.current.active ? 'pointer' : 'scroll';
+        const origin = pointerStateRef.current.active ? lockOriginRef.current : prev;
+        const nextAxis: 'x' | 'y' = dx > dy ? 'x' : 'y';
+        lockScrollAxis(nextAxis, source, el, origin);
+      } else {
+        scrollPosRef.current = { left: currentLeft, top: currentTop };
+      }
+    }
+
+    if (scrollAxisRef.current === 'x') {
+      const lockedTop = lockOriginRef.current.top;
+      if (Math.abs(currentTop - lockedTop) > 0.5) el.scrollTop = lockedTop;
+      scrollPosRef.current.left = el.scrollLeft;
+      scrollPosRef.current.top = lockedTop;
+      const source = scrollAxisSourceRef.current;
+      if (source === 'wheel' || source === 'scroll') {
+        scheduleScrollIdleReset(source);
+      }
+    } else if (scrollAxisRef.current === 'y') {
+      const lockedLeft = lockOriginRef.current.left;
+      if (Math.abs(currentLeft - lockedLeft) > 0.5) el.scrollLeft = lockedLeft;
+      scrollPosRef.current.left = lockedLeft;
+      scrollPosRef.current.top = el.scrollTop;
+      const source = scrollAxisSourceRef.current;
+      if (source === 'wheel' || source === 'scroll') {
+        scheduleScrollIdleReset(source);
+      }
+    } else {
+      scrollPosRef.current = { left: currentLeft, top: currentTop };
+    }
+
+    const nx = el.scrollLeft > 1;
+    const ny = el.scrollTop > 1;
     setScrolled(prev => (prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny }));
-
-    scrollPosRef.current.left = currentLeft;
-    scrollPosRef.current.top = currentTop;
-
     if (headerLeftOverlayRef.current) {
+      const x = el.scrollLeft;
       if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
-      const x = currentLeft;
       scrollRaf.current = requestAnimationFrame(() => {
         if (headerLeftOverlayRef.current) {
           headerLeftOverlayRef.current.style.transform = `translateX(${x}px)`;
         }
       });
     }
-  }, []);
-
-  // ユーザーによるスクロール操作開始時に軸判定用の状態を初期化
-  const beginUserScroll = useCallback(() => {
-    if (wheelResetTimerRef.current) {
-      window.clearTimeout(wheelResetTimerRef.current);
-      wheelResetTimerRef.current = null;
-    }
-    userScrollActiveRef.current = true;
-    scrollLockAxisRef.current = null;
-    const target = scrollParentRef.current;
-    if (target) {
-      lockOriginRef.current.left = target.scrollLeft;
-      lockOriginRef.current.top = target.scrollTop;
-    }
-  }, []);
-
-  // スクロール終了時にロック状態を解放
-  const finishUserScroll = useCallback(() => {
-    if (wheelResetTimerRef.current) {
-      window.clearTimeout(wheelResetTimerRef.current);
-      wheelResetTimerRef.current = null;
-    }
-    userScrollActiveRef.current = false;
-    scrollLockAxisRef.current = null;
-    const target = scrollParentRef.current;
-    if (target) {
-      lockOriginRef.current.left = target.scrollLeft;
-      lockOriginRef.current.top = target.scrollTop;
-    }
-  }, []);
-
-  const handlePointerDown = useCallback(() => {
-    beginUserScroll();
-  }, [beginUserScroll]);
-
-  const handlePointerUp = useCallback(() => {
-    finishUserScroll();
-  }, [finishUserScroll]);
-
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    if (!userScrollActiveRef.current) {
-      beginUserScroll();
-    } else if (wheelResetTimerRef.current) {
-      window.clearTimeout(wheelResetTimerRef.current);
-      wheelResetTimerRef.current = null;
-    }
-
-    const absX = Math.abs(e.deltaX ?? 0);
-    const absY = Math.abs(e.deltaY ?? 0);
-    if (!scrollLockAxisRef.current) {
-      if (absX > absY && absX > 0.5) {
-        scrollLockAxisRef.current = 'x';
-      } else if (absY > absX && absY > 0.5) {
-        scrollLockAxisRef.current = 'y';
-      }
-    }
-
-    wheelResetTimerRef.current = window.setTimeout(() => {
-      finishUserScroll();
-    }, 180);
-  }, [beginUserScroll, finishUserScroll]);
+  }, [lockScrollAxis, scheduleScrollIdleReset]);
 
   const applyOptimistic = useCallback((id: string, patch: OptimisticPatch) => {
     if (!id || !patch) return;
@@ -1032,6 +1032,78 @@ const handleDragMove = useCallback((e: any) => {
     setDrawerOpen(true);
   }, [nCols, anchorStartMs, tables, colW, rowHeightsPx, actionMenuOpen]);
 
+  // Pointer-based axis decision (touch/pen/mouse drag on the scroll area)
+  const handleScrollPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    releaseScrollAxisLock();
+    clearScrollIdleTimer();
+    pointerStateRef.current = { x: e.clientX, y: e.clientY, active: true, pointerId: e.pointerId };
+    lockOriginRef.current = { left: el.scrollLeft, top: el.scrollTop };
+    scrollPosRef.current = { left: el.scrollLeft, top: el.scrollTop };
+    el.style.overflowX = 'hidden';
+    el.style.overflowY = 'hidden';
+    (el.style as any).touchAction = 'none';
+    if (typeof el.setPointerCapture === 'function') {
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch (_) {
+        // ignore (unsupported environment)
+      }
+    }
+  }, [releaseScrollAxisLock, clearScrollIdleTimer]);
+
+  const handleScrollPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointerStateRef.current.active || scrollAxisRef.current) return;
+    const dx = Math.abs(e.clientX - pointerStateRef.current.x);
+    const dy = Math.abs(e.clientY - pointerStateRef.current.y);
+    if (dx >= AXIS_LOCK_THRESHOLD_PX || dy >= AXIS_LOCK_THRESHOLD_PX) {
+      const axis: 'x' | 'y' = dx > dy ? 'x' : 'y';
+      lockScrollAxis(axis, 'pointer', e.currentTarget, lockOriginRef.current);
+    }
+  }, [lockScrollAxis]);
+
+  const handleScrollPointerUp = useCallback((e?: React.PointerEvent<HTMLDivElement>) => {
+    const el = e?.currentTarget ?? scrollParentRef.current;
+    const pointerId = e?.pointerId ?? pointerStateRef.current.pointerId;
+    if (el && typeof el.releasePointerCapture === 'function' && pointerId != null) {
+      try {
+        if (el.hasPointerCapture?.(pointerId)) {
+          el.releasePointerCapture(pointerId);
+        }
+      } catch (_) {
+        // ignore (unsupported environment)
+      }
+    }
+    pointerStateRef.current = { x: 0, y: 0, active: false, pointerId: null };
+    releaseScrollAxisLock('pointer');
+    if (el) {
+      el.style.overflowX = 'auto';
+      el.style.overflowY = 'auto';
+      (el.style as any).touchAction = 'auto';
+      scrollPosRef.current = { left: el.scrollLeft, top: el.scrollTop };
+      lockOriginRef.current = { left: el.scrollLeft, top: el.scrollTop };
+    }
+  }, [releaseScrollAxisLock]);
+
+  // Wheel axis lock (desktop trackpad/mouse)
+  const handleWheelLock = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    const target = scrollParentRef.current;
+    if (!target) return;
+    if (!scrollAxisRef.current) {
+      const ax = Math.abs(e.deltaX);
+      const ay = Math.abs(e.deltaY);
+      if (ax === 0 && ay === 0) return;
+      const axis: 'x' | 'y' = ax >= ay ? 'x' : 'y';
+      lockScrollAxis(axis, 'wheel', target, scrollPosRef.current);
+    }
+    scheduleScrollIdleReset('wheel', 220);
+  }, [lockScrollAxis, scheduleScrollIdleReset]);
+
+  useEffect(() => {
+    return () => {
+      clearScrollIdleTimer();
+    };
+  }, [clearScrollIdleTimer]);
 
   const gridHeightPx = rowHeightsPx.reduce((a, b) => a + b, 0);
   return (
@@ -1041,15 +1113,11 @@ const handleDragMove = useCallback((e: any) => {
         ref={scrollParentRef}
         className="relative overflow-auto"
         onScroll={handleScroll}
-        onPointerDownCapture={handlePointerDown}
-        onPointerUpCapture={handlePointerUp}
-        onPointerCancel={handlePointerUp}
-        onWheel={handleWheel}
         style={{
           // 画面上部のアプリバー分だけ余白を見込んで高さを固定（必要なら調整）
           height: `calc(100vh - ${STICKY_TOP_PX + BOTTOM_TAB_PX}px - env(safe-area-inset-bottom))`,
           overscrollBehavior: 'contain',
-          touchAction: 'auto',
+          touchAction: 'pan-x pan-y',
           WebkitOverflowScrolling: 'touch',
         }}
       >
@@ -1399,8 +1467,7 @@ const handleDragMove = useCallback((e: any) => {
                 <div
                   className="fixed left-0 right-0 z-[120] px-2 pt-2 pointer-events-none"
                   style={{
-                    // Extra 56px headroom to avoid overlap with tall bottom tabs / iOS bars
-                    bottom: `calc(${BOTTOM_TAB_PX + 56}px + env(safe-area-inset-bottom))`,
+                    bottom: `calc(${BOTTOM_TAB_PX}px + env(safe-area-inset-bottom))`,
                   }}
                 >
                   <div className="mx-auto max-w-screen-sm flex items-center justify-between gap-2 p-2 rounded-lg bg-white border shadow-lg pointer-events-auto">
