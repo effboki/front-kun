@@ -54,6 +54,8 @@ function patchSatisfiedByItem(item: any, patch: OptimisticPatch): boolean {
 const STICKY_TOP_PX = 48; // 必要なら 70 等に調整
 // 画面下部のタブバー（フッター）高さ(px)。端末により前後する場合は調整
 const BOTTOM_TAB_PX = 70;
+// スクロール方向の判定に使う閾値(px)
+const AXIS_LOCK_THRESHOLD_PX = 2;
 
 type Props = {
   /** 表示開始/終了の“時”（0-24想定）。親から渡される（この子では既定値を持たない） */
@@ -142,6 +144,9 @@ const leftColW = isTablet ? 64 : 56;
   const didAutoCenterRef = useRef<boolean>(false);
   const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
   const lockOriginRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
+  const scrollLockAxisRef = useRef<'x' | 'y' | null>(null);
+  const userScrollActiveRef = useRef(false);
+  const wheelResetTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (headerLeftOverlayRef.current) {
@@ -151,6 +156,10 @@ const leftColW = isTablet ? 64 : 56;
 
   useEffect(() => () => {
     if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
+    if (wheelResetTimerRef.current) {
+      window.clearTimeout(wheelResetTimerRef.current);
+      wheelResetTimerRef.current = null;
+    }
   }, []);
 
   // ===== 行高の自動計算（スマホ：画面に約12行が収まるように） =====
@@ -200,17 +209,57 @@ const leftColW = isTablet ? 64 : 56;
   // Axis-lock for DnD (x or y). Decided per drag and reset on end.
   const axisLockRef = useRef<'x' | 'y' | null>(null);
 
+  // スケジュール閲覧時に縦横スクロールが同時に走らないよう軸をロックする
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
-    const nx = el.scrollLeft > 1;
-    const ny = el.scrollTop > 1;
+    let currentLeft = el.scrollLeft;
+    let currentTop = el.scrollTop;
+
+    if (userScrollActiveRef.current) {
+      if (!scrollLockAxisRef.current) {
+        const deltaLeft = currentLeft - lockOriginRef.current.left;
+        const deltaTop = currentTop - lockOriginRef.current.top;
+        const absX = Math.abs(deltaLeft);
+        const absY = Math.abs(deltaTop);
+        if (absX > AXIS_LOCK_THRESHOLD_PX || absY > AXIS_LOCK_THRESHOLD_PX) {
+          if (absX > absY) {
+            scrollLockAxisRef.current = 'x';
+          } else if (absY > absX) {
+            scrollLockAxisRef.current = 'y';
+          }
+        }
+      }
+
+      if (scrollLockAxisRef.current === 'x') {
+        const lockedTop = lockOriginRef.current.top;
+        if (Math.abs(currentTop - lockedTop) > 0.5) {
+          currentTop = lockedTop;
+          if (el.scrollTop !== lockedTop) el.scrollTop = lockedTop;
+        }
+        lockOriginRef.current.left = currentLeft;
+      } else if (scrollLockAxisRef.current === 'y') {
+        const lockedLeft = lockOriginRef.current.left;
+        if (Math.abs(currentLeft - lockedLeft) > 0.5) {
+          currentLeft = lockedLeft;
+          if (el.scrollLeft !== lockedLeft) el.scrollLeft = lockedLeft;
+        }
+        lockOriginRef.current.top = currentTop;
+      }
+    } else {
+      lockOriginRef.current.left = currentLeft;
+      lockOriginRef.current.top = currentTop;
+    }
+
+    const nx = currentLeft > 1;
+    const ny = currentTop > 1;
     setScrolled(prev => (prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny }));
-    // keep latest scroll position for auto-centering and axis locks
-    scrollPosRef.current.left = el.scrollLeft;
-    scrollPosRef.current.top = el.scrollTop;
+
+    scrollPosRef.current.left = currentLeft;
+    scrollPosRef.current.top = currentTop;
+
     if (headerLeftOverlayRef.current) {
-      const x = el.scrollLeft;
       if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
+      const x = currentLeft;
       scrollRaf.current = requestAnimationFrame(() => {
         if (headerLeftOverlayRef.current) {
           headerLeftOverlayRef.current.style.transform = `translateX(${x}px)`;
@@ -218,6 +267,67 @@ const leftColW = isTablet ? 64 : 56;
       });
     }
   }, []);
+
+  // ユーザーによるスクロール操作開始時に軸判定用の状態を初期化
+  const beginUserScroll = useCallback(() => {
+    if (wheelResetTimerRef.current) {
+      window.clearTimeout(wheelResetTimerRef.current);
+      wheelResetTimerRef.current = null;
+    }
+    userScrollActiveRef.current = true;
+    scrollLockAxisRef.current = null;
+    const target = scrollParentRef.current;
+    if (target) {
+      lockOriginRef.current.left = target.scrollLeft;
+      lockOriginRef.current.top = target.scrollTop;
+    }
+  }, []);
+
+  // スクロール終了時にロック状態を解放
+  const finishUserScroll = useCallback(() => {
+    if (wheelResetTimerRef.current) {
+      window.clearTimeout(wheelResetTimerRef.current);
+      wheelResetTimerRef.current = null;
+    }
+    userScrollActiveRef.current = false;
+    scrollLockAxisRef.current = null;
+    const target = scrollParentRef.current;
+    if (target) {
+      lockOriginRef.current.left = target.scrollLeft;
+      lockOriginRef.current.top = target.scrollTop;
+    }
+  }, []);
+
+  const handlePointerDown = useCallback(() => {
+    beginUserScroll();
+  }, [beginUserScroll]);
+
+  const handlePointerUp = useCallback(() => {
+    finishUserScroll();
+  }, [finishUserScroll]);
+
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    if (!userScrollActiveRef.current) {
+      beginUserScroll();
+    } else if (wheelResetTimerRef.current) {
+      window.clearTimeout(wheelResetTimerRef.current);
+      wheelResetTimerRef.current = null;
+    }
+
+    const absX = Math.abs(e.deltaX ?? 0);
+    const absY = Math.abs(e.deltaY ?? 0);
+    if (!scrollLockAxisRef.current) {
+      if (absX > absY && absX > 0.5) {
+        scrollLockAxisRef.current = 'x';
+      } else if (absY > absX && absY > 0.5) {
+        scrollLockAxisRef.current = 'y';
+      }
+    }
+
+    wheelResetTimerRef.current = window.setTimeout(() => {
+      finishUserScroll();
+    }, 180);
+  }, [beginUserScroll, finishUserScroll]);
 
   const applyOptimistic = useCallback((id: string, patch: OptimisticPatch) => {
     if (!id || !patch) return;
@@ -931,6 +1041,10 @@ const handleDragMove = useCallback((e: any) => {
         ref={scrollParentRef}
         className="relative overflow-auto"
         onScroll={handleScroll}
+        onPointerDownCapture={handlePointerDown}
+        onPointerUpCapture={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onWheel={handleWheel}
         style={{
           // 画面上部のアプリバー分だけ余白を見込んで高さを固定（必要なら調整）
           height: `calc(100vh - ${STICKY_TOP_PX + BOTTOM_TAB_PX}px - env(safe-area-inset-bottom))`,
