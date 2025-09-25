@@ -947,10 +947,11 @@ const leftColW = isTablet ? 64 : 56;
     }
   }, [onSave, runSave, clipped, colW, startMsFromCol, endMsFromColSpan, durationMinFromSpan, effectiveRowH, tables, setArmedId, rowHeightsPx]);
 
-// DnD センサー: ドラッグ自体に遅延はかけない（長押しで武装→即ドラッグ）
+// DnD センサー: 長押ししてからドラッグ開始（スクロールを妨げない）
 const sensors = useSensors(
   useSensor(PointerSensor),
-  useSensor(TouchSensor),
+  // 長押ししてからドラッグ開始（スクロールを妨げない）
+  useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
 );
 
 // --- Axis lock: decide axis on first movement, keep until drag ends ---
@@ -1112,15 +1113,12 @@ const handleDragMove = useCallback((e: any) => {
         ref={scrollParentRef}
         className="relative overflow-auto"
         onScroll={handleScroll}
-        onPointerDown={handleScrollPointerDown}
-        onPointerMove={handleScrollPointerMove}
-        onPointerUp={handleScrollPointerUp}
-        onPointerCancel={handleScrollPointerUp}
-        onWheel={handleWheelLock}
         style={{
           // 画面上部のアプリバー分だけ余白を見込んで高さを固定（必要なら調整）
           height: `calc(100vh - ${STICKY_TOP_PX + BOTTOM_TAB_PX}px - env(safe-area-inset-bottom))`,
           overscrollBehavior: 'contain',
+          touchAction: 'pan-x pan-y',
+          WebkitOverflowScrolling: 'touch',
         }}
       >
         {/* スクロール可能領域（縦・横） */}
@@ -1254,6 +1252,7 @@ const handleDragMove = useCallback((e: any) => {
                 top: headerH,
                 width: nCols * colW,
                 height: gridHeightPx,
+                touchAction: 'pan-x pan-y',
               }}
               onPointerDownCapture={() => setArmedId(null)}
               onClick={handleGridClick}
@@ -1464,8 +1463,13 @@ const handleDragMove = useCallback((e: any) => {
                   })}
                 </div>
 
-                {/* フッターボタン（画面下に固定） */}
-                <div className="fixed left-0 right-0 bottom-0 z-[120] px-2 pb-[max(env(safe-area-inset-bottom),0px)] pt-2 pointer-events-none">
+                {/* フッターボタン（画面下に固定）: 下部タブに隠れないように底上げ */}
+                <div
+                  className="fixed left-0 right-0 z-[120] px-2 pt-2 pointer-events-none"
+                  style={{
+                    bottom: `calc(${BOTTOM_TAB_PX}px + env(safe-area-inset-bottom))`,
+                  }}
+                >
                   <div className="mx-auto max-w-screen-sm flex items-center justify-between gap-2 p-2 rounded-lg bg-white border shadow-lg pointer-events-auto">
                     <button
                       type="button"
@@ -1822,6 +1826,7 @@ function ReservationBlock({
         paddingTop: 3,
         paddingBottom: 3,
         height: perLayerH,
+        touchAction: 'pan-x pan-y',
       }}
       title={`${guestsLabel} ${name}${course ? ` / ${course}` : ''}${extrasLabel ? ` / ${extrasLabel}` : ''}`}
       onClick={handleClick}
