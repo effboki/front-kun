@@ -219,17 +219,13 @@ const leftColW = isTablet ? 64 : 56;
   const applyScrollLock = useCallback((axis: 'x' | 'y' | null) => {
     const el = scrollParentRef.current;
     if (!el) return;
+    el.style.overflowX = 'auto';
+    el.style.overflowY = 'auto';
     if (axis === 'x') {
-      el.style.overflowX = 'auto';
-      el.style.overflowY = 'hidden';
       (el.style as any).touchAction = 'pan-x';
     } else if (axis === 'y') {
-      el.style.overflowX = 'hidden';
-      el.style.overflowY = 'auto';
       (el.style as any).touchAction = 'pan-y';
     } else {
-      el.style.overflowX = 'auto';
-      el.style.overflowY = 'auto';
       (el.style as any).touchAction = 'pan-x pan-y';
     }
   }, []);
@@ -288,14 +284,22 @@ const leftColW = isTablet ? 64 : 56;
     }
 
     if (scrollAxisRef.current === 'x') {
+      const lockedTop = lockOriginRef.current.top;
+      if (Math.abs(currentTop - lockedTop) > 0.5) {
+        el.scrollTop = lockedTop;
+      }
       scrollPosRef.current.left = el.scrollLeft;
-      scrollPosRef.current.top = lockOriginRef.current.top;
+      scrollPosRef.current.top = lockedTop;
       const source = scrollAxisSourceRef.current;
       if (source === 'wheel' || source === 'scroll') {
         scheduleScrollIdleReset(source);
       }
     } else if (scrollAxisRef.current === 'y') {
-      scrollPosRef.current.left = lockOriginRef.current.left;
+      const lockedLeft = lockOriginRef.current.left;
+      if (Math.abs(currentLeft - lockedLeft) > 0.5) {
+        el.scrollLeft = lockedLeft;
+      }
+      scrollPosRef.current.left = lockedLeft;
       scrollPosRef.current.top = el.scrollTop;
       const source = scrollAxisSourceRef.current;
       if (source === 'wheel' || source === 'scroll') {
