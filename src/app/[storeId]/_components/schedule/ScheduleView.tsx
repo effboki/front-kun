@@ -1027,9 +1027,6 @@ const handleDragMove = useCallback((e: any) => {
     if (!e.isPrimary) return;
     if (e.pointerType === 'mouse') return;
 
-    const targetEl = e.target as HTMLElement | null;
-    if (targetEl?.closest('[data-scroll-lock-ignore]')) return;
-
     const el = e.currentTarget;
     releaseScrollAxisLock();
     clearScrollIdleTimer();
