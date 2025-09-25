@@ -148,7 +148,7 @@ const leftColW = isTablet ? 64 : 56;
   });
   const lockOriginRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
   const AXIS_LOCK_THRESHOLD_PX = 12;
-  const LOCK_SLACK_PX = 10;
+  const LOCK_SLACK_PX = 18;
   const scrollIdleTimerRef = useRef<number | null>(null);
   const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
   const didAutoCenterRef = useRef(false);
