@@ -294,18 +294,14 @@ const leftColW = isTablet ? 64 : 56;
     }
 
     if (scrollAxisRef.current === 'x') {
-      const lockedTop = lockOriginRef.current.top;
-      if (Math.abs(currentTop - lockedTop) > 0.5) el.scrollTop = lockedTop;
       scrollPosRef.current.left = el.scrollLeft;
-      scrollPosRef.current.top = lockedTop;
+      scrollPosRef.current.top = lockOriginRef.current.top;
       const source = scrollAxisSourceRef.current;
       if (source === 'wheel' || source === 'scroll') {
         scheduleScrollIdleReset(source);
       }
     } else if (scrollAxisRef.current === 'y') {
-      const lockedLeft = lockOriginRef.current.left;
-      if (Math.abs(currentLeft - lockedLeft) > 0.5) el.scrollLeft = lockedLeft;
-      scrollPosRef.current.left = lockedLeft;
+      scrollPosRef.current.left = lockOriginRef.current.left;
       scrollPosRef.current.top = el.scrollTop;
       const source = scrollAxisSourceRef.current;
       if (source === 'wheel' || source === 'scroll') {
