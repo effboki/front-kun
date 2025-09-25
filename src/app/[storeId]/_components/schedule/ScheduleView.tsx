@@ -148,6 +148,7 @@ const leftColW = isTablet ? 64 : 56;
   });
   const lockOriginRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
   const AXIS_LOCK_THRESHOLD_PX = 12;
+  const LOCK_SLACK_PX = 10;
   const scrollIdleTimerRef = useRef<number | null>(null);
   const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
   const didAutoCenterRef = useRef(false);
@@ -285,9 +286,9 @@ const leftColW = isTablet ? 64 : 56;
 
     if (scrollAxisRef.current === 'x') {
       const lockedTop = lockOriginRef.current.top;
-      const enforce = pointerStateRef.current.active || scrollAxisSourceRef.current === 'wheel';
-      if (enforce && Math.abs(currentTop - lockedTop) > 0.5) {
+      if (Math.abs(currentTop - lockedTop) > LOCK_SLACK_PX) {
         el.scrollTop = lockedTop;
+        scrollPosRef.current.top = lockedTop;
       }
       scrollPosRef.current.left = el.scrollLeft;
       scrollPosRef.current.top = lockedTop;
@@ -297,9 +298,9 @@ const leftColW = isTablet ? 64 : 56;
       }
     } else if (scrollAxisRef.current === 'y') {
       const lockedLeft = lockOriginRef.current.left;
-      const enforce = pointerStateRef.current.active || scrollAxisSourceRef.current === 'wheel';
-      if (enforce && Math.abs(currentLeft - lockedLeft) > 0.5) {
+      if (Math.abs(currentLeft - lockedLeft) > LOCK_SLACK_PX) {
         el.scrollLeft = lockedLeft;
+        scrollPosRef.current.left = lockedLeft;
       }
       scrollPosRef.current.left = lockedLeft;
       scrollPosRef.current.top = el.scrollTop;
