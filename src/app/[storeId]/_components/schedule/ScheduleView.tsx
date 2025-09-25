@@ -230,7 +230,7 @@ const leftColW = isTablet ? 64 : 56;
     } else {
       el.style.overflowX = 'auto';
       el.style.overflowY = 'auto';
-      (el.style as any).touchAction = 'auto';
+      (el.style as any).touchAction = 'pan-x pan-y';
     }
   }, []);
 
@@ -1034,6 +1034,12 @@ const handleDragMove = useCallback((e: any) => {
 
   // Pointer-based axis decision (touch/pen/mouse drag on the scroll area)
   const handleScrollPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!e.isPrimary) return;
+    if (e.pointerType === 'mouse') return;
+
+    const targetEl = e.target as HTMLElement | null;
+    if (targetEl?.closest('[data-scroll-lock-ignore]')) return;
+
     const el = e.currentTarget;
     releaseScrollAxisLock();
     clearScrollIdleTimer();
@@ -1079,7 +1085,7 @@ const handleDragMove = useCallback((e: any) => {
     if (el) {
       el.style.overflowX = 'auto';
       el.style.overflowY = 'auto';
-      (el.style as any).touchAction = 'auto';
+      (el.style as any).touchAction = 'pan-x pan-y';
       scrollPosRef.current = { left: el.scrollLeft, top: el.scrollTop };
       lockOriginRef.current = { left: el.scrollLeft, top: el.scrollTop };
     }
@@ -1113,6 +1119,12 @@ const handleDragMove = useCallback((e: any) => {
         ref={scrollParentRef}
         className="relative overflow-auto"
         onScroll={handleScroll}
+        onPointerDown={handleScrollPointerDown}
+        onPointerMove={handleScrollPointerMove}
+        onPointerUp={handleScrollPointerUp}
+        onPointerCancel={handleScrollPointerUp}
+        onLostPointerCapture={handleScrollPointerUp}
+        onWheel={handleWheelLock}
         style={{
           // 画面上部のアプリバー分だけ余白を見込んで高さを固定（必要なら調整）
           height: `calc(100vh - ${STICKY_TOP_PX + BOTTOM_TAB_PX}px - env(safe-area-inset-bottom))`,
@@ -1307,6 +1319,7 @@ const handleDragMove = useCallback((e: any) => {
                 {actionMenuOpen && actionTarget && actionBubble && (
                   <div
                     className="absolute z-[95]"
+                    data-scroll-lock-ignore
                     style={{
                       left: Math.max(4, Math.min(actionBubble.left, nCols * colW - 220)),
                       top: actionBubble.top,
@@ -1415,7 +1428,7 @@ const handleDragMove = useCallback((e: any) => {
           </DndContext>
           {/* 卓番再割り当てオーバーレイ */}
           {reassign && (
-            <div className="absolute inset-0 z-[80] bg-black/10">
+            <div className="absolute inset-0 z-[80] bg-black/10" data-scroll-lock-ignore>
               <div
                 className="absolute"
                 style={{
@@ -1819,6 +1832,7 @@ function ReservationBlock({
     <div
       ref={setNodeRef}
       className="relative z-10 h-full w-full select-none pointer-events-auto"
+      data-scroll-lock-ignore
       style={{
         gridColumn: `${startCol} / span ${spanCols}`,
         gridRow: `${row} / span 1`,
