@@ -257,15 +257,9 @@ const leftColW = isTablet ? 64 : 56;
 
     if (axis === 'x') {
       lockOriginRef.current = { left: el.scrollLeft, top: base.top };
-      if (Math.abs(el.scrollTop - lockOriginRef.current.top) > 0.5) {
-        el.scrollTop = lockOriginRef.current.top;
-      }
       scrollPosRef.current = { left: el.scrollLeft, top: lockOriginRef.current.top };
     } else {
       lockOriginRef.current = { left: base.left, top: el.scrollTop };
-      if (Math.abs(el.scrollLeft - lockOriginRef.current.left) > 0.5) {
-        el.scrollLeft = lockOriginRef.current.left;
-      }
       scrollPosRef.current = { left: lockOriginRef.current.left, top: el.scrollTop };
     }
 
