@@ -137,11 +137,6 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   const [editingTaskDraft, setEditingTaskDraft] = useState('');
   const editingInputRef = useRef<HTMLInputElement | null>(null);
   const editingLabelComposingRef = useRef(false);
-  const [newTaskDraft, setNewTaskDraft] = useState('');
-  const newTaskInputRef = useRef<HTMLInputElement | null>(null);
-  const [newTaskOffset, setNewTaskOffset] = useState(0);
-  // 新規タスク名入力の IME 合成状態
-  const [isComposingNewTask, setIsComposingNewTask] = React.useState(false);
 
 
   // track unsaved changes (for Save button "活きてる感")
@@ -310,15 +305,6 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     onChange(p);
   }, [onChange]);
 
-  // eat/drink inputs
-  const [newEatOption, setNewEatOption] = useState('');
-  const [newDrinkOption, setNewDrinkOption] = useState('');
-  // IME 合成対策：合成中は onChange で確定させない
-  const [isComposingEatOption, setIsComposingEatOption] = useState(false);
-  const [isComposingDrinkOption, setIsComposingDrinkOption] = useState(false);
-  const eatInputRef = useRef<HTMLInputElement | null>(null);
-  const drinkInputRef = useRef<HTMLInputElement | null>(null);
-
   // 「食べ放題 / 飲み放題」使い方ヒントの開閉
   const [showEatDrinkHelp, setShowEatDrinkHelp] = useState(false);
   // コース設定表の説明パネルの開閉
@@ -329,41 +315,26 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   const [showEatDrinkInfo, setShowEatDrinkInfo] = useState(false);
 
   // 入力値の追加（ボタン／Enter 共通）
-  const addEatOption = useCallback(() => {
-    const raw = (eatInputRef.current?.value ?? newEatOption) as string;
+  const addEatOption = useCallback((raw: string): boolean => {
     const v = takeGraphemes(normalizeTiny(raw), 2);
-    if (!v) return;
-    if (eatOptions.includes(v)) return;
+    if (!v) return false;
+    if (eatOptions.includes(v)) return false;
     setEatOptions([...eatOptions, v]);
-    // 入力欄クリア（uncontrolled のため DOM を直接クリア）
-    if (eatInputRef.current) eatInputRef.current.value = '';
-    setNewEatOption('');
-  }, [newEatOption, eatOptions, setEatOptions]);
+    return true;
+  }, [eatOptions, setEatOptions]);
 
-  const addDrinkOption = useCallback(() => {
-    const raw = (drinkInputRef.current?.value ?? newDrinkOption) as string;
+  const addDrinkOption = useCallback((raw: string): boolean => {
     const v = takeGraphemes(normalizeTiny(raw), 2);
-    if (!v) return;
-    if (drinkOptions.includes(v)) return;
+    if (!v) return false;
+    if (drinkOptions.includes(v)) return false;
     setDrinkOptions([...drinkOptions, v]);
-    if (drinkInputRef.current) drinkInputRef.current.value = '';
-    setNewDrinkOption('');
-  }, [newDrinkOption, drinkOptions, setDrinkOptions]);
-
-  // 入力のバリデーション／重複チェック
-  const eatCandidate = takeGraphemes(normalizeTiny(newEatOption), 2);
-  const drinkCandidate = takeGraphemes(normalizeTiny(newDrinkOption), 2);
-  const eatIsDup = !!eatCandidate && eatOptions.includes(eatCandidate);
-  const drinkIsDup = !!drinkCandidate && drinkOptions.includes(drinkCandidate);
+    return true;
+  }, [drinkOptions, setDrinkOptions]);
 
   // ===== courses & tasks =====
 
   const [openPositions, setOpenPositions] = useState<Record<string, boolean>>({});
   const [openAreas, setOpenAreas] = useState<Record<string, boolean>>({});
-  // --- ポジション名の新規入力（IME 合成対応のため uncontrolled + composition guard）---
-  const newPositionInputRef = useRef<HTMLInputElement | null>(null);
-  const [newPositionDraft, setNewPositionDraft] = useState('');
-  const [isComposingNewPosition, setIsComposingNewPosition] = useState(false);
   const [courseByPosition, setCourseByPosition] = useState<Record<string, string>>(() => {
     const first = courses[0]?.name ?? '';
     const init: Record<string, string> = {};
@@ -409,12 +380,6 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     }
   }, [courses]);
 
-  // --- 新規コース名の入力（IME 合成対応のため uncontrolled + composition guard）---
-  const newCourseInputRef = useRef<HTMLInputElement | null>(null);
-  const [newCourseDraft, setNewCourseDraft] = useState('');
-  const [isComposingNewCourse, setIsComposingNewCourse] = useState(false);
-
-
   // ===== courses & tasks =====
   const addTaskToCourse = useCallback(
     (label: string, offset: number): boolean => {
@@ -433,27 +398,25 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     [courses, selectedCourse, setCourses]
   );
 
-  const handleAddNew = useCallback(() => {
-    const raw = newTaskDraft;
-    const label = raw.trim();
-    if (!label) return;
-    const ok = addTaskToCourse(label, newTaskOffset);
-    if (!ok) {
-      // 追加できなかった場合は何も消さず残す
-      return;
-    }
-    // 楽観的に画面へ即時反映（親の onChange 反映前に“消えた”ように見えないように）
-    setOptimisticTasks((prev) => {
-      const arr = prev[selectedCourse] ?? [];
-      const nextTask: TaskDef = { label, timeOffset: clamp(newTaskOffset, 0, 180), bgColor: 'default' } as TaskDef;
-      return { ...prev, [selectedCourse]: [...arr, nextTask] };
-    });
-    // uncontrolled input のため DOM もクリア
-    if (newTaskInputRef.current) newTaskInputRef.current.value = '';
-    setNewTaskDraft('');
-    setNewTaskOffset(0);
-    requestAnimationFrame(() => newTaskInputRef.current?.focus());
-  }, [newTaskDraft, newTaskOffset, addTaskToCourse, selectedCourse]);
+  const handleAddNewTask = useCallback(
+    (rawLabel: string, offset: number): boolean => {
+      const label = rawLabel.trim();
+      if (!label) return false;
+      const ok = addTaskToCourse(label, offset);
+      if (!ok) {
+        // 追加できなかった場合は何も消さず残す
+        return false;
+      }
+      // 楽観的に画面へ即時反映（親の onChange 反映前に“消えた”ように見えないように）
+      setOptimisticTasks((prev) => {
+        const arr = prev[selectedCourse] ?? [];
+        const nextTask: TaskDef = { label, timeOffset: clamp(offset, 0, 180), bgColor: 'default' } as TaskDef;
+        return { ...prev, [selectedCourse]: [...arr, nextTask] };
+      });
+      return true;
+    },
+    [addTaskToCourse, selectedCourse]
+  );
 
   const shiftTaskOffset = useCallback(
     (offset: number, label: string, delta: number) => {
@@ -554,33 +517,33 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     setSelectedCourse(base[0]?.name ?? '');
   }, [courses, selectedCourse, setCourses]);
 
-  const addCourse = useCallback(() => {
-    const raw = newCourseInputRef.current?.value ?? '';
-    const name = raw.trim();
-    if (!name) return;
+  const addCourse = useCallback(
+    (rawName: string): boolean => {
+      const name = rawName.trim();
+      if (!name) return false;
     // 同名コースは追加不可（表記ゆれを吸収）
-    if (courses.some((c) => normEq(c.name, name))) return;
+      if (courses.some((c) => normEq(c.name, name))) return false;
     const next = [...courses, { name, tasks: [] } as CourseDef];
     setCourses(next);
-    // 入力欄クリア（uncontrolled のため DOM を直接クリア）
-    if (newCourseInputRef.current) newCourseInputRef.current.value = '';
-    setNewCourseDraft('');
     // 追加したコースを選択状態にする
     setSelectedCourse(name);
-  }, [courses, setCourses]);
+      return true;
+    },
+    [courses, setCourses]
+  );
 
   // ===== positions =====
-  const addPosition = useCallback(() => {
-    const raw = newPositionInputRef.current?.value ?? '';
-    const name = raw.trim();
-    if (!name) return;
-    if (positions.some((p) => normEq(p, name))) return;
+  const addPosition = useCallback(
+    (rawName: string): boolean => {
+      const name = rawName.trim();
+      if (!name) return false;
+      if (positions.some((p) => normEq(p, name))) return false;
     const next = [...positions, name];
     setPositions(next);
-    // 入力欄をクリア（uncontrolled のため DOM を直接クリア）
-    if (newPositionInputRef.current) newPositionInputRef.current.value = '';
-    setNewPositionDraft('');
-  }, [positions, setPositions]);
+      return true;
+    },
+    [positions, setPositions]
+  );
 
   const removePosition = useCallback(
     (pos: string) => {
@@ -678,24 +641,19 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     [tasksByPosition, setTasksByPosition]
   );
 
-  // --- エリア名の新規入力（IME 合成対応のため uncontrolled + composition guard）---
-  const newAreaInputRef = useRef<HTMLInputElement | null>(null);
-  const [newAreaDraft, setNewAreaDraft] = useState('');
-  const [isComposingNewArea, setIsComposingNewArea] = useState(false);
-
-  const addArea = useCallback(() => {
-    const raw = newAreaInputRef.current?.value ?? '';
-    const name = raw.trim();
-    if (!name) return;
-    // 同名チェック（ひらがな/カタカナ/全半角の差を吸収）
-    if (areas.some((a) => normalizeLabel(a.name) === normalizeLabel(name))) return;
-    const id = `area_${Date.now()}`;
-    const next: AreaDef[] = [...areas, { id, name, tables: [] }];
-    setAreas(next);
-    // 入力欄クリア（uncontrolled のため DOM を直接クリア）
-    if (newAreaInputRef.current) newAreaInputRef.current.value = '';
-    setNewAreaDraft('');
-  }, [areas, setAreas]);
+  const addArea = useCallback(
+    (rawName: string): boolean => {
+      const name = rawName.trim();
+      if (!name) return false;
+      // 同名チェック（ひらがな/カタカナ/全半角の差を吸収）
+      if (areas.some((a) => normalizeLabel(a.name) === normalizeLabel(name))) return false;
+      const id = `area_${Date.now()}`;
+      const next: AreaDef[] = [...areas, { id, name, tables: [] }];
+      setAreas(next);
+      return true;
+    },
+    [areas, setAreas]
+  );
   // ===== tables (num pad) =====
   const onNumPadPress = (digit: string) => {
     if (!numPadState) return;
@@ -1026,40 +984,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
             <p className="text-gray-500 text-xs">
               名前を入力し<strong className="mx-1">「＋追加」</strong>を押してください（同名は追加できません）。
             </p>
-            <div className="mt-2 flex items-center gap-2">
-              <input
-                ref={newCourseInputRef}
-                type="text"
-                placeholder="例: 2時間デモ"
-                defaultValue={newCourseDraft}
-                onInput={(e) => {
-                  if (!isComposingNewCourse) {
-                    setNewCourseDraft((e.currentTarget as HTMLInputElement).value);
-                  }
-                }}
-                onCompositionStart={() => setIsComposingNewCourse(true)}
-                onCompositionEnd={() => {
-                  setIsComposingNewCourse(false);
-                  setNewCourseDraft(newCourseInputRef.current?.value ?? '');
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !isComposingNewCourse) {
-                    e.preventDefault();
-                    addCourse();
-                  }
-                }}
-                className="border px-3 py-2 rounded-md text-sm flex-1 shadow-sm"
-                aria-label="新しいコース名"
-              />
-              <button
-                type="button"
-                onClick={addCourse}
-                disabled={!newCourseDraft.trim()}
-                className={`px-3 py-2 rounded-md text-sm shadow-sm active:scale-[.99] ${newCourseDraft.trim() ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-              >
-                ＋追加
-              </button>
-            </div>
+            <NewCourseForm onAdd={addCourse} />
           </div>
 
           {/* 登録済みコース（アコーディオン） */}
@@ -1295,74 +1220,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                             <p className="text-gray-500 text-xs">
                               タスク名を入力し<strong className="mx-1">時間（0〜180分）</strong>を調整して「追加」を押してください。
                             </p>
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <input
-                                ref={newTaskInputRef}
-                                type="text"
-                                placeholder="例: ドリンク説明"
-                                defaultValue={newTaskDraft}
-                                inputMode="text"
-                                autoCapitalize="none"
-                                autoCorrect="off"
-                                spellCheck={false}
-                                autoComplete="off"
-                                lang="ja"
-                                onCompositionStart={() => { setIsComposingNewTask(true); }}
-                                onCompositionEnd={(e) => {
-                                  // 合成確定時に state を最終値へ（ボタン活性のため）
-                                  setIsComposingNewTask(false);
-                                  setNewTaskDraft((e.currentTarget as HTMLInputElement).value);
-                                }}
-                                onInput={(e) => {
-                                  // 編集中の値は state に同期（活性/非活性のため）。入力自体は uncontrolled
-                                  if (!isComposingNewTask) {
-                                    setNewTaskDraft((e.currentTarget as HTMLInputElement).value);
-                                  }
-                                }}
-                                className="border px-3 py-2 rounded-md text-sm flex-1 min-w-[10rem]"
-                                aria-label="新規タスク名"
-                                enterKeyHint="done"
-                                onKeyDown={(e) => {
-                                  const isComp = (e as any).nativeEvent?.isComposing;
-                                  if (e.key === 'Enter' && !isComp && !isComposingNewTask) {
-                                    e.preventDefault();
-                                    handleAddNew();
-                                  }
-                                }}
-                              />
-                              <div className="inline-flex items-stretch rounded-md border border-gray-300 overflow-hidden" role="group" aria-label="追加するタスクの時間">
-                                <button
-                                  type="button"
-                                  onMouseDown={(e) => e.preventDefault()}
-                                  onClick={() => setNewTaskOffset((prev) => clamp(prev - 5, 0, 180))}
-                                  className="px-3 h-10 text-sm bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
-                                  aria-label="5分早く"
-                                >
-                                  -5
-                                </button>
-                                <div className="min-w-[72px] h-10 grid place-items-center px-2 text-sm font-semibold tabular-nums bg-gray-50">
-                                  {newTaskOffset}分後
-                                </div>
-                                <button
-                                  type="button"
-                                  onMouseDown={(e) => e.preventDefault()}
-                                  onClick={() => setNewTaskOffset((prev) => clamp(prev + 5, 0, 180))}
-                                  className="px-3 h-10 text-sm bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
-                                  aria-label="5分遅く"
-                                >
-                                  +5
-                                </button>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={handleAddNew}
-                                disabled={!newTaskDraft.trim()}
-                                className={`h-10 px-4 rounded-md text-sm transition active:scale-[.99] ${newTaskDraft.trim() ? 'bg-emerald-600 text-white shadow-sm' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-                                title="タスクを追加"
-                              >
-                                追加
-                              </button>
-                            </div>
+                            <NewTaskForm onAdd={handleAddNewTask} />
                           </div>
                         </div>
                       </div>
@@ -1402,40 +1260,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
             <p className="text-gray-500 text-xs">
               名前を入力し<strong className="mx-1">「＋追加」</strong>を押してください（同名は追加できません）。
             </p>
-            <div className="mt-2 flex items-center gap-2">
-              <input
-                ref={newPositionInputRef}
-                type="text"
-                placeholder="例: フロント"
-                defaultValue={newPositionDraft}
-                onInput={(e) => {
-                  if (!isComposingNewPosition) {
-                    setNewPositionDraft((e.currentTarget as HTMLInputElement).value);
-                  }
-                }}
-                onCompositionStart={() => setIsComposingNewPosition(true)}
-                onCompositionEnd={() => {
-                  setIsComposingNewPosition(false);
-                  setNewPositionDraft(newPositionInputRef.current?.value ?? '');
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !isComposingNewPosition) {
-                    e.preventDefault();
-                    addPosition();
-                  }
-                }}
-                className="border px-3 py-2 rounded-md text-sm flex-1 shadow-sm"
-                aria-label="新しいポジション名"
-              />
-              <button
-                type="button"
-                onClick={addPosition}
-                disabled={!newPositionDraft.trim()}
-                className={`px-3 py-2 rounded-md text-sm shadow-sm active:scale-[.99] ${newPositionDraft.trim() ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-              >
-                ＋追加
-              </button>
-            </div>
+            <NewPositionForm onAdd={addPosition} />
           </div>
 
           {/* 登録済みポジション 見出し/リスト or 空状態 */}
@@ -1807,40 +1632,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
             <p className="text-gray-500 text-xs">
               名前を入力し<strong className="mx-1">「＋追加」</strong>を押してください（同名は追加できません）。
             </p>
-            <div className="mt-2 flex items-center gap-2">
-              <input
-                ref={newAreaInputRef}
-                type="text"
-                placeholder="例: 1F / 2F / 個室"
-                defaultValue={newAreaDraft}
-                onInput={(e) => {
-                  if (!isComposingNewArea) {
-                    setNewAreaDraft((e.currentTarget as HTMLInputElement).value);
-                  }
-                }}
-                onCompositionStart={() => setIsComposingNewArea(true)}
-                onCompositionEnd={() => {
-                  setIsComposingNewArea(false);
-                  setNewAreaDraft(newAreaInputRef.current?.value ?? '');
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !isComposingNewArea) {
-                    e.preventDefault();
-                    addArea();
-                  }
-                }}
-                className="border px-3 py-2 rounded-md text-sm flex-1 shadow-sm"
-                aria-label="新しいエリア名"
-              />
-              <button
-                type="button"
-                onClick={addArea}
-                disabled={!newAreaDraft.trim()}
-                className={`px-3 py-2 rounded-md text-sm shadow-sm active:scale-[.99] ${newAreaDraft.trim() ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-              >
-                ＋追加
-              </button>
-            </div>
+            <NewAreaForm onAdd={addArea} />
           </div>
 
           {areas.length === 0 ? (
@@ -2044,45 +1836,12 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
               </div>
 
               {/* 追加フォーム */}
-              <div>
-                <div className="flex items-center gap-2">
-                  <input
-                    ref={eatInputRef}
-                    type="text"
-                    defaultValue={newEatOption}
-                    onInput={(e) => {
-                      if (!isComposingEatOption) {
-                        setNewEatOption((e.currentTarget as HTMLInputElement).value);
-                      }
-                    }}
-                    onCompositionStart={() => setIsComposingEatOption(true)}
-                    onCompositionEnd={(e) => {
-                      setIsComposingEatOption(false);
-                      setNewEatOption((e.currentTarget as HTMLInputElement).value);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !isComposingEatOption) {
-                        e.preventDefault();
-                        addEatOption();
-                      }
-                    }}
-                    placeholder="例: ⭐︎ / ⭐︎⭐︎"
-                    className={`border px-3 py-2 w-24 rounded text-center shadow-sm text-sm ${eatIsDup ? 'border-red-300 bg-red-50' : ''}`}
-                    aria-invalid={eatIsDup}
-                    aria-describedby="eat-help"
-                  />
-                  <button
-                    onClick={addEatOption}
-                    disabled={!eatCandidate || eatIsDup}
-                    className={`px-3 py-2 rounded-md text-sm active:scale-[.99] ${!eatCandidate || eatIsDup ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white shadow-sm'}`}
-                  >
-                    追加
-                  </button>
-                </div>
-                <p id="eat-help" className={`mt-1 text-xs ${eatIsDup ? 'text-red-600' : 'text-gray-500'}`}>
-                  {eatIsDup ? 'この略称はすでに登録されています。' : 'Enter でも追加できます（2文字まで）。'}
-                </p>
-              </div>
+              <EatDrinkOptionForm
+                existing={eatOptions}
+                onAdd={addEatOption}
+                placeholder="例: ⭐︎ / ⭐︎⭐︎"
+                describedById="eat-help"
+              />
             </div>
           </section>
 
@@ -2112,45 +1871,12 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
               </div>
 
               {/* 追加フォーム */}
-              <div>
-                <div className="flex items-center gap-2">
-                  <input
-                    ref={drinkInputRef}
-                    type="text"
-                    defaultValue={newDrinkOption}
-                    onInput={(e) => {
-                      if (!isComposingDrinkOption) {
-                        setNewDrinkOption((e.currentTarget as HTMLInputElement).value);
-                      }
-                    }}
-                    onCompositionStart={() => setIsComposingDrinkOption(true)}
-                    onCompositionEnd={(e) => {
-                      setIsComposingDrinkOption(false);
-                      setNewDrinkOption((e.currentTarget as HTMLInputElement).value);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !isComposingDrinkOption) {
-                        e.preventDefault();
-                        addDrinkOption();
-                      }
-                    }}
-                    placeholder="例: スタ / プレ"
-                    className={`border px-3 py-2 w-24 rounded text-center shadow-sm text-sm ${drinkIsDup ? 'border-red-300 bg-red-50' : ''}`}
-                    aria-invalid={drinkIsDup}
-                    aria-describedby="drink-help"
-                  />
-                  <button
-                    onClick={addDrinkOption}
-                    disabled={!drinkCandidate || drinkIsDup}
-                    className={`px-3 py-2 rounded-md text-sm active:scale-[.99] ${!drinkCandidate || drinkIsDup ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white shadow-sm'}`}
-                  >
-                    追加
-                  </button>
-                </div>
-                <p id="drink-help" className={`mt-1 text-xs ${drinkIsDup ? 'text-red-600' : 'text-gray-500'}`}>
-                  {drinkIsDup ? 'この略称はすでに登録されています。' : 'Enter でも追加できます（2文字まで）。'}
-                </p>
-              </div>
+              <EatDrinkOptionForm
+                existing={drinkOptions}
+                onAdd={addDrinkOption}
+                placeholder="例: スタ / プレ"
+                describedById="drink-help"
+              />
             </div>
           </section>
         </div>
@@ -2160,3 +1886,317 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
 
   return null;
 }
+
+type NewCourseFormProps = {
+  onAdd: (name: string) => boolean;
+};
+
+const NewCourseForm = React.memo(function NewCourseForm({ onAdd }: NewCourseFormProps) {
+  const [draft, setDraft] = useState('');
+  const [isComposing, setIsComposing] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const canSubmit = !!draft.trim() && !isComposing;
+
+  const handleSubmit = useCallback(() => {
+    if (!canSubmit) return;
+    const ok = onAdd(draft);
+    if (!ok) return;
+    setDraft('');
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [canSubmit, draft, onAdd]);
+
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <input
+        ref={inputRef}
+        type="text"
+        placeholder="例: 2時間デモ"
+        value={draft}
+        onChange={(e) => setDraft(e.currentTarget.value)}
+        onCompositionStart={() => setIsComposing(true)}
+        onCompositionEnd={(e) => {
+          setIsComposing(false);
+          setDraft(e.currentTarget.value);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !isComposing) {
+            e.preventDefault();
+            handleSubmit();
+          }
+        }}
+        className="border px-3 py-2 rounded-md text-sm flex-1 shadow-sm"
+        aria-label="新しいコース名"
+        autoComplete="off"
+        autoCapitalize="none"
+      />
+      <button
+        type="button"
+        onClick={handleSubmit}
+        disabled={!canSubmit}
+        className={`px-3 py-2 rounded-md text-sm shadow-sm active:scale-[.99] ${canSubmit ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+      >
+        ＋追加
+      </button>
+    </div>
+  );
+});
+
+type NewTaskFormProps = {
+  onAdd: (label: string, offset: number) => boolean;
+};
+
+const NewTaskForm = React.memo(function NewTaskForm({ onAdd }: NewTaskFormProps) {
+  const [draft, setDraft] = useState('');
+  const [offset, setOffset] = useState(0);
+  const [isComposing, setIsComposing] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const canSubmit = !!draft.trim() && !isComposing;
+
+  const submit = useCallback(() => {
+    if (!canSubmit) return;
+    const ok = onAdd(draft, offset);
+    if (!ok) return;
+    setDraft('');
+    setOffset(0);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [canSubmit, draft, offset, onAdd]);
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <input
+        ref={inputRef}
+        type="text"
+        placeholder="例: ドリンク説明"
+        value={draft}
+        inputMode="text"
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
+        autoComplete="off"
+        lang="ja"
+        onChange={(e) => setDraft(e.currentTarget.value)}
+        onCompositionStart={() => setIsComposing(true)}
+        onCompositionEnd={(e) => {
+          setIsComposing(false);
+          setDraft(e.currentTarget.value);
+        }}
+        className="border px-3 py-2 rounded-md text-sm flex-1 min-w-[10rem]"
+        aria-label="新規タスク名"
+        enterKeyHint="done"
+        onKeyDown={(e) => {
+          const isComp = (e as any).nativeEvent?.isComposing;
+          if (e.key === 'Enter' && !isComp && !isComposing) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+      />
+      <div className="inline-flex items-stretch rounded-md border border-gray-300 overflow-hidden" role="group" aria-label="追加するタスクの時間">
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setOffset((prev) => clamp(prev - 5, 0, 180))}
+          className="px-3 h-10 text-sm bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+          aria-label="5分早く"
+        >
+          -5
+        </button>
+        <div className="min-w-[72px] h-10 grid place-items-center px-2 text-sm font-semibold tabular-nums bg-gray-50">
+          {offset}分後
+        </div>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setOffset((prev) => clamp(prev + 5, 0, 180))}
+          className="px-3 h-10 text-sm bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+          aria-label="5分遅く"
+        >
+          +5
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={submit}
+        disabled={!canSubmit}
+        className={`h-10 px-4 rounded-md text-sm transition active:scale-[.99] ${canSubmit ? 'bg-emerald-600 text-white shadow-sm' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+        title="タスクを追加"
+      >
+        追加
+      </button>
+    </div>
+  );
+});
+
+type NewPositionFormProps = {
+  onAdd: (name: string) => boolean;
+};
+
+const NewPositionForm = React.memo(function NewPositionForm({ onAdd }: NewPositionFormProps) {
+  const [draft, setDraft] = useState('');
+  const [isComposing, setIsComposing] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const canSubmit = !!draft.trim() && !isComposing;
+
+  const submit = useCallback(() => {
+    if (!canSubmit) return;
+    const ok = onAdd(draft);
+    if (!ok) return;
+    setDraft('');
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [canSubmit, draft, onAdd]);
+
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <input
+        ref={inputRef}
+        type="text"
+        placeholder="例: フロント"
+        value={draft}
+        onChange={(e) => setDraft(e.currentTarget.value)}
+        onCompositionStart={() => setIsComposing(true)}
+        onCompositionEnd={(e) => {
+          setIsComposing(false);
+          setDraft(e.currentTarget.value);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !isComposing) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+        className="border px-3 py-2 rounded-md text-sm flex-1 shadow-sm"
+        aria-label="新しいポジション名"
+        autoComplete="off"
+      />
+      <button
+        type="button"
+        onClick={submit}
+        disabled={!canSubmit}
+        className={`px-3 py-2 rounded-md text-sm shadow-sm active:scale-[.99] ${canSubmit ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+      >
+        ＋追加
+      </button>
+    </div>
+  );
+});
+
+type NewAreaFormProps = {
+  onAdd: (name: string) => boolean;
+};
+
+const NewAreaForm = React.memo(function NewAreaForm({ onAdd }: NewAreaFormProps) {
+  const [draft, setDraft] = useState('');
+  const [isComposing, setIsComposing] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const canSubmit = !!draft.trim() && !isComposing;
+
+  const submit = useCallback(() => {
+    if (!canSubmit) return;
+    const ok = onAdd(draft);
+    if (!ok) return;
+    setDraft('');
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [canSubmit, draft, onAdd]);
+
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <input
+        ref={inputRef}
+        type="text"
+        placeholder="例: 1F / 2F / 個室"
+        value={draft}
+        onChange={(e) => setDraft(e.currentTarget.value)}
+        onCompositionStart={() => setIsComposing(true)}
+        onCompositionEnd={(e) => {
+          setIsComposing(false);
+          setDraft(e.currentTarget.value);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !isComposing) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+        className="border px-3 py-2 rounded-md text-sm flex-1 shadow-sm"
+        aria-label="新しいエリア名"
+        autoComplete="off"
+      />
+      <button
+        type="button"
+        onClick={submit}
+        disabled={!canSubmit}
+        className={`px-3 py-2 rounded-md text-sm shadow-sm active:scale-[.99] ${canSubmit ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+      >
+        ＋追加
+      </button>
+    </div>
+  );
+});
+
+type EatDrinkOptionFormProps = {
+  existing: string[];
+  onAdd: (raw: string) => boolean;
+  placeholder: string;
+  describedById: string;
+};
+
+const EatDrinkOptionForm = React.memo(function EatDrinkOptionForm({ existing, onAdd, placeholder, describedById }: EatDrinkOptionFormProps) {
+  const [draft, setDraft] = useState('');
+  const [isComposing, setIsComposing] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const candidate = takeGraphemes(normalizeTiny(draft), 2);
+  const isDup = !!candidate && existing.includes(candidate);
+  const canSubmit = !!candidate && !isDup && !isComposing;
+
+  const submit = useCallback(() => {
+    if (!canSubmit) return;
+    const ok = onAdd(draft);
+    if (!ok) return;
+    setDraft('');
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [canSubmit, draft, onAdd]);
+
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        <input
+          ref={inputRef}
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.currentTarget.value)}
+          onCompositionStart={() => setIsComposing(true)}
+          onCompositionEnd={(e) => {
+            setIsComposing(false);
+            setDraft(e.currentTarget.value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !isComposing) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          placeholder={placeholder}
+          className={`border px-3 py-2 w-24 rounded text-center shadow-sm text-sm ${isDup ? 'border-red-300 bg-red-50' : ''}`}
+          aria-invalid={isDup}
+          aria-describedby={describedById}
+          autoComplete="off"
+        />
+        <button
+          onClick={submit}
+          disabled={!canSubmit}
+          className={`px-3 py-2 rounded-md text-sm active:scale-[.99] ${canSubmit ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+        >
+          追加
+        </button>
+      </div>
+      <p id={describedById} className={`mt-1 text-xs ${isDup ? 'text-red-600' : 'text-gray-500'}`}>
+        {isDup ? 'この略称はすでに登録されています。' : 'Enter でも追加できます（2文字まで）。'}
+      </p>
+    </div>
+  );
+});

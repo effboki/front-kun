@@ -47,7 +47,10 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-title" content="フロント君" />
         {/* iOS でアドレスバー無しの全画面化 */}
         <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <meta
+          name="viewport"
+          content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover"
+        />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         {/* PWA テーマカラー */}
         <meta name="theme-color" content="#475569" />

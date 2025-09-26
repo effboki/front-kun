@@ -1992,8 +1992,14 @@ function ReservationBlock({
       tabIndex={0}
       onKeyDown={handleKeyDown}
     >
+      {/* Status dot moved outside the card container */}
+      {(showEdited || isFresh) && (
+        <span
+          className={`absolute top-[9px] left-0 -translate-x-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full ring-2 ring-white ${showEdited ? 'bg-amber-500' : 'bg-green-500'} z-20 pointer-events-none`}
+        />
+      )}
       <div
-        className={`relative flex h-full w-full flex-col justify-between rounded-[6px] shadow-[0_1px_2px_rgba(15,23,42,0.1)] ${bodyTextClass} ${isArmed ? 'ring-2 ring-sky-400' : ''} ${state === 'departed' ? 'opacity-80' : ''}`}
+        className={`relative flex h-full w-full flex-col justify-between rounded-[6px] shadow-[0_1px_2px_rgba(15,23,42,0.1)] ${bodyTextClass} ${isArmed ? 'ring-2 ring-sky-400' : ''} ${state === 'departed' ? 'opacity-80' : ''} overflow-hidden`}
         style={{
           margin: '0px',
           // バッジ分の余白を右側に確保（被り回避）
@@ -2005,24 +2011,22 @@ function ReservationBlock({
         {...attributes}
         {...listeners}
       >
-        {(showEdited || isFresh) && (
-          <span className={`absolute -top-1 -left-1 h-2.5 w-2.5 rounded-full ring-2 ring-white ${showEdited ? 'bg-amber-500' : 'bg-green-500'}`} />
-        )}
-        <div className={`grid h-full grid-rows-[auto_1fr_auto] text-[12px] ${bodyTextClass}`}>
-          <div className="flex items-center justify-between text-[12px] font-semibold" style={{ color: textAccent }}>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-[13px] tracking-tight leading-none">{startLabel}</span>
-              <span className="font-mono text-[13px] tracking-tight leading-none" aria-label="人数">
+        {/* Status dot removed from inside the card container */}
+        <div className={`grid h-full grid-rows-[auto_1fr_auto] text-[12px] ${bodyTextClass} min-w-0`}>
+          <div className="flex items-center justify-between text-[12px] font-semibold min-w-0" style={{ color: textAccent }}>
+            <div className="flex items-center gap-2 min-w-0 whitespace-nowrap">
+              <span className="font-mono text-[13px] tracking-tight leading-none shrink-0">{startLabel}</span>
+              <span className="font-mono text-[13px] tracking-tight leading-none shrink-0" aria-label="人数">
                 {guestsLabel || '―'}
               </span>
             </div>
-            <div className="flex gap-1 text-[11px] text-slate-500">
+            <div className="flex gap-1 text-[11px] text-slate-500 shrink-0 overflow-hidden">
               {showEat && <span className="rounded-sm border border-slate-400 px-1 leading-tight whitespace-nowrap">{eatLabel || '食放'}</span>}
               {showDrink && <span className="rounded-sm border border-slate-400 px-1 leading-tight whitespace-nowrap">{drinkLabel || '飲放'}</span>}
             </div>
           </div>
           <div className="flex items-center justify-center overflow-hidden" aria-hidden />
-          <div className={`flex items-end justify-between text-[11px] ${secondaryTextClass}`}>
+          <div className={`flex items-end justify-between text-[11px] ${secondaryTextClass} min-w-0`}>
             <span className="font-medium truncate max-w-[60%]" aria-label="氏名">{name}</span>
             <span className={`truncate text-right text-[11px] ${secondaryTextClass}`}>{course}</span>
           </div>
