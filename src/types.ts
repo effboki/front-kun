@@ -57,6 +57,8 @@ export interface TaskDef {
 export interface CourseDef {
   /** コース名 */
   name: string;
+  /** 滞在時間（分） */
+  stayMinutes?: number;
   /** そのコースで行うタスク一覧 */
   tasks: TaskDef[];
 }

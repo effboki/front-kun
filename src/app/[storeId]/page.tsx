@@ -12,7 +12,7 @@ import { flushQueuedOps } from '@/lib/opsQueue';
 // 📌 Policy: UI preview must NOT read/write r.pendingTable. Preview state lives only in pendingTables.
 
 import type { StoreSettings, StoreSettingsValue } from '@/types/settings';
-import { toUISettings, toFirestorePayload } from '@/types/settings';
+import { toUISettings, toFirestorePayload, sanitizeCourses as sanitizeStoreCourses } from '@/types/settings';
 import { useState, ChangeEvent, FormEvent, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   ensureServiceWorkerRegistered,
@@ -600,25 +600,30 @@ const {
 
   // --- helper: normalize/sanitize courses payload (unknown -> CourseDef[]) ---
   const sanitizeCourses = (arr: unknown): CourseDef[] => {
-    if (!Array.isArray(arr)) return [];
-    const out: CourseDef[] = [];
-    for (const c of arr as any[]) {
-      const name = typeof c?.name === 'string' ? c.name : '';
-      if (!name) continue;
-      const rawTasks = Array.isArray(c?.tasks) ? c.tasks : [];
-      const tasks = rawTasks
-        .map((t: any) => {
-          const label = typeof t?.label === 'string' ? t.label : '';
-          if (!label) return null;
-          const timeOffset = Number.isFinite(Number(t?.timeOffset)) ? Number(t.timeOffset) : 0;
-          const bgColor = typeof t?.bgColor === 'string' ? t.bgColor : 'bg-gray-100/80';
-          return { timeOffset, label, bgColor } as TaskDef;
-        })
-        .filter((v: TaskDef | null): v is TaskDef => !!v)
-        .sort((a: TaskDef, b: TaskDef) => a.timeOffset - b.timeOffset);
-      out.push({ name, tasks });
-    }
-    return out;
+    const normalized = sanitizeStoreCourses(arr);
+    if (!Array.isArray(normalized)) return [];
+
+    return normalized.map((course) => {
+      const tasks: TaskDef[] = Array.isArray(course?.tasks)
+        ? (course.tasks as any[])
+            .map((t) => ({
+              timeOffset: Number.isFinite(Number(t?.timeOffset)) ? Number(t.timeOffset) : 0,
+              label: typeof t?.label === 'string' ? t.label : '',
+              bgColor: typeof t?.bgColor === 'string' ? t.bgColor : 'bg-gray-100/80',
+            }))
+            .filter((task: TaskDef) => task.label !== '')
+            .sort((a, b) => a.timeOffset - b.timeOffset)
+        : [];
+
+      const stayMinutesRaw = Number((course as any)?.stayMinutes);
+      const stayMinutes = Number.isFinite(stayMinutesRaw) && stayMinutesRaw > 0 ? Math.trunc(stayMinutesRaw) : undefined;
+
+      return {
+        name: course.name,
+        stayMinutes,
+        tasks,
+      } satisfies CourseDef;
+    });
   };
 
 // --- defensive accessor: always return an array for c.tasks ---

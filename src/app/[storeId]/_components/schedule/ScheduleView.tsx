@@ -135,7 +135,6 @@ const leftColW = isTablet ? 64 : 56;
   // スクロール方向の影用（ヘッダー/左列にシャドウを付ける）
   const [scrolled, setScrolled] = useState({ x: false, y: false });
   const headerLeftOverlayRef = useRef<HTMLDivElement | null>(null);
-  const scrollRaf = useRef<number | null>(null);
   // ===== Scroll container axis-lock (screen-level) =====
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
   const scrollAxisRef = useRef<'x' | 'y' | null>(null);
@@ -152,6 +151,8 @@ const leftColW = isTablet ? 64 : 56;
   const scrollIdleTimerRef = useRef<number | null>(null);
   const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
   const didAutoCenterRef = useRef(false);
+  // Backup of planned duration (minutes) before marking as departed
+  const departDurationBackupRef = useRef<Record<string, number>>({});
 
   const clearScrollIdleTimer = useCallback(() => {
     if (scrollIdleTimerRef.current) {
@@ -162,12 +163,9 @@ const leftColW = isTablet ? 64 : 56;
 
   useEffect(() => {
     if (headerLeftOverlayRef.current) {
-      headerLeftOverlayRef.current.style.transform = 'translateX(0px)';
+      const x = Math.round(scrollParentRef.current?.scrollLeft ?? 0);
+      headerLeftOverlayRef.current.style.transform = `translate3d(${x}px,0,0)`;
     }
-  }, []);
-
-  useEffect(() => () => {
-    if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
   }, []);
 
   // ===== 行高の自動計算（スマホ：画面に約12行が収まるように） =====
@@ -274,11 +272,10 @@ const leftColW = isTablet ? 64 : 56;
       const dx = Math.abs(currentLeft - prev.left);
       const dy = Math.abs(currentTop - prev.top);
 
-      if (dx >= AXIS_LOCK_THRESHOLD_PX || dy >= AXIS_LOCK_THRESHOLD_PX) {
-        const source: 'pointer' | 'scroll' = pointerStateRef.current.active ? 'pointer' : 'scroll';
-        const origin = pointerStateRef.current.active ? lockOriginRef.current : prev;
-        const nextAxis: 'x' | 'y' = dx > dy ? 'x' : 'y';
-        lockScrollAxis(nextAxis, source, el, origin);
+      if (pointerStateRef.current.active && (dx >= AXIS_LOCK_THRESHOLD_PX || dy >= AXIS_LOCK_THRESHOLD_PX)) {
+        const origin = lockOriginRef.current;
+        const nextAxis: 'x' | 'y' = dx > dy + 4 ? 'x' : 'y';
+        lockScrollAxis(nextAxis, 'pointer', el, origin);
       } else {
         scrollPosRef.current = { left: currentLeft, top: currentTop };
       }
@@ -286,23 +283,27 @@ const leftColW = isTablet ? 64 : 56;
 
     if (scrollAxisRef.current === 'x') {
       const lockedTop = lockOriginRef.current.top;
-      if (Math.abs(currentTop - lockedTop) > LOCK_SLACK_PX) {
+      if (pointerStateRef.current.active && Math.abs(currentTop - lockedTop) > LOCK_SLACK_PX) {
         el.scrollTop = lockedTop;
         scrollPosRef.current.top = lockedTop;
+      } else {
+        scrollPosRef.current.top = currentTop;
+        lockOriginRef.current.top = currentTop;
       }
       scrollPosRef.current.left = el.scrollLeft;
-      scrollPosRef.current.top = lockedTop;
       const source = scrollAxisSourceRef.current;
       if (source === 'wheel' || source === 'scroll') {
         scheduleScrollIdleReset(source);
       }
     } else if (scrollAxisRef.current === 'y') {
       const lockedLeft = lockOriginRef.current.left;
-      if (Math.abs(currentLeft - lockedLeft) > LOCK_SLACK_PX) {
+      if (pointerStateRef.current.active && Math.abs(currentLeft - lockedLeft) > LOCK_SLACK_PX) {
         el.scrollLeft = lockedLeft;
         scrollPosRef.current.left = lockedLeft;
+      } else {
+        scrollPosRef.current.left = currentLeft;
+        lockOriginRef.current.left = currentLeft;
       }
-      scrollPosRef.current.left = lockedLeft;
       scrollPosRef.current.top = el.scrollTop;
       const source = scrollAxisSourceRef.current;
       if (source === 'wheel' || source === 'scroll') {
@@ -316,13 +317,8 @@ const leftColW = isTablet ? 64 : 56;
     const ny = el.scrollTop > 1;
     setScrolled(prev => (prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny }));
     if (headerLeftOverlayRef.current) {
-      const x = el.scrollLeft;
-      if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
-      scrollRaf.current = requestAnimationFrame(() => {
-        if (headerLeftOverlayRef.current) {
-          headerLeftOverlayRef.current.style.transform = `translateX(${x}px)`;
-        }
-      });
+      const x = Math.round(el.scrollLeft);
+      headerLeftOverlayRef.current.style.transform = `translate3d(${x}px,0,0)`;
     }
   }, [lockScrollAxis, scheduleScrollIdleReset]);
 
@@ -403,25 +399,61 @@ const leftColW = isTablet ? 64 : 56;
     });
   }, [items]);
 
+  // 設定画面のコース定義も取り込み（props + storeSettings を統合）
+  const courseDefs = useMemo<any[]>(() => {
+    const out: any[] = [];
+    if (Array.isArray(coursesOptions)) out.push(...(coursesOptions as any[]));
+    const ss: any = storeSettings as any;
+    const fromSettings =
+      ss?.courses ??
+      ss?.courseOptions ??
+      ss?.coursesOptions ??
+      ss?.plans ??
+      ss?.courseDefs ??
+      ss?.course_list ??
+      ss?.courseSettings;
+    if (Array.isArray(fromSettings)) {
+      out.push(...fromSettings);
+    } else if (fromSettings && typeof fromSettings === 'object') {
+      // name -> minutes の連想配列にも対応
+      for (const [k, v] of Object.entries(fromSettings)) {
+        if (v && typeof v === 'object') out.push({ name: k, ...(v as any) });
+        else if (typeof v === 'number') out.push({ name: k, minutes: v });
+      }
+    }
+    return out;
+  }, [coursesOptions, storeSettings]);
   // === コース規定の滞在時間 → 分（fallback 120） ===
   const getCourseStayMin = useCallback((course?: string | null) => {
     if (!course) return 120;
-    const name = String(course);
-    const opts = (coursesOptions ?? []) as any[];
-    const found = opts.find((o) => {
-      const v = String((o?.value ?? o?.name ?? o?.label ?? '') || '');
+    const name = String(course).trim();
+
+    const pickMinutes = (o: any) => (
+      o?.stayMinutes ?? o?.stayMin ?? o?.durationMin ?? o?.durationMinutes ?? o?.minutes ?? o?.lengthMin ?? o?.lengthMinutes ?? o?.duration ?? o?.stay
+    );
+
+    // 1) 厳密一致（value/name/label/title）
+    const found = (courseDefs ?? []).find((o: any) => {
+      const v = String((o?.value ?? o?.name ?? o?.label ?? o?.title ?? '') || '').trim();
       return v === name;
     });
-    const raw =
-      (found?.stayMin ??
-        found?.durationMin ??
-        found?.minutes ??
-        found?.duration ??
-        found?.stay ??
-        found?.lengthMin);
+    let raw = pickMinutes(found);
+
+    // 2) 空白無視・小文字化でのルーズ一致
+    if (raw == null) {
+      const key = name.replace(/\s+/g, '').toLowerCase();
+      const f2 = (courseDefs ?? []).find((o: any) => {
+        const v = String((o?.value ?? o?.name ?? o?.label ?? o?.title ?? '') || '')
+          .replace(/\s+/g, '')
+          .toLowerCase();
+        return v === key;
+      });
+      raw = pickMinutes(f2);
+    }
+
     const n = Math.trunc(Number(raw));
     return Number.isFinite(n) && n > 0 ? n : 120;
-  }, [coursesOptions]);
+  }, [courseDefs]);
 
   // === 予約の終了 ms を計算（durationMin を優先。無ければコース規定）===
   const computeEndMsFor = useCallback((it: any) => {
@@ -434,6 +466,55 @@ const leftColW = isTablet ? 64 : 56;
     const mins = Math.max(5, minutes); // 最低 5 分
     return start + mins * 60_000;
   }, [getCourseStayMin]);
+
+  // === Edited-dot control (only for: startMs, tables, course, guests) ===
+  const buildEditSignature = useCallback((it: any) => {
+    const start = Math.max(0, Number(it?.startMs ?? 0));
+    const course = String((it?.course ?? it?.courseName ?? '') || '').trim();
+    const guestsRaw = (it?.people ?? it?.guests);
+    const guests = Number.isFinite(Number(guestsRaw)) ? Math.max(0, Math.trunc(Number(guestsRaw))) : 0;
+    const arr = Array.isArray(it?.tables)
+      ? (it.tables as any[]).map((t) => String(t)).filter(Boolean).sort()
+      : [];
+    const tablesKey = arr.join(',');
+    return `${start}|${tablesKey}|${course}|${guests}`;
+  }, []);
+
+  // Keep previous signature per reservation id (across renders)
+  const prevEditSigRef = useRef<Record<string, string>>({});
+  // Allowed yellow-dot display window per reservation id
+  const editedAllowedUntilRef = useRef<Record<string, number>>({});
+
+  // Update allowed window when an edited item has signature changed
+  useEffect(() => {
+    const nextSigMap: Record<string, string> = {};
+    const now = nowMs;
+    for (const it of data) {
+      const id = String((it as any).id ?? (it as any)._key ?? '');
+      if (!id) continue;
+      const sig = buildEditSignature(it);
+      nextSigMap[id] = sig;
+      const prevSig = prevEditSigRef.current[id];
+      const editedUntil = Number((it as any).editedUntilMs ?? 0);
+      const editedActive = Number.isFinite(editedUntil) && now <= editedUntil && editedUntil > 0;
+      if (editedActive && prevSig != null && prevSig !== sig) {
+        const prevUntil = editedAllowedUntilRef.current[id] ?? 0;
+        editedAllowedUntilRef.current[id] = Math.max(prevUntil, editedUntil);
+      }
+    }
+    prevEditSigRef.current = nextSigMap;
+  }, [data, nowMs, buildEditSignature]);
+
+  // Snapshot of ids that should show the yellow edited dot at this moment
+  const editedAllowedIds = useMemo(() => {
+    const out = new Set<string>();
+    const now = nowMs;
+    const m = editedAllowedUntilRef.current;
+    for (const [id, until] of Object.entries(m)) {
+      if (now <= Number(until)) out.add(id);
+    }
+    return out;
+  }, [nowMs]);
 
   // 4.5) 同卓 & 時間重複の衝突インデックス（⚠️表示用）
   const conflictSet = useMemo(() => {
@@ -639,13 +720,13 @@ const leftColW = isTablet ? 64 : 56;
     const picked = Array.from(new Set((reassign.selected ?? []).map(String))).filter(Boolean);
     if (picked.length === 0) { setReassign(null); return; }
     const patch: any = { tables: picked, table: picked[0] };
-    runSave(baseId, patch, { tables: picked, table: picked[0] });
+    runSave(baseId, patch, { tables: picked, table: picked[0], editedUntilMs: Date.now() + 15000 });
     setReassign(null);
   }, [reassign, runSave]);
 
   // 5) レンジ内にかかる予約のみ描画（範囲外はスキップ）
   const clipped = useMemo(() => {
-    const out: (ScheduleItem & { _startCol: number; _spanCols: number; _row: number; _table?: string; status?: 'warn'; _key?: string })[] = [];
+    const out: (ScheduleItem & { _startCol: number; _spanCols: number; _row: number; _table?: string; status?: 'warn'; _key?: string; _editedAllowed?: boolean })[] = [];
     for (const it of data) {
       // 予約が一切レンジにかからない場合はスキップ
       const endEff = computeEndMsFor(it);
@@ -663,11 +744,19 @@ const leftColW = isTablet ? 64 : 56;
         const row = tableIndex[tStr];
         if (row == null) continue; // row=1 を falsy 判定で落とさない
         const warn = conflictSet.has(`${tStr}::${it._key}`);
-        out.push({ ...it, status: warn ? 'warn' : undefined, _startCol: startCol, _spanCols: spanCols, _row: row, _table: tStr });
+        out.push({
+          ...it,
+          status: warn ? 'warn' : undefined,
+          _startCol: startCol,
+          _spanCols: spanCols,
+          _row: row,
+          _table: tStr,
+          _editedAllowed: editedAllowedIds.has(String(it.id ?? it._key ?? '')),
+        });
       }
     }
     return out;
-  }, [data, anchorStartMs, rangeEndMs, tableIndex, conflictSet, computeEndMsFor]);
+  }, [data, anchorStartMs, rangeEndMs, tableIndex, conflictSet, computeEndMsFor, editedAllowedIds]);
 
   const stacked = useMemo(() => {
     // 同一卓内で時間が重なる予約を縦にずらすためのスタックインデックスを付与
@@ -810,32 +899,67 @@ const leftColW = isTablet ? 64 : 56;
   const handleStatusToggle = useCallback(
     (kind: 'arrived' | 'paid' | 'departed') => {
       if (!actionTarget) return;
-      const id = String(actionTarget.id ?? '');
-      if (!id) return;
-      const current = Boolean((actionTarget as any)[kind]);
+      const raw: any = actionTarget as any;
+      const id = String(raw.id ?? ''); // real DB id (may be empty in demo)
+      const key = String(raw.id ?? raw._key ?? ''); // fallback to _key for optimistic UI
+      const current = Boolean(raw[kind]);
       const next = !current;
 
-      if (kind === 'arrived') {
-        if (typeof onToggleArrival === 'function') onToggleArrival(id);
-        else if (typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'arrived', next);
-      } else if (kind === 'paid') {
-        if (typeof onTogglePayment === 'function') onTogglePayment(id);
-        else if (typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'paid', next);
-      } else {
-        if (typeof onToggleDeparture === 'function') onToggleDeparture(id);
-        else if (typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'departed', next);
+      // --- Special handling for "departed" ---
+      if (kind === 'departed') {
+        const startMs = Math.max(0, Number(raw.startMs ?? 0));
+        if (next) {
+          // going to departed=true → shorten to now (5m snap) and backup the planned duration
+          const planned: number = Number.isFinite(Number(raw.durationMin)) && Number(raw.durationMin) > 0
+            ? Math.trunc(Number(raw.durationMin))
+            : getCourseStayMin(raw.course ?? raw.courseName);
+          if (key) departDurationBackupRef.current[key] = planned;
+
+          const nowSnap = snap5m(Date.now());
+          const rawMin = Math.round((nowSnap - startMs) / 60000);
+          const durationMin = Math.max(5, rawMin);
+
+          if (key) applyOptimistic(key, { durationMin });
+          if (id && onSave) runSave(id, { durationMin });
+        } else {
+          // turning departed=false → restore backed-up planned duration
+          const planned = (key && departDurationBackupRef.current[key] != null)
+            ? departDurationBackupRef.current[key]
+            : (Number.isFinite(Number(raw.durationMin)) && Number(raw.durationMin) > 0
+                ? Math.trunc(Number(raw.durationMin))
+                : getCourseStayMin(raw.course ?? raw.courseName));
+
+          if (key) applyOptimistic(key, { durationMin: planned });
+          if (id && onSave) runSave(id, { durationMin: planned });
+          if (key) delete departDurationBackupRef.current[key];
+        }
       }
 
+      // Keep existing flag toggle behavior (call site-provided handlers if any)
+      if (kind === 'arrived') {
+        if (id && typeof onToggleArrival === 'function') onToggleArrival(id);
+        else if (id && typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'arrived', next);
+      } else if (kind === 'paid') {
+        if (id && typeof onTogglePayment === 'function') onTogglePayment(id);
+        else if (id && typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'paid', next);
+      } else {
+        if (id && typeof onToggleDeparture === 'function') onToggleDeparture(id);
+        else if (id && typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'departed', next);
+      }
+
+      // Reflect UI state of the action popover immediately
       setActionTarget((prev) => {
-        if (!prev || String(prev.id ?? '') !== id) return prev;
+        if (!prev) return prev;
+        const prevId = String((prev as any).id ?? '');
+        if (prevId && id && prevId !== id) return prev;
         const updated: any = { ...prev, [kind]: next };
         if (kind === 'departed' && next) {
-          updated.arrived = false;
+          updated.arrived = false; // departed implies no longer "arrived"
         }
         return updated;
       });
     },
-    [actionTarget, onToggleArrival, onTogglePayment, onToggleDeparture, onUpdateReservationField]
+    [actionTarget, onToggleArrival, onTogglePayment, onToggleDeparture, onUpdateReservationField, onSave, runSave, applyOptimistic, getCourseStayMin]
   );
 
   const actionStatus = {
@@ -896,7 +1020,7 @@ const leftColW = isTablet ? 64 : 56;
         endMs: newEndMs,
         durationMin: durationMinFromSpan(spanCols),
       };
-      runSave(baseId, patch, { startMs: newStartMs, endMs: newEndMs });
+      runSave(baseId, patch, { startMs: newStartMs, endMs: newEndMs, editedUntilMs: Date.now() + 15000 });
       setArmedId(null);
     } else {
       // 縦移動：行（卓）変更
@@ -939,7 +1063,7 @@ const leftColW = isTablet ? 64 : 56;
         table: deduped[0] ?? newTable,
       };
 
-      runSave(baseId, patch, { tables: deduped, table: patch.table });
+      runSave(baseId, patch, { tables: deduped, table: patch.table, editedUntilMs: Date.now() + 15000 });
       setArmedId(null);
     }
   }, [onSave, runSave, clipped, colW, startMsFromCol, endMsFromColSpan, durationMinFromSpan, effectiveRowH, tables, setArmedId, rowHeightsPx]);
@@ -1085,7 +1209,7 @@ const handleDragMove = useCallback((e: any) => {
       const ax = Math.abs(e.deltaX);
       const ay = Math.abs(e.deltaY);
       if (ax === 0 && ay === 0) return;
-      const axis: 'x' | 'y' = ax >= ay ? 'x' : 'y';
+      const axis: 'x' | 'y' = ax > ay * 1.1 ? 'x' : 'y';
       lockScrollAxis(axis, 'wheel', target, scrollPosRef.current);
     }
     scheduleScrollIdleReset('wheel', 220);
@@ -1342,8 +1466,8 @@ const handleDragMove = useCallback((e: any) => {
                               aria-label="会計ステータスを切り替え"
                               className={`flex-1 rounded-md border px-2 py-1 text-[12px] font-semibold transition-colors ${
                                 actionStatus.paid
-                                  ? 'border-sky-600 bg-sky-600 text-white'
-                                  : 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100'
+                                  ? 'border-sky-600 bg-white text-sky-700 ring-2 ring-sky-500'
+                                  : 'border-sky-300 bg-white text-sky-700 hover:bg-gray-50'
                               }`}
                               onClick={() => handleStatusToggle('paid')}
                             >
@@ -1518,6 +1642,7 @@ const handleDragMove = useCallback((e: any) => {
         reservationDetail={editingReservation}
         onUpdateReservationField={onUpdateReservationField}
         onAdjustTaskTime={onAdjustTaskTime}
+        storeSettings={storeSettings}
       />
       <style jsx global>{`
         @media print {
@@ -1674,7 +1799,7 @@ function ScheduleGrid({ nCols, colW, rowHeights }: { nCols: number; colW: number
 function ReservationBlock({
   item, row, startCol, spanCols, onClick, nowMs, armedId, setArmedId, stackCount, rowHeightPx,
 }: {
-  item: ScheduleItem & { status?: 'normal' | 'warn'; _table?: string; _key?: string };
+  item: ScheduleItem & { status?: 'normal' | 'warn'; _table?: string; _key?: string; _editedAllowed?: boolean };
   row: number;
   startCol: number;
   spanCols: number;
@@ -1695,7 +1820,9 @@ function ReservationBlock({
   const departed = Boolean(raw?.departed);
 
   type VisualState = 'normal' | 'arrived' | 'paid' | 'departed';
-  const state: VisualState = departed ? 'departed' : paid ? 'paid' : arrived ? 'arrived' : 'normal';
+  // 会計: 内部色は変えず、リングのみ青にする → ベース状態は arrived/normal/dep のみで決定
+  const paidActive = paid && !departed;
+  const state: VisualState = departed ? 'departed' : (arrived ? 'arrived' : 'normal');
 
   const palette: Record<VisualState, { border: string; accent: string; body: string; left: string; right: string }> = {
     normal: {
@@ -1713,7 +1840,7 @@ function ReservationBlock({
       right: '#f3fbf6',
     },
     paid: {
-      border: '#1d4ed8',
+      border: '#3b82f6', // brighter blue (Tailwind blue-500)
       accent: '#1e40af',
       body: '#213a71',
       left: '#e6effd',
@@ -1729,7 +1856,7 @@ function ReservationBlock({
   };
 
   const colors = palette[state];
-  const borderColor = warn ? '#a13e18' : colors.border;
+  const borderColor = warn ? '#a13e18' : (paidActive ? palette.paid.border : colors.border);
   const textAccent = warn ? '#7b3416' : colors.accent;
   const bodyTextClass = state === 'departed' ? 'text-slate-600' : 'text-slate-700';
   const secondaryTextClass = state === 'departed' ? 'text-slate-500' : 'text-slate-600';
@@ -1811,8 +1938,7 @@ function ReservationBlock({
 
   const freshUntil = (item as any).freshUntilMs;
   const isFresh = Number.isFinite(Number(freshUntil)) && (nowMs ?? 0) <= Number(freshUntil);
-  const editedUntil = (item as any).editedUntilMs;
-  const isEdited = Number.isFinite(Number(editedUntil)) && (nowMs ?? 0) <= Number(editedUntil);
+  const showEdited = Boolean((item as any)._editedAllowed);
 
   return (
     <div
@@ -1879,8 +2005,8 @@ function ReservationBlock({
         {...attributes}
         {...listeners}
       >
-        {(isEdited || isFresh) && (
-          <span className={`absolute -top-1 -left-1 h-2.5 w-2.5 rounded-full ring-2 ring-white ${isEdited ? 'bg-amber-500' : 'bg-green-500'}`} />
+        {(showEdited || isFresh) && (
+          <span className={`absolute -top-1 -left-1 h-2.5 w-2.5 rounded-full ring-2 ring-white ${showEdited ? 'bg-amber-500' : 'bg-green-500'}`} />
         )}
         <div className={`grid h-full grid-rows-[auto_1fr_auto] text-[12px] ${bodyTextClass}`}>
           <div className="flex items-center justify-between text-[12px] font-semibold" style={{ color: textAccent }}>

@@ -15,16 +15,36 @@ import { startOfDayMs, msToHHmmFromDay } from '@/lib/time';
 function getCourseStayMin(courseName: string, courses?: CourseDef[]): number | undefined {
   const name = (courseName ?? '').trim();
   if (!name) return undefined;
-  const cs = (courses ?? []).find((c) => (c as any)?.name && String((c as any).name).trim() === name);
+  const list = Array.isArray(courses) ? (courses as any[]) : [];
+
+  const strictFind = list.find((c: any) => {
+    const v = String((c?.value ?? c?.name ?? c?.label ?? c?.title ?? '') || '').trim();
+    return v === name;
+  });
+
+  let cs: any = strictFind;
+  if (!cs) {
+    // 空白無視・小文字化でのルーズ一致
+    const key = name.replace(/\s+/g, '').toLowerCase();
+    cs = list.find((c: any) => {
+      const v = String((c?.value ?? c?.name ?? c?.label ?? c?.title ?? '') || '')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+      return v === key;
+    });
+  }
   if (!cs) return undefined;
+
   const candidates = [
+    (cs as any).stayMinutes,
     (cs as any).durationMin,
     (cs as any).stayMin,
-    (cs as any).stayMinutes,
     (cs as any).durationMinutes,
     (cs as any).minutes,
     (cs as any).lengthMin,
     (cs as any).lengthMinutes,
+    (cs as any).duration,
+    (cs as any).stay,
   ];
   for (const v of candidates) {
     const n = Number(v);
@@ -115,6 +135,27 @@ export function useReservationsData(storeId: string, opts?: { courses?: CourseDe
 
   const writeCacheDebounced = useDebouncedCacheWriter(storeId);
 
+  // 店舗設定由来も含めたコース配列（重複は name/label/value/title 正規化で除去）
+  const mergedCourses = useMemo<CourseDef[]>(() => {
+    const src: any[] = Array.isArray(opts?.courses) ? (opts!.courses as any[]) : [];
+    const out: any[] = [];
+    const seen = new Set<string>();
+    for (const c of src) {
+      if (!c) continue;
+      const label = String((c as any).value ?? (c as any).name ?? (c as any).label ?? (c as any).title ?? '').trim();
+      const key = label ? label.replace(/\s+/g, '').toLowerCase() : '';
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      out.push(c);
+    }
+    return out as CourseDef[];
+  }, [opts?.courses]);
+
+  // コース名から滞在分を解決（デフォルトで mergedCourses を見る）
+  const resolveStayMin = useCallback((course?: string | null) => {
+    return getCourseStayMin(course ?? '', mergedCourses);
+  }, [mergedCourses]);
+
   // 2) Firestore live 購読：dayStartMs が必須（Date.now フォールバックはしない）
   useEffect(() => {
     const d0 = opts?.dayStartMs;
@@ -153,7 +194,7 @@ export function useReservationsData(storeId: string, opts?: { courses?: CourseDe
           // 滞在時間：手動 > コース規定 の優先で算出
           const durRaw = Number((r as any)?.durationMin);
           const durationMin = Number.isFinite(durRaw) && durRaw > 0 ? Math.trunc(durRaw) : undefined;
-          const courseStay = getCourseStayMin(course, opts?.courses);
+          const courseStay = resolveStayMin(course);
           const effectiveDurationMin = durationMin ?? courseStay; // ← 優先度を固定
 
           // endMs も用意（scheduleItems 側が使えるように）
@@ -203,7 +244,7 @@ export function useReservationsData(storeId: string, opts?: { courses?: CourseDe
       setError(e instanceof Error ? e : new Error(String(e)));
     }
     return () => { if (off) off(); };
-  }, [storeId, opts?.dayStartMs, opts?.schedule?.dayStartHour, opts?.schedule?.dayEndHour, writeCacheDebounced]);
+  }, [storeId, opts?.dayStartMs, opts?.schedule?.dayStartHour, opts?.schedule?.dayEndHour, writeCacheDebounced, mergedCourses]);
 
   // 4) 画面からの直接更新時もキャッシュへ（setReservations をラップして使う想定なら不要）
   useEffect(() => {
@@ -224,7 +265,7 @@ export function useReservationsData(storeId: string, opts?: { courses?: CourseDe
   const scheduleItems = useMemo(() => {
     const base = selectScheduleItems(
       reservations,
-      opts?.courses,
+      mergedCourses,
       opts?.visibleTables,
       opts?.dayStartMs,
     ) as any[];
@@ -274,7 +315,7 @@ export function useReservationsData(storeId: string, opts?: { courses?: CourseDe
         effectiveDurationMin: dm?.effectiveDurationMin,
       };
     });
-  }, [reservations, opts?.courses, opts?.visibleTables, opts?.dayStartMs]);
+  }, [reservations, mergedCourses, opts?.visibleTables, opts?.dayStartMs]);
 
   return { reservations, scheduleItems, initialized, setReservations: setReservationsStable, error } as const;
 }

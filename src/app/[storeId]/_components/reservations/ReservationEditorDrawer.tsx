@@ -2,8 +2,7 @@
 
 import * as React from 'react';
 import { createPortal } from 'react-dom';
-
-import type { CourseDef } from '@/types/settings';
+import type { CourseDef, StoreSettingsValue } from '@/types/settings';
 import type { Reservation } from '@/types/reservation';
 import { parseTimeToMinutes, formatMinutesToTime } from '@/lib/time';
 
@@ -55,6 +54,8 @@ type Props = {
   eatOptions?: string[];
   /** 飲み放題プラン候補 */
   drinkOptions?: string[];
+  /** 店舗設定（コース統合用） */
+  storeSettings?: StoreSettingsValue;
   /** スケジュール対象日の 00:00:00.000 (ローカル) 。未指定なら今日の 0:00 */
   dayStartMs?: number;
   /** 予約の最新スナップショット（タスク編集用に利用） */
@@ -141,8 +142,32 @@ const buildStayMinOptions = (min = 30, max = 240, step = 5) => {
   return out;
 };
 const getCourseStayMin = (courseName?: string, courses?: CourseOption[], fallback?: number) => {
-  const stay = courses?.find((c) => c.name === courseName)?.stayMinutes;
-  return Number.isFinite(stay) ? (stay as number) : (fallback ?? 60);
+  const name = (courseName ?? '').trim();
+  const list = Array.isArray(courses) ? (courses as any[]) : [];
+  const fb = Number.isFinite(fallback) ? (fallback as number) : 60;
+  if (!name) return fb;
+
+  const pick = (c: any) => (
+    c?.stayMinutes ?? c?.durationMin ?? c?.stayMin ?? c?.durationMinutes ?? c?.minutes ?? c?.lengthMin ?? c?.lengthMinutes ?? c?.duration ?? c?.stay
+  );
+
+  const strict = list.find((c: any) => {
+    const v = String((c?.value ?? c?.name ?? c?.label ?? c?.title ?? '') || '').trim();
+    return v === name;
+  });
+  let raw = pick(strict);
+  if (raw == null) {
+    const key = name.replace(/\s+/g, '').toLowerCase();
+    const loose = list.find((c: any) => {
+      const v = String((c?.value ?? c?.name ?? c?.label ?? c?.title ?? '') || '')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+      return v === key;
+    });
+    raw = pick(loose);
+  }
+  const n = Math.trunc(Number(raw));
+  return Number.isFinite(n) && n > 0 ? n : fb;
 };
 
 const rangesOverlap = (aStart: number, aEnd: number, bStart: number, bEnd: number) =>
@@ -154,8 +179,7 @@ const computeEndMsFromInputs = (
   coursesOptions?: CourseOption[],
   fallbackMin?: number,
 ) => {
-  const stay = coursesOptions?.find((c) => c.name === courseName)?.stayMinutes;
-  const minutes = (Number.isFinite(stay) ? (stay as number) : (fallbackMin ?? 60));
+  const minutes = getCourseStayMin(courseName, coursesOptions, fallbackMin);
   return startMs + minutes * MINUTE_MS;
 };
 
@@ -187,6 +211,7 @@ export default function ReservationEditorDrawer(props: Props) {
     onDelete,
     reservationsSnapshot,
     defaultStayMinutes,
+    storeSettings,
   } = props;
 
   const day0 = React.useMemo(() => dayStartMs ?? toStartOfDayLocal(), [dayStartMs]);
@@ -258,6 +283,65 @@ export default function ReservationEditorDrawer(props: Props) {
     return [];
   });
 
+  // --- mergedCourses: コース一覧（props, 店舗設定 統合、重複排除） ---
+  const mergedCourses = React.useMemo<CourseOption[]>(() => {
+    const out: CourseOption[] = [];
+    const pushAll = (arr?: any[]) => {
+      if (!Array.isArray(arr)) return;
+      for (const c of arr) out.push(c as CourseOption);
+    };
+    // 1) props 2) 店舗設定 の順に結合
+    pushAll(coursesOptions as any[]);
+    pushAll((storeSettings as any)?.courses as any[]);
+
+    // 重複排除（value/name/label/title を空白除去・小文字化）
+    const seen = new Set<string>();
+    const uniq: CourseOption[] = [];
+    for (const c of out) {
+      const key = String(((c as any).value ?? (c as any).name ?? (c as any).label ?? (c as any).title) ?? '')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      uniq.push(c);
+    }
+    return uniq;
+  }, [coursesOptions, storeSettings]);
+
+  // --- mergedCoursesKey: 安定したキー生成（deps用） ---
+  const mergedCoursesKey = React.useMemo(() => {
+    if (!Array.isArray(mergedCourses) || mergedCourses.length === 0) return '';
+    try {
+      return mergedCourses
+        .map((c: any) => {
+          const name = String((c?.value ?? c?.name ?? c?.label ?? c?.title ?? '') || '').replace(/\s+/g, '').toLowerCase();
+          const min = (c?.stayMinutes ?? c?.durationMin ?? c?.minutes ?? c?.lengthMin ?? '') as any;
+          return `${name}:${Number.isFinite(Number(min)) ? Number(min) : ''}`;
+        })
+        .join('|');
+    } catch {
+      return String(mergedCourses.length);
+    }
+  }, [mergedCourses]);
+
+  // コース変更時：前のコースで "自動" と同値だった場合は再び自動に戻して新コース規定を採用
+  const prevCourseRef = React.useRef<string>(initial?.courseName ?? '');
+  React.useEffect(() => {
+    const prevCourse = prevCourseRef.current;
+    // 前コース既定 or コース未選択時のフォールバック（defaultStayMinutes→未指定なら60）
+    const fallback = Number.isFinite(defaultStayMinutes as number) ? (defaultStayMinutes as number) : 60;
+    const prevAuto = hasText(prevCourse)
+      ? getCourseStayMin(prevCourse, mergedCourses, fallback)
+      : fallback;
+
+    // 直前の値が「自動と同値」なら、コース変更時に自動へ戻す（＝新コース規定を採用）
+    if (stayMinutes != null && stayMinutes === prevAuto) {
+      setStayMinutes(null);
+    }
+
+    prevCourseRef.current = courseName || '';
+  }, [courseName, mergedCoursesKey, defaultStayMinutes, stayMinutes, mergedCourses]);
+
   // --- Numeric pad (tables / guests 兼用) ---
   type PadTarget = 'tables' | 'guests';
   const [padTarget, setPadTarget] = React.useState<PadTarget | null>(null);
@@ -308,6 +392,23 @@ export default function ReservationEditorDrawer(props: Props) {
     return merged;
   }, [time, timeOptions]);
 
+  const autoStayMinutes = React.useMemo(() => {
+    const fallback = Number.isFinite(defaultStayMinutes as number) ? (defaultStayMinutes as number) : 60;
+    const minutes = getCourseStayMin(courseName || initial?.courseName, mergedCourses, fallback);
+    const numeric = Number.isFinite(minutes) ? Number(minutes) : fallback;
+    return Math.max(5, numeric);
+  }, [courseName, initial?.courseName, mergedCourses, defaultStayMinutes]);
+
+  const selectedStayMinutes = stayMinutes != null && Number.isFinite(stayMinutes) && stayMinutes > 0
+    ? Math.max(5, stayMinutes)
+    : autoStayMinutes;
+
+  const staySelectOptions = React.useMemo(() => {
+    const set = new Set<number>(stayMinOptions);
+    if (Number.isFinite(autoStayMinutes)) set.add(autoStayMinutes);
+    return Array.from(set).sort((a, b) => a - b);
+  }, [stayMinOptions, autoStayMinutes]);
+
   // reservationId が変わったら初期値を再読み込み（必要に応じて拡張）
   React.useEffect(() => {
     if (!open) return;
@@ -324,19 +425,19 @@ export default function ReservationEditorDrawer(props: Props) {
     if (!tables || tables.length === 0) { setConflicts([]); return; }
 
     const start = hhmmToMsFromDay(time, day0);
-    const end = (stayMinutes != null)
-      ? start + stayMinutes * MINUTE_MS
-      : computeEndMsFromInputs(start, courseName || initial?.courseName, coursesOptions, defaultStayMinutes);
+    const stayMin = Math.max(5, selectedStayMinutes);
+    const end = start + stayMin * MINUTE_MS;
+
     const selected = new Set(tables.map(String));
 
     const list = reservationsSnapshot.filter((r) => {
       if (reservationId && r.id === reservationId) return false; // 自分は除外
-      const rEnd = computeEndMsForSnapshot(r, coursesOptions, defaultStayMinutes);
+      const rEnd = computeEndMsForSnapshot(r, mergedCourses, defaultStayMinutes);
       const shared = (r.tables || []).some((t) => selected.has(String(t)));
       return shared && rangesOverlap(start, end, r.startMs, rEnd);
     });
     setConflicts(list);
-  }, [open, reservationsSnapshot, tables, time, day0, courseName, initial?.courseName, reservationId, coursesOptions, defaultStayMinutes, stayMinutes]);
+  }, [open, reservationsSnapshot, tables, time, day0, reservationId, defaultStayMinutes, mergedCoursesKey, selectedStayMinutes, mergedCourses]);
 
   // --- Handlers ---
   const orderByOptions = React.useCallback((arr: string[]) => {
@@ -610,16 +711,18 @@ export default function ReservationEditorDrawer(props: Props) {
             {/* コース */}
             <div className="flex items-center gap-2">
               <label className="w-[7em] shrink-0 text-sm font-medium">コース</label>
-              {coursesOptions && coursesOptions.length > 0 ? (
+              {mergedCourses && mergedCourses.length > 0 ? (
                 <select
                   className="flex-1 rounded border px-3 py-2"
                   value={courseName}
                   onChange={(e) => setCourseName(e.currentTarget.value)}
                 >
                   <option value="">未選択</option>
-                  {coursesOptions.map((c) => (
-                    <option key={c.name} value={c.name}>{c.name}</option>
-                  ))}
+                  {mergedCourses.map((c, idx) => {
+                    const label = String((c as any).name ?? (c as any).label ?? (c as any).value ?? (c as any).title ?? '');
+                    const val = label;
+                    return <option key={`${idx}_${val}`} value={val}>{label}</option>;
+                  })}
                 </select>
               ) : (
                 <input
@@ -636,23 +739,24 @@ export default function ReservationEditorDrawer(props: Props) {
               <label className="w-[7em] shrink-0 text-sm font-medium">滞在時間</label>
               <select
                 className="w-[12rem] max-w-full rounded border px-3 py-2"
-                value={stayMinutes != null ? String(stayMinutes) : 'auto'}
+                value={String(selectedStayMinutes)}
                 onChange={(e) => {
-                  const v = e.currentTarget.value;
-                  if (v === 'auto') {
+                  const n = parseInt(e.currentTarget.value, 10);
+                  if (!Number.isFinite(n)) {
+                    setStayMinutes(null);
+                    return;
+                  }
+                  if (n === autoStayMinutes) {
                     setStayMinutes(null);
                   } else {
-                    const n = parseInt(v, 10);
-                    setStayMinutes(Number.isFinite(n) ? n : null);
+                    setStayMinutes(Math.max(5, n));
                   }
                 }}
               >
-                {/* 「自動」はコースの既定分をそのまま具体値で表示 */}
-                <option value="auto">
-                  {`${getCourseStayMin(courseName || initial?.courseName, coursesOptions, defaultStayMinutes)}分`}
-                </option>
-                {stayMinOptions.map((m) => (
-                  <option key={m} value={m}>{m}分</option>
+                {staySelectOptions.map((m) => (
+                  <option key={m} value={String(m)}>
+                    {m}分{m === autoStayMinutes ? '（コース設定）' : ''}
+                  </option>
                 ))}
               </select>
             </div>
