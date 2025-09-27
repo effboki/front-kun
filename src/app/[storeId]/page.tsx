@@ -2779,8 +2779,8 @@ const deleteCourse = async () => {
 
       // ③ 任意：Firestore に保存（既存の ensureFcmRegistered を活用）
       // deviceId は内部生成でも OK。ここでは簡易な固定名/自動生成のどちらでも可。
-       const deviceId = getDeviceId();
- await ensureFcmRegistered(deviceId, id as string);
+      const deviceId = getDeviceId();
+      await ensureFcmRegistered(deviceId, id as string, token);
       console.log("[FCM] 通知の有効化が完了しました。");
     } catch (err) {
       console.error("[FCM] 通知の有効化に失敗:", err);

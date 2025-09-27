@@ -1238,7 +1238,9 @@ const handleDragMove = useCallback((e: any) => {
         style={{
           // 画面上部のアプリバー分だけ余白を見込んで高さを固定（必要なら調整）
           height: `calc(100vh - ${STICKY_TOP_PX + BOTTOM_TAB_PX}px - env(safe-area-inset-bottom))`,
-          overscrollBehavior: 'contain',
+          overscrollBehavior: 'none',
+          overscrollBehaviorX: 'none',
+          overscrollBehaviorY: 'none',
           touchAction: 'pan-x pan-y',
           WebkitOverflowScrolling: 'touch',
         }}

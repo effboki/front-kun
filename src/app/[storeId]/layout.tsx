@@ -1,6 +1,5 @@
 'use client';
 import * as React from 'react';
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import BellMenu from '@/app/[storeId]/_components/global/BellMenu';
 import { MiniTaskProvider } from '@/app/_providers/MiniTaskProvider';
 import { ensureStoreSettingsDefaults, type StoreSettingsValue } from '@/types/settings';
@@ -15,6 +14,7 @@ export default function StoreLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const authEnabled = process.env.NEXT_PUBLIC_FIREBASE_AUTH_ENABLED === '1';
   const { storeId } = useParams<{ storeId: string }>();
   // 型の安全性のために string 化（Nextの型は string | string[] の可能性がある）
   const storeIdStr = String(storeId || '');
@@ -26,17 +26,35 @@ export default function StoreLayout({
   // 認証UIDを監視（取得できる場合は購読に使用）
   const [uid, setUid] = React.useState<string | undefined>(undefined);
   React.useEffect(() => {
-    try {
-      const auth = getAuth();
-      // 即時の currentUser を反映
-      setUid(auth.currentUser?.uid ?? undefined);
-      // 変化も追跡
-      const unsub = onAuthStateChanged(auth, (u) => setUid(u?.uid ?? undefined));
-      return () => unsub();
-    } catch {
-      // auth 未初期化などの場合は無視（uid なしでフォールバック）
-    }
-  }, []);
+    if (!authEnabled) return undefined;
+
+    let isMounted = true;
+    let unsubscribe: (() => void) | undefined;
+
+    (async () => {
+      try {
+        const { getAuth, onAuthStateChanged } = await import('firebase/auth');
+        const auth = getAuth();
+        if (!isMounted) return;
+        setUid(auth.currentUser?.uid ?? undefined);
+        unsubscribe = onAuthStateChanged(auth, (u) => {
+          if (!isMounted) return;
+          setUid(u?.uid ?? undefined);
+        });
+      } catch (err) {
+        console.warn('[StoreLayout] Firebase Auth is unavailable:', err);
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+      try {
+        unsubscribe?.();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [authEnabled]);
 
   // 営業前設定（端末/ユーザーごと）の購読値を使用。uid 未指定時はフォールバック。
   const { activePositionId: prePos, visibleTables: preTables } = usePreopenSettings(storeIdStr, { uid });

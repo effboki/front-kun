@@ -1,6 +1,142 @@
 import { doc, setDoc } from "firebase/firestore";
 import { db, app } from "./firebase";
 
+const VIBRATION_PATTERN = [200, 80, 200];
+
+type MessagePayload = import("firebase/messaging").MessagePayload;
+
+type FcmMessagePayload = MessagePayload & {
+  fcmOptions?: { link?: string | null } | null;
+  notification?: (MessagePayload["notification"] & { click_action?: string }) | null;
+  data?: (Record<string, string> & { click_action?: string }) | undefined;
+};
+
+let audioCtx: AudioContext | null = null;
+let onMessageHandlerRegistered = false;
+
+function getOrCreateAudioContext(): AudioContext | null {
+  if (typeof window === "undefined") return null;
+  if (audioCtx) return audioCtx;
+  try {
+    const globalWindow = window as typeof window & { webkitAudioContext?: typeof AudioContext };
+    const Ctor = globalWindow.AudioContext ?? globalWindow.webkitAudioContext;
+    audioCtx = Ctor ? new Ctor() : null;
+  } catch (err) {
+    console.warn("[FCM] Failed to create AudioContext:", err);
+    audioCtx = null;
+  }
+  return audioCtx;
+}
+
+function primeNotificationAudio(): void {
+  if (typeof window === "undefined") return;
+  const ctx = getOrCreateAudioContext();
+  if (!ctx) return;
+  if (ctx.state === "suspended") {
+    ctx.resume().catch(() => { /* ignore */ });
+  }
+}
+
+function playNotificationTone(): void {
+  if (typeof window === "undefined") return;
+  const ctx = getOrCreateAudioContext();
+  if (!ctx || ctx.state === "closed") return;
+  if (ctx.state === "suspended") {
+    ctx.resume().catch(() => { /* ignore */ });
+  }
+  if (ctx.state !== "running") {
+    return;
+  }
+
+  try {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = "sine";
+    osc.frequency.value = 880;
+
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.22, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.6);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start();
+    osc.stop(ctx.currentTime + 0.65);
+  } catch (err) {
+    console.warn("[FCM] Failed to play notification tone:", err);
+  }
+}
+
+function resolveClickTarget(payload: FcmMessagePayload): string | undefined {
+  const fromOptions = payload.fcmOptions?.link ?? undefined;
+  const fromNotification = payload.notification ? (payload.notification as { click_action?: string }).click_action : undefined;
+  const fromData = payload.data?.click_action;
+  return fromOptions || fromNotification || fromData || undefined;
+}
+
+function presentForegroundNotification(payload: MessagePayload): void {
+  if (typeof window === "undefined") return;
+
+  if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+    navigator.vibrate(VIBRATION_PATTERN);
+  }
+  playNotificationTone();
+
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") {
+    console.log("[FCM] Foreground payload:", payload);
+    return;
+  }
+
+  const extended = payload as FcmMessagePayload;
+
+  const title = extended.notification?.title
+    || extended.data?.taskLabel
+    || "フロント君";
+
+  const fallbackParts: string[] = [];
+  if (extended.data?.table) fallbackParts.push(`卓${extended.data.table}`);
+  if (extended.data?.course) fallbackParts.push(extended.data.course);
+  if (extended.data?.timeKey) fallbackParts.push(extended.data.timeKey);
+
+  const fallbackBody = fallbackParts.length > 0 ? fallbackParts.join(" / ") : undefined;
+
+  const body = extended.notification?.body || fallbackBody || "";
+  const clickTarget = resolveClickTarget(extended);
+
+  try {
+    const notificationOptions: NotificationOptions & {
+      vibrate?: number[];
+      renotify?: boolean;
+    } = {
+      body,
+      icon: "/icons/icon-192x192.png",
+      badge: "/icons/icon-192x192.png",
+      vibrate: VIBRATION_PATTERN,
+      tag: extended.data?.dedupeKey || extended.data?.reservationId || undefined,
+      renotify: true,
+      data: {
+        ...(extended.data ?? {}),
+        click_action: clickTarget,
+      },
+    };
+
+    const notification = new Notification(title, notificationOptions);
+
+    notification.onclick = () => {
+      notification.close();
+      if (clickTarget) {
+        window.location.assign(clickTarget);
+      } else {
+        window.focus();
+      }
+    };
+  } catch (err) {
+    console.warn("[FCM] Failed to show foreground notification:", err);
+  }
+}
+
 /**
  * ---- Messaging resolver (SSR-safe) ----
  * firebase/messaging はブラウザ専用のため、動的 import + window ガードで解決します。
@@ -59,6 +195,12 @@ function getDeviceId(): string {
  */
 export async function requestPermissionAndGetToken(): Promise<string | null> {
   if (typeof window === "undefined") return null;
+  if (typeof Notification === "undefined") {
+    console.warn("[FCM] Notification API is unavailable in this environment.");
+    return null;
+  }
+
+  primeNotificationAudio();
 
   console.log("[FCM] Requesting permission...");
   const permission = await Notification.requestPermission();
@@ -66,6 +208,8 @@ export async function requestPermissionAndGetToken(): Promise<string | null> {
     console.warn("[FCM] Notification permission not granted:", permission);
     return null;
   }
+
+  primeNotificationAudio();
 
   const vapidKey = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
   if (!vapidKey) {
@@ -97,10 +241,16 @@ export async function requestPermissionAndGetToken(): Promise<string | null> {
 /**
  * 通知用に FCM トークンを取得して Firestore に保存する
  */
-export async function ensureFcmRegistered(deviceId: string = getDeviceId(), storeId: string) {
+export async function ensureFcmRegistered(
+  deviceId: string = getDeviceId(),
+  storeId: string,
+  providedToken?: string | null
+) {
   try {
+    primeNotificationAudio();
+
     // ① 許可→トークン（内部で SW 登録も実施）
-    const token = await requestPermissionAndGetToken();
+    const token = providedToken ?? (await requestPermissionAndGetToken());
     if (!token) {
       console.warn("[FCM] トークン未取得のため保存スキップ");
       return;
@@ -108,7 +258,7 @@ export async function ensureFcmRegistered(deviceId: string = getDeviceId(), stor
 
     // ② Firestore に保存
     await setDoc(
-      doc(db, "cmTokens", deviceId),
+      doc(db, "fcmTokens", deviceId),
       {
         token,
         storeId,
@@ -121,12 +271,13 @@ export async function ensureFcmRegistered(deviceId: string = getDeviceId(), stor
 
     // ③ フォアグラウンドでの受信リスナ（任意）
     const messaging = await resolveMessaging();
-    if (messaging) {
+    if (messaging && !onMessageHandlerRegistered) {
       const { onMessage } = await import("firebase/messaging");
       onMessage(messaging, (payload) => {
         console.log("[FCM] フォアグラウンド通知を受信:", payload);
-        // 必要ならここでトースト表示など
+        presentForegroundNotification(payload);
       });
+      onMessageHandlerRegistered = true;
     }
   } catch (err) {
     console.error("[FCM] 登録に失敗しました:", err);

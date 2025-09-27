@@ -9,6 +9,13 @@ import MiniTasksSettings from './MiniTasksSettings';
 import WaveSettings from './WaveSettings';
 import ScheduleSettings from './ScheduleSettings';
 
+// --- UI labels for *Store Settings* only (do NOT change from other screens) ---
+const STORE_LABEL_POSITIONS = 'ポジション設定';
+const STORE_LABEL_TABLES = '卓設定およびエリア設定';
+//
+// These labels are intentionally fixed here so that renames for "営業前設定" do not affect this screen.
+//
+
 // ============== helpers ==============
 const normalizeLabel = (s: string) =>
   String(s ?? '')
@@ -313,6 +320,9 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   const [showPositionsInfo, setShowPositionsInfo] = useState(false);
   const [showTablesInfo, setShowTablesInfo] = useState(false);
   const [showEatDrinkInfo, setShowEatDrinkInfo] = useState(false);
+  const [showMiniTasksInfo, setShowMiniTasksInfo] = useState(false);
+  const [showWaveInfo, setShowWaveInfo] = useState(false);
+  const [showScheduleInfo, setShowScheduleInfo] = useState(false);
 
   // 入力値の追加（ボタン／Enter 共通）
   const addEatOption = useCallback((raw: string): boolean => {
@@ -755,14 +765,11 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
             <ul className="list-disc pl-5 space-y-1">
               <li>
                 この画面では、<strong className="mx-1">コース</strong>と、そのコースに紐づく
-                <strong className="mx-1">タスク（開始からの相対時間）</strong>を作成・編集します。
+                <strong className="mx-1">タスク（開始から何分後に行うか）</strong>を作成・編集します。
               </li>
               <li>
-                用語の補足：<strong className="mx-1">予約リスト</strong>＝予約の一覧画面 ／
-                <strong className="mx-1">タスク表</strong>＝各予約の作業手順を時系列に並べた画面。
-              </li>
-              <li>
-                ヒント：タスクの時間は「0分後」「15分後」のように、開始時刻からの分オフセットで設定します。
+                ヒント：タスクの時間は「0分後」「15分後」のように、
+                <strong className="mx-1">開始時刻から何分後に行うか</strong>で設定します。
               </li>
             </ul>
             <div className="mt-2">
@@ -773,7 +780,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                   <strong className="mx-1">タスク</strong>を登録します。
                 </li>
                 <li>
-                  <strong className="mx-1">予約リスト</strong>で、該当する予約にコースを選択します。
+                  <strong className="mx-1">予約リスト</strong>や<strong className="mx-1">スケジュール表</strong>で、該当する予約にコースを選択します。
                 </li>
                 <li>
                   <strong className="mx-1">タスク表</strong>に、選んだコースのタスクが時系列で自動計算されて表示されます。
@@ -785,7 +792,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
         <ListItem
           label={
             <>
-              <span>ポジション設定</span>
+              <span>{STORE_LABEL_POSITIONS}</span>
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); setShowPositionsInfo((v) => !v); }}
@@ -821,7 +828,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                   <strong className="mx-1">表示するタスク</strong>を設定します。
                 </li>
                 <li>
-                  「<strong className="mx-1">営業前設定</strong>」の「<strong className="mx-1">本日のポジションを選択しよう</strong>」で、
+                  「<strong className="mx-1">営業前設定</strong>」の「<strong className="mx-1">本日のポジションを設定しよう</strong>」で、
                   当日の自分のポジションを選びます。
                 </li>
                 <li>
@@ -834,7 +841,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
         <ListItem
           label={
             <>
-              <span>卓設定およびエリア設定</span>
+              <span>{STORE_LABEL_TABLES}</span>
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); setShowTablesInfo((v) => !v); }}
@@ -851,19 +858,22 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
         />
         {showTablesInfo && (
           <div id="tables-info" className="px-4 py-3 text-[13px] text-blue-900 border-b bg-blue-50/60">
-            <p className="mb-1 font-medium">卓設定とは？</p>
+            <p className="mb-1 font-medium">卓設定 / エリア設定とは？</p>
             <ul className="list-disc pl-5 space-y-1">
               <li>お店で使用する<strong className="mx-1">卓番号（テーブル番号）</strong>を登録・編集します。</li>
-              <li>数字パッドで追加（<strong className="mx-1">重複は自動除外／番号順に整列</strong>）。編集モードで個別削除・全削除が可能です。</li>
+              <li><strong className="mx-1">エリア設定</strong>では、卓をエリア（区画）ごとにまとめて管理できます。担当をエリア単位で割り当てたい場合に便利です。</li>
+              <li>ここで登録した卓番号は、<strong className="mx-1">スケジュール表</strong>に表示されるようになります。</li>
+              <li>各卓ごとに<strong className="mx-1">定員</strong>（例：4名）を入力できます。定員を登録すると、<strong className="mx-1">スケジュール表</strong>に定員が表示されます。</li>
+              <li>編集モードで個別削除・全削除が可能です。</li>
               <li>卓番号は最大<strong className="mx-1">3桁</strong>まで登録できます。</li>
-              <li>ここで登録していない番号でも、<strong className="mx-1">予約作成時に直接入力</strong>して利用できます。卓番制の運用（卓ごとに担当を分ける等）に活用してください。</li>
+              <li>ここで登録していない番号でも、<strong className="mx-1">予約作成時に直接入力</strong>して利用できます。</li>
             </ul>
             <div className="mt-2">
               <p className="font-medium">運用の流れ（卓番制の例）</p>
               <ol className="list-decimal pl-5 space-y-1">
                 <li>この画面で、よく使う卓番号を登録しておきます。</li>
-                <li>「<strong className="mx-1">営業前設定</strong>」の「<strong className="mx-1">本日の担当する卓番号を選択しよう</strong>」で、当日の自分の担当卓を選びます。</li>
-                <li>選んだ卓の予約だけが<strong className="mx-1">予約リスト</strong>と<strong className="mx-1">タスク表</strong>に表示されます（担当外の卓は非表示）。</li>
+                <li>「<strong className="mx-1">営業前設定</strong>」の「<strong className="mx-1">本日の担当する卓番号（エリア）を設定しよう</strong>」で、当日の自分の担当卓（担当するエリア）を選びます。</li>
+                <li>選んだ卓（またはエリア）の予約だけが<strong className="mx-1">予約リスト</strong>・<strong className="mx-1">スケジュール表</strong>・<strong className="mx-1">タスク表</strong>に表示されます（担当外は非表示）。</li>
               </ol>
             </div>
           </div>
@@ -892,27 +902,144 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
             <ul className="list-disc pl-5 space-y-1">
               <li>予約リストに表示する<strong className="mx-1">2文字までの略称</strong>を登録します。記号や絵文字（例：⭐︎, ⭐︎⭐︎）も利用できます。</li>
               <li>同じ表記は重複登録できません。ポイント利用など他の識別用途にも自由に使えます。</li>
+              <li>登録した略称は、<strong className="mx-1">予約リスト</strong>や<strong className="mx-1">スケジュール表</strong>から各予約に設定できます。</li>
+              <li>設定した略称は、<strong className="mx-1">予約リスト</strong>と<strong className="mx-1">スケジュール表</strong>の両方に表示されます。</li>
             </ul>
             <div className="mt-2">
               <p className="font-medium">運用の流れ</p>
               <ol className="list-decimal pl-5 space-y-1">
                 <li>
-                  この画面で<strong className="mx-1">食べ放題／飲み放題</strong>の<strong className="mx-1">略称（2文字まで）
-                  </strong>を登録します。
+                  この画面で<strong className="mx-1">食べ放題／飲み放題</strong>の<strong className="mx-1">略称（2文字まで）</strong>を登録します。
                 </li>
                 <li>
-                  <strong className="mx-1">予約リスト</strong>で、該当する予約に登録した略称を選択します（※表示設定により、この欄を非表示にすることもできます）。
+                  <strong className="mx-1">予約リスト</strong>や<strong className="mx-1">スケジュール表</strong>で、該当する予約に登録した略称を選択します（※表示設定により、この欄を非表示にすることもできます）。
                 </li>
                 <li>
-                  選択した略称が<strong className="mx-1">予約リスト</strong>に表示され、現場での識別に役立ちます（※ポイント利用など任意の識別にも流用可）。
+                  選択した略称が<strong className="mx-1">予約リスト</strong>と<strong className="mx-1">スケジュール表</strong>に表示され、現場での識別に役立ちます（※ポイント利用など任意の識別にも流用可）。
                 </li>
               </ol>
             </div>
           </div>
         )}
-        <ListItem label={<span>ミニタスク</span>} onClick={() => setView('minitasks')} />
-        <ListItem label={<span>波設定</span>} onClick={() => setView('wavesettings')} />
-        <ListItem label={<span>スケジュール設定</span>} onClick={() => setView('schedule')} />
+        <ListItem
+          label={
+            <>
+              <span>ミニタスク</span>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setShowMiniTasksInfo((v) => !v); }}
+                aria-expanded={showMiniTasksInfo}
+                aria-controls="minitasks-info"
+                className="inline-grid place-items-center h-6 w-6 rounded-full border border-blue-300 text-blue-600 bg-white hover:bg-blue-50 active:scale-[.98]"
+                title="ミニタスクの説明"
+              >
+                i
+              </button>
+            </>
+          }
+          onClick={() => setView('minitasks')}
+        />
+        {showMiniTasksInfo && (
+          <div id="minitasks-info" className="px-4 py-3 text-[13px] text-blue-900 border-b bg-blue-50/60">
+            <p className="mb-1 font-medium">ミニタスクとは？</p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>営業中の隙間時間（ピーク帯以外の落ち着く時間帯）に行う小さな作業（例：回転準備、カトラリー補充 など）をあらかじめ登録しておく機能です。</li>
+              <li>ポジションごとにリストを作成できます。項目は自由に追加・削除できます。</li>
+              <li>通知は「余裕のある時間」（波設定で決める基準）にだけ出ます。忙しい時間帯には出ません。</li>
+            </ul>
+            <div className="mt-2">
+              <p className="font-medium">運用の流れ</p>
+              <ol className="list-decimal pl-5 space-y-1">
+                <li>この画面で各ポジションのミニタスクを登録します。</li>
+                <li>以下の「波設定」で「余裕のある時間の判断基準」を調整します。</li>
+                <li>営業中、余裕のある時間帯になるとミニタスクが通知されます。完了したらチェックボタンに☑️することで進捗状況が共有されます。</li>
+              </ol>
+            </div>
+          </div>
+        )}
+        <ListItem
+          label={
+            <>
+              <span>波設定</span>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setShowWaveInfo((v) => !v); }}
+                aria-expanded={showWaveInfo}
+                aria-controls="wave-info"
+                className="inline-grid place-items-center h-6 w-6 rounded-full border border-blue-300 text-blue-600 bg-white hover:bg-blue-50 active:scale-[.98]"
+                title="波設定の説明"
+              >
+                i
+              </button>
+            </>
+          }
+          onClick={() => setView('wavesettings')}
+        />
+        {showWaveInfo && (
+          <div id="wave-info" className="px-4 py-3 text-[13px] text-blue-900 border-b bg-blue-50/60">
+            <p className="mb-1 font-medium">波設定とは？</p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>
+                お店の<strong className="mx-1">「余裕のある時間」</strong>を判定する<strong className="mx-1">基準</strong>を決めます。
+                数値が<strong className="mx-1">大きいほど</strong>余裕と判定される時間帯は<strong className="mx-1">増え</strong>、<strong className="mx-1">小さいほど</strong>時間帯は<strong className="mx-1">減ります</strong>。
+              </li>
+              <li>
+                ミニタスクの通知は、ここで決めた基準により<strong className="mx-1">「余裕のある時間」だけ</strong>に出ます（混雑時は通知されません）。
+              </li>
+              <li>
+                「詳細設定」にある<strong className="mx-1">下限の基準（数値）</strong>では、これより低い時間帯を<strong className="mx-1">余裕がない時間</strong>として扱います。
+                目安は<strong className="mx-1">その時間のタスク数 × 関わるお客様の人数</strong>などを加味して自動的に評価します。
+              </li>
+            </ul>
+            <div className="mt-2">
+              <p className="font-medium">運用の流れ</p>
+              <ol className="list-decimal pl-5 space-y-1">
+                <li>スライダーで<strong className="mx-1">「余裕のある時間」の判断基準</strong>を 0〜100 の範囲で調整します（入力は即時反映）。</li>
+                <li>営業中、基準を満たした時間帯になると<strong className="mx-1">ミニタスク</strong>が通知されます。</li>
+                <li>混み具合に合わせて随時調整してください。必要に応じて<strong className="mx-1">詳細設定</strong>の下限も見直します。</li>
+              </ol>
+            </div>
+          </div>
+        )}
+        <ListItem
+          label={
+            <>
+              <span>スケジュール設定</span>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setShowScheduleInfo((v) => !v); }}
+                aria-expanded={showScheduleInfo}
+                aria-controls="schedule-info"
+                className="inline-grid place-items-center h-6 w-6 rounded-full border border-blue-300 text-blue-600 bg-white hover:bg-blue-50 active:scale-[.98]"
+                title="スケジュール設定の説明"
+              >
+                i
+              </button>
+            </>
+          }
+          onClick={() => setView('schedule')}
+        />
+        {showScheduleInfo && (
+          <div id="schedule-info" className="px-4 py-3 text-[13px] text-blue-900 border-b bg-blue-50/60">
+            <p className="mb-1 font-medium">スケジュール設定とは？</p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>
+                <strong className="mx-1">スケジュール表示時間</strong>では、スケジュール表に表示する<strong className="mx-1">開始時刻〜終了時刻</strong>の範囲を決めます。
+              </li>
+              <li>
+                <strong className="mx-1">コース滞在時間（分）</strong>は各コースの標準的な滞在時間です。予約にコースを入力すると、<strong className="mx-1">設定した滞在時間の長さ</strong>がスケジュール表に描画されます。
+              </li>
+            </ul>
+            <div className="mt-2">
+              <p className="font-medium">運用の流れ</p>
+              <ol className="list-decimal pl-5 space-y-1">
+                <li>まずお店の営業時間に合わせて<strong className="mx-1">表示時間</strong>を設定します。</li>
+                <li>各コースの<strong className="mx-1">滞在時間</strong>を設定（またはクリア）します。</li>
+                <li>予約を作成すると、<strong className="mx-1">スケジュール表</strong>に設定値に基づいた長さで表示され、全体の流れを把握しやすくなります。</li>
+              </ol>
+            </div>
+          </div>
+        )}
         <div className={`sticky bottom-0 z-10 border-t bg-white/90 backdrop-blur p-4 ${isDirty ? 'shadow-[0_-6px_12px_rgba(0,0,0,0.06)]' : ''}`}>
           <button
             type="button"
@@ -1243,7 +1370,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   // --- Positions page ---
   if (view === 'positions') {
     return (
-      <SubPageShell title="ポジション設定">
+      <SubPageShell title={STORE_LABEL_POSITIONS}>
         <div className="space-y-4">
           {/* 新規ポジションの追加 */}
           <div className="mb-3 rounded-lg border border-blue-200 bg-gradient-to-b from-white to-blue-50/50 p-3 shadow-sm">
@@ -1433,7 +1560,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   // --- Tables index (drill-in) ---
   if (view === 'tables') {
     return (
-      <SubPageShell title="卓設定およびエリア設定">
+      <SubPageShell title={STORE_LABEL_TABLES}>
         <div className="rounded-md border overflow-hidden bg-white">
           <ListItem label={<span>卓設定</span>} onClick={() => setView('tablesTables')} />
           <ListItem label={<span>エリア設定</span>} onClick={() => setView('tablesAreas')} />

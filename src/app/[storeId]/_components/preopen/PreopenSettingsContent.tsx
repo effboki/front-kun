@@ -65,17 +65,42 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const section = searchParams?.get('preopen');
+  const sectionParam = searchParams?.get('preopen');
+  const [localSection, setLocalSection] = React.useState<'tables' | 'tasks' | null>(null);
+
+  React.useEffect(() => {
+    if (sectionParam === 'tables' || sectionParam === 'tasks') {
+      setLocalSection((prev) => (prev === sectionParam ? prev : sectionParam));
+    } else if (!sectionParam) {
+      setLocalSection((prev) => (prev === null ? prev : null));
+    }
+  }, [sectionParam]);
+
+  const section = sectionParam === 'tables' || sectionParam === 'tasks'
+    ? sectionParam
+    : localSection;
 
   const openSection = (name: 'tables' | 'tasks') => {
-    const q = new URLSearchParams(searchParams?.toString() ?? '');
-    q.set('preopen', name);
-    router.push(`${pathname}?${q.toString()}`, { scroll: false });
+    setLocalSection(name);
+    try {
+      const q = new URLSearchParams(searchParams?.toString() ?? '');
+      q.set('preopen', name);
+      const query = q.toString();
+      router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    } catch (err) {
+      console.warn('[preopen] Failed to update route for section open:', err);
+    }
   };
   const closeSection = () => {
-    const q = new URLSearchParams(searchParams?.toString() ?? '');
-    q.delete('preopen');
-    router.push(`${pathname}?${q.toString()}`, { scroll: false });
+    setLocalSection(null);
+    try {
+      const q = new URLSearchParams(searchParams?.toString() ?? '');
+      q.delete('preopen');
+      const query = q.toString();
+      router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    } catch (err) {
+      console.warn('[preopen] Failed to update route for section close:', err);
+    }
   };
 
   const nsKey = ns ?? 'preopen';
@@ -93,6 +118,12 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
       localStorage.setItem(`${nsKey}-selectedAreas`, JSON.stringify(selectedAreas));
     } catch {}
   }, [nsKey, selectedAreas]);
+
+  // Memoized helper: selected area names for UI
+  const selectedAreaNames = React.useMemo(
+    () => (areas ?? []).filter((a) => selectedAreas.includes(a.id)).map((a) => a.name),
+    [areas, selectedAreas]
+  );
 
   // Build union of tables for given area ids and REPLACE current selection
   const applyAreas = React.useCallback((areaIds: string[]) => {
@@ -181,6 +212,33 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
 
   const closeTaskPopover = React.useCallback(() => setTaskPopover(null), []);
 
+  // --- Today's enabled positions (local only) ---
+  const [enabledPositions, setEnabledPositions] = React.useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(`${nsKey}-enabledPositions`) ?? '[]');
+    } catch {
+      return [];
+    }
+  });
+  React.useEffect(() => {
+    try {
+      localStorage.setItem(`${nsKey}-enabledPositions`, JSON.stringify(enabledPositions));
+    } catch {}
+  }, [nsKey, enabledPositions]);
+
+  const isEnabledPosition = React.useCallback(
+    (pos: string) => enabledPositions.includes(pos),
+    [enabledPositions]
+  );
+  const togglePositionEnabled = React.useCallback((pos: string) => {
+    setEnabledPositions((prev) => {
+      const set = new Set(prev);
+      if (set.has(pos)) set.delete(pos);
+      else set.add(pos);
+      return Array.from(set);
+    });
+  }, []);
+
   // ===== Render =====
   if (section === 'tables') {
     return (
@@ -195,7 +253,9 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
             >
               ＜ 戻る
             </button>
-            <h2 className="text-center text-base font-semibold">表示する卓</h2>
+            <h2 className="text-center font-semibold text-[13px] leading-snug tracking-tight whitespace-nowrap sm:text-base">
+              本日の卓番号（エリア）を設定しよう
+            </h2>
             <button
               type="button"
               aria-hidden="true"
@@ -207,56 +267,14 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
           </div>
           <div className="border-b border-gray-200" />
         </header>
-        <div className="px-4 pt-2 space-y-3">
-          {/* 使い方ガイド */}
-          <div className="rounded-md border border-blue-200 bg-blue-50/70 text-blue-900 p-2 text-[12px] leading-relaxed">
-            <p className="font-medium mb-1">使い方</p>
-            <ul className="list-disc pl-5 space-y-1">
-              <li>エリアボタンで、そのエリアの卓を <b>一括選択/解除</b> できます。</li>
-              <li>卓のボタンをタップすると、<b>個別にON/OFF</b> できます。</li>
-            </ul>
-          </div>
-
-          {/* エリア一括選択 */}
-          {Array.isArray(areas) && areas.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs text-gray-500">エリアで一括選択:</span>
-              {areas.map((a) => {
-                const on = selectedAreas.includes(a.id);
-                return (
-                  <button
-                    key={a.id}
-                    type="button"
-                    onClick={() => toggleArea(a.id)}
-                    className={[
-                      "px-2 py-1 rounded-full text-xs border transition",
-                      on
-                        ? "bg-blue-600 text-white border-blue-600 shadow"
-                        : "bg-gray-100 text-gray-800 hover:bg-gray-200 border-gray-300",
-                    ].join(" ")}
-                    title={`${a.name} の卓を一括選択 / 解除`}
-                  >
-                    {a.name}
-                  </button>
-                );
-              })}
-              {selectedAreas.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => { setSelectedAreas([]); }}
-                  className="ml-1 px-2 py-1 rounded text-xs border bg-white hover:bg-gray-50"
-                  title="エリア選択をクリア"
-                >
-                  クリア
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* 選択数と操作 */}
-          <div className="flex items-center justify-between">
+        {/* summary / actions bar */}
+        <div className="sticky top-11 z-10 bg-white/95 backdrop-blur">
+          <div className="px-4 py-2 flex items-center justify-between">
             <div className="text-xs text-gray-600" aria-live="polite">
               選択中: <b>{checkedTables.length}</b> 卓
+              {selectedAreaNames.length > 0 && (
+                <span className="ml-2">・エリア: {selectedAreaNames.join('、')}</span>
+              )}
             </div>
             <div className="flex items-center gap-1">
               <button
@@ -277,12 +295,59 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
               </button>
             </div>
           </div>
+          <div className="border-b border-gray-200" />
         </div>
 
         {/* 本文 */}
-        <div className="p-4">
+        <div className="p-4 space-y-3">
+          {/* エリアでまとめて選ぶ */}
+          {Array.isArray(areas) && areas.length > 0 && (
+            <div className="rounded-lg border bg-white p-3 shadow-sm">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold">エリアでまとめて選ぶ</h3>
+                {selectedAreas.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedAreas([]); }}
+                    className="ml-1 px-2 py-1 rounded text-xs border bg-white hover:bg-gray-50"
+                    title="エリア選択をクリア"
+                  >
+                    クリア
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-[12px] text-gray-500">選んだエリアの卓が下の一覧に反映されます。</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                {areas.map((a) => {
+                  const on = selectedAreas.includes(a.id);
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => toggleArea(a.id)}
+                      className={[
+                        "px-2 py-1 rounded-full text-xs border transition",
+                        on
+                          ? "bg-blue-600 text-white border-blue-600 shadow"
+                          : "bg-gray-100 text-gray-800 hover:bg-gray-200 border-gray-300",
+                      ].join(" ")}
+                      title={`${a.name} の卓を一括選択 / 解除`}
+                    >
+                      {a.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* 卓を個別に選ぶ */}
           <div className="rounded-lg border bg-white p-3 shadow-sm">
-            <div className="grid grid-cols-4 gap-2">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold">卓を個別に選ぶ</h3>
+              <span className="text-[12px] text-gray-500">青＝選択中 / 白＝未選択</span>
+            </div>
+            <div className="mt-2 grid grid-cols-4 gap-2">
               {presetTables.map((tbl) => {
                 const key = String(tbl);
                 const on = checkedTables.includes(key);
@@ -328,7 +393,7 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
             >
               ＜ 戻る
             </button>
-            <h2 className="text-center text-base font-semibold">表示するタスク</h2>
+            <h2 className="text-center text-base font-semibold">本日のポジションを設定しよう</h2>
             <button
               type="button"
               aria-hidden="true"
@@ -342,58 +407,59 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
         </header>
 
         {/* 本文 */}
-        <div className="p-0">
-          {/* 目的を明示しつつポジション選択を最上段・強調表示（スクロール固定） */}
-          <div className="sticky top-11 z-10 bg-white/90 backdrop-blur-sm border-b">
-            <div className="px-4 py-3">
-              <div className="text-[12px] text-gray-600 mb-2">
-                <div>※ <b>ポジションのタスクは店舗設定で固定</b>です（この画面では変更できません）。</div>
-                <div>※ <b>「その他」</b>は<span className="underline decoration-dotted">個人カスタム</span>として当日の自分用に表示タスクをON/OFFできます。</div>
-              </div>
-              <div className="-mx-1 overflow-x-auto py-0.5 px-1">
-                <div className="flex items-center gap-2">
-                  {positions.map((pos) => {
-                    const active = selectedDisplayPosition === pos;
-                    return (
-                      <button
-                        key={pos}
-                        type="button"
-                        onClick={(e) => openTaskPopover(e.currentTarget as HTMLElement, pos)}
-                        className={[
-                          "px-3 py-1.5 rounded-full text-sm border whitespace-nowrap transition",
-                          active
-                            ? "bg-blue-600 text-white border-blue-600 shadow"
-                            : "bg-white border-gray-300 hover:bg-gray-50",
-                        ].join(" ")}
-                      >
-                        {pos}
-                      </button>
-                    );
-                  })}
-                  {/* その他 */}
-                  <button
-                    type="button"
-                    onClick={(e) => openTaskPopover(e.currentTarget as HTMLElement, 'その他')}
-                    className={[
-                      "px-3 py-1.5 rounded-full text-sm border whitespace-nowrap transition",
-                      selectedDisplayPosition === 'その他'
-                        ? "bg-blue-600 text-white border-blue-600 shadow"
-                        : "bg-white border-gray-300 hover:bg-gray-50",
-                    ].join(" ")}
-                  >
-                    その他
-                  </button>
-                </div>
-              </div>
-            </div>
+        <div className="p-4 space-y-3">
+          {/* 説明 */}
+          <div className="text-[12px] text-gray-600">
+            <div>※ <b>ポジションのタスクは店舗設定で固定</b>です（この画面では変更できません）。</div>
+            <div>※ <b>「その他」</b>は<span className="underline decoration-dotted">個人カスタム</span>として当日の自分用に表示タスクをON/OFFできます。</div>
           </div>
 
-          {/* 本文コンテンツ（パディングをここで与える） */}
-          <div className="p-4">
-            <div className="rounded-md border bg-white p-4 text-sm text-gray-600">
-              ポジションのボタンを押すと、<b>表示するコース / タスク</b> を設定するパネルが
-              ボタンのそばに開きます。
-            </div>
+
+          {/* 縦並びリスト */}
+          <div className="space-y-2">
+            {[...positions, 'その他'].map((pos) => {
+              const enabled = isEnabledPosition(pos);
+              return (
+                <div key={pos} className="rounded-lg border bg-white px-3 py-2 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="font-medium truncate">{pos}</div>
+                      <div className="text-[11px] text-gray-500">
+                        {pos === 'その他' ? '個人カスタム：当日の自分用' : '店舗設定で決めたタスクを表示'}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {/* 設定（タスク確認/個人カスタム） */}
+                      <button
+                        type="button"
+                        onClick={(e) => openTaskPopover(e.currentTarget as HTMLElement, pos)}
+                        className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
+                      >
+                        設定
+                      </button>
+
+                      {/* ON/OFF トグル */}
+                      <label className="relative inline-flex items-center cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={enabled}
+                          onChange={() => togglePositionEnabled(pos)}
+                          className="sr-only peer"
+                        />
+                        <span className="w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-blue-600 transition-colors"></span>
+                        <span className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transform peer-checked:translate-x-4 transition-transform"></span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 補足 */}
+          <div className="rounded-md border bg-white p-3 text-[12px] text-gray-600">
+            「設定」から<b>表示するコース / タスク</b>を確認・（その他は）個人カスタムできます。
           </div>
         </div>
         {/* ===== Popover (吹き出し) for course & task selection ===== */}
@@ -572,9 +638,11 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
         type="button"
         onClick={() => openSection('tables')}
         className="w-full flex items-center justify-between bg-white rounded-lg border px-4 py-3 shadow-sm active:opacity-80"
-        title="表示する卓の設定へ"
+        title="本日の担当する卓番号（エリア）を設定"
       >
-        <span className="font-medium">表示する卓</span>
+        <span className="font-medium whitespace-nowrap text-[13px] leading-snug tracking-tight sm:text-[14px]">
+          本日の担当する卓番号（エリア）を設定しよう
+        </span>
         <span aria-hidden className="text-gray-400 text-lg">▸</span>
       </button>
 
@@ -582,9 +650,9 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
         type="button"
         onClick={() => openSection('tasks')}
         className="w-full flex items-center justify-between bg-white rounded-lg border px-4 py-3 shadow-sm active:opacity-80"
-        title="表示するタスクの設定へ"
+        title="本日のポジションを設定"
       >
-        <span className="font-medium">表示するタスク</span>
+        <span className="font-medium">本日のポジションを設定しよう</span>
         <span aria-hidden className="text-gray-400 text-lg">▸</span>
       </button>
     </section>

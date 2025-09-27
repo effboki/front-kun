@@ -23,16 +23,27 @@ messaging.onBackgroundMessage((payload) => {
     payload
   );
   const notificationTitle = payload.notification?.title || "通知があります";
+  const vibrationPattern = [200, 80, 200];
   const notificationOptions = {
     body: payload.notification?.body,
-    icon: "/icons/icon-192.png", // PWA用PNGに合わせる（存在するPNGに合わせてください）
+    icon: "/icons/icon-192x192.png",
+    badge: "/icons/icon-192x192.png",
+    vibrate: vibrationPattern,
+    renotify: true,
+    tag:
+      payload?.data?.dedupeKey ||
+      payload?.data?.reservationId ||
+      undefined,
   };
   const clickAction =
     payload?.fcmOptions?.link ||
     payload?.notification?.click_action ||
     "/";
   // Pass the click target via data so we can open it on click
-  notificationOptions.data = { click_action: clickAction };
+  notificationOptions.data = {
+    ...(payload?.data || {}),
+    click_action: clickAction,
+  };
 
   self.registration.showNotification(notificationTitle, notificationOptions);
 });
