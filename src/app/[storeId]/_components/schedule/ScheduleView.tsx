@@ -574,38 +574,46 @@ const leftColW = isTablet ? 64 : 56;
     return Math.max(1, Math.round(diffMs / SLOT_MS));
   }, [windowHours, SLOT_MS]);
 
+  const recomputeColWidth = useCallback(() => {
+    const el = scrollParentRef.current;
+    const viewport = el?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 0);
+    if (!viewport) return;
+    const slotMs = SLOT_MS;
+    const visibleCols = Math.max(1, Math.round((4 * 60 * 60 * 1000) / slotMs));
+    const desired = (viewport - leftColW) / visibleCols;
+    if (!Number.isFinite(desired) || desired <= 0) return;
+    const min = isTablet ? 9 : 4.5;
+    const max = isTablet ? 18 : 9;
+    const next = Math.max(min, Math.min(max, desired));
+    setColW((prev) => (Math.abs(prev - next) > 0.25 ? next : prev));
+  }, [isTablet, leftColW, SLOT_MS]);
+
   useLayoutEffect(() => {
-    const compute = () => {
-      const el = scrollParentRef.current;
-      const viewport = el?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 0);
-      if (!viewport) return;
-      const slotMs = SLOT_MS;
-      const visibleCols = Math.max(1, Math.round((4 * 60 * 60 * 1000) / slotMs));
-      const desired = (viewport - leftColW) / visibleCols;
-      if (!Number.isFinite(desired) || desired <= 0) return;
-      const min = isTablet ? 9 : 4.5;
-      const max = isTablet ? 18 : 9;
-      const next = Math.max(min, Math.min(max, desired));
-      setColW((prev) => (Math.abs(prev - next) > 0.25 ? next : prev));
+    recomputeColWidth();
+
+    const handleResize = () => recomputeColWidth();
+    const handleVisibility = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        requestAnimationFrame(() => recomputeColWidth());
+      }
     };
 
-    compute();
-
-    const handleResize = () => compute();
     window.addEventListener('resize', handleResize);
+    document.addEventListener('visibilitychange', handleVisibility);
 
     let observer: ResizeObserver | undefined;
     const el = scrollParentRef.current;
     if (typeof ResizeObserver !== 'undefined' && el) {
-      observer = new ResizeObserver(() => compute());
+      observer = new ResizeObserver(() => recomputeColWidth());
       observer.observe(el);
     }
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      document.removeEventListener('visibilitychange', handleVisibility);
       observer?.disconnect();
     };
-  }, [isTablet, nCols, leftColW]);
+  }, [recomputeColWidth]);
 
   useEffect(() => {
     didAutoCenterRef.current = false;
