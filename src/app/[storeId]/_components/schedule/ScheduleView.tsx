@@ -189,6 +189,21 @@ export default function ScheduleView({
   const LOCK_SLACK_PX = 18;
   const scrollIdleTimerRef = useRef<number | null>(null);
   const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
+
+  // Ensure the schedule container is not hidden under the top app bar (smartphone case)
+  const ensureHeaderNotUnderAppBar = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const el = scrollParentRef.current;
+    if (!el) return;
+    // Top bar + safe area height already measured in topInsetPx
+    const targetTop = Math.max(0, topInsetPx);
+    const rect = el.getBoundingClientRect();
+    // If the top of the schedule container is above the app bar, push the page down
+    if (rect.top < targetTop - 1) {
+      const delta = (targetTop - rect.top);
+      window.scrollTo({ left: window.scrollX, top: Math.max(0, window.scrollY + delta), behavior: 'auto' });
+    }
+  }, [topInsetPx]);
   const didAutoCenterRef = useRef(false);
   // Backup of planned duration (minutes) before marking as departed
   const departDurationBackupRef = useRef<Record<string, number>>({});
@@ -676,6 +691,31 @@ export default function ScheduleView({
     };
   }, [recomputeColWidth, resetScrollOffsets]);
 
+  // Ensure the schedule container is not hidden under the top app bar
+  useLayoutEffect(() => {
+    // Run immediately and again after layout settles
+    const run = () => ensureHeaderNotUnderAppBar();
+    run();
+    // a couple of delayed runs to cover async layout/route transitions
+    const t1 = window.setTimeout(run, 0);
+    const t2 = window.setTimeout(run, 150);
+
+    const handle = () => ensureHeaderNotUnderAppBar();
+    window.addEventListener('resize', handle);
+    window.addEventListener('orientationchange', handle);
+    document.addEventListener('visibilitychange', handle);
+    window.addEventListener('focus', handle);
+
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.removeEventListener('resize', handle);
+      window.removeEventListener('orientationchange', handle);
+      document.removeEventListener('visibilitychange', handle);
+      window.removeEventListener('focus', handle);
+    };
+  }, [ensureHeaderNotUnderAppBar]);
+
   useEffect(() => {
     const container = scrollParentRef.current;
     if (!container || typeof IntersectionObserver === 'undefined') return;
@@ -685,6 +725,7 @@ export default function ScheduleView({
         if (entry.isIntersecting) {
           requestAnimationFrame(() => {
             resetScrollOffsets();
+            ensureHeaderNotUnderAppBar();
           });
         }
       });
@@ -692,7 +733,7 @@ export default function ScheduleView({
 
     obs.observe(container);
     return () => obs.disconnect();
-  }, [resetScrollOffsets]);
+  }, [resetScrollOffsets, ensureHeaderNotUnderAppBar]);
 
   useEffect(() => {
     resetScrollOffsets();
