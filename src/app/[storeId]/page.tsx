@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { renameCourseTx } from '@/lib/courses';
@@ -331,7 +331,7 @@ const [bottomTab, setBottomTab] = useState<BottomTab>('reservations');
   // メイン画面へ戻す
   const goMain = () => setSelectedMenu('予約リスト×タスク表');
   // 下部タブを押したとき：設定画面ならメインに戻してからタブ切替
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof window === 'undefined') return;
     if (isSettings) return;
     if (bottomTab !== 'schedule') return;
