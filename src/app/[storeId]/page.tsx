@@ -292,7 +292,7 @@ export default function Home() {
 
 function HomeBody() {
   // ── Bottom tabs: 予約リスト / タスク表 / コース開始時間表 / スケジュール
-  const [bottomTab, setBottomTab] = useState<BottomTab>('reservations');
+const [bottomTab, setBottomTab] = useState<BottomTab>('reservations');
 
   // ---- schedule tab routing helpers (layout.tsx が ?tab=schedule を見て表示を切替) ----
   const router = useRouter();
@@ -331,6 +331,28 @@ function HomeBody() {
   // メイン画面へ戻す
   const goMain = () => setSelectedMenu('予約リスト×タスク表');
   // 下部タブを押したとき：設定画面ならメインに戻してからタブ切替
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (isSettings) return;
+    if (bottomTab !== 'schedule') return;
+
+    const scrollEl = () => {
+      const target = document.scrollingElement || document.documentElement;
+      if (target) {
+        target.scrollTop = 0;
+      }
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    };
+
+    scrollEl();
+    const rafId = requestAnimationFrame(scrollEl);
+    const timeoutId = window.setTimeout(scrollEl, 120);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      clearTimeout(timeoutId);
+    };
+  }, [bottomTab, isSettings]);
   const handleBottomTabClick = (tab: BottomTab) => {
     setBottomTab(tab);
     if (isSettings) {
