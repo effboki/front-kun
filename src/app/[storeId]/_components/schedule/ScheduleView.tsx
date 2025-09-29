@@ -577,9 +577,18 @@ const leftColW = isTablet ? 64 : 56;
   const resetScrollOffsets = useCallback(() => {
     const container = scrollParentRef.current;
     if (!container) return;
-    if (container.scrollTop !== 0) {
-      container.scrollTop = 0;
-    }
+
+    const forceTop = () => {
+      if (!container) return;
+      if (container.scrollTop !== 0) {
+        container.scrollTop = 0;
+      }
+    };
+
+    forceTop();
+    requestAnimationFrame(forceTop);
+    setTimeout(forceTop, 120);
+
     scrollPosRef.current = { left: container.scrollLeft, top: container.scrollTop };
     lockOriginRef.current = { left: container.scrollLeft, top: container.scrollTop };
   }, []);
@@ -644,6 +653,10 @@ const leftColW = isTablet ? 64 : 56;
 
     obs.observe(container);
     return () => obs.disconnect();
+  }, [resetScrollOffsets]);
+
+  useEffect(() => {
+    resetScrollOffsets();
   }, [resetScrollOffsets]);
 
   useEffect(() => {
