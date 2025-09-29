@@ -1429,8 +1429,8 @@ const handleDragMove = useCallback((e: any) => {
         >
           {/* === 上部ヘッダー（左上は常に白／時刻は左余白分だけオフセット）=== */}
           <div
-            className={`sticky top-0 z-40 bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
-            style={{ height: headerH, boxShadow: '0 1px 0 0 #e5e7eb', overflow: 'clip' }}
+            className={`sticky z-40 bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
+            style={{ top: topInsetPx, height: headerH, boxShadow: '0 1px 0 0 #e5e7eb', overflow: 'clip' }}
           >
             <div
               className="relative h-full"
@@ -1505,7 +1505,7 @@ const handleDragMove = useCallback((e: any) => {
           <div
             className="sticky left-0 bg-sky-50 z-30 select-none"
             style={{
-              top: headerH,
+              top: headerH + topInsetPx,
               width: leftColW,
               height: gridHeightPx,
               borderRight: '1px solid #cbd5e1',
@@ -1529,8 +1529,8 @@ const handleDragMove = useCallback((e: any) => {
 
           {/* 左上角のホワイト・マスク（横/縦スクロール時も常に空白を維持） */}
           <div
-            className="sticky top-0 left-0 z-[110] bg-white border-b border-r pointer-events-none"
-            style={{ width: leftColW, height: headerH }}
+            className="sticky left-0 z-[110] bg-white border-b border-r pointer-events-none"
+            style={{ top: topInsetPx, width: leftColW, height: headerH }}
             aria-hidden
           />
 
