@@ -574,6 +574,16 @@ const leftColW = isTablet ? 64 : 56;
     return Math.max(1, Math.round(diffMs / SLOT_MS));
   }, [windowHours, SLOT_MS]);
 
+  const resetScrollOffsets = useCallback(() => {
+    const container = scrollParentRef.current;
+    if (!container) return;
+    if (container.scrollTop !== 0) {
+      container.scrollTop = 0;
+    }
+    scrollPosRef.current = { left: container.scrollLeft, top: container.scrollTop };
+    lockOriginRef.current = { left: container.scrollLeft, top: container.scrollTop };
+  }, []);
+
   const recomputeColWidth = useCallback(() => {
     const el = scrollParentRef.current;
     const viewport = el?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 0);
@@ -594,7 +604,10 @@ const leftColW = isTablet ? 64 : 56;
     const handleResize = () => recomputeColWidth();
     const handleVisibility = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-        requestAnimationFrame(() => recomputeColWidth());
+        requestAnimationFrame(() => {
+          recomputeColWidth();
+          resetScrollOffsets();
+        });
       }
     };
 
@@ -613,7 +626,25 @@ const leftColW = isTablet ? 64 : 56;
       document.removeEventListener('visibilitychange', handleVisibility);
       observer?.disconnect();
     };
-  }, [recomputeColWidth]);
+  }, [recomputeColWidth, resetScrollOffsets]);
+
+  useEffect(() => {
+    const container = scrollParentRef.current;
+    if (!container || typeof IntersectionObserver === 'undefined') return;
+
+    const obs = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          requestAnimationFrame(() => {
+            resetScrollOffsets();
+          });
+        }
+      });
+    }, { threshold: 0.2 });
+
+    obs.observe(container);
+    return () => obs.disconnect();
+  }, [resetScrollOffsets]);
 
   useEffect(() => {
     didAutoCenterRef.current = false;
