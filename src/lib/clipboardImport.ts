@@ -279,7 +279,10 @@ function toImportedReservation(
   const tableRaw = pickValue(mapping?.table);
   const courseRaw = pickValue(mapping?.course);
   const notesRaw = Array.isArray(mapping?.notes) && mapping.notes.length > 0
-    ? mapping.notes.map((idx) => (cells[idx] ?? '').trim()).filter(Boolean).join(' ')
+    ? mapping.notes
+        .map((idx) => (cells[idx] ?? '').trim())
+        .filter(Boolean)
+        .join('\n\n')
     : '';
 
   if (!startRaw && !nameRaw && !peopleRaw) return null;

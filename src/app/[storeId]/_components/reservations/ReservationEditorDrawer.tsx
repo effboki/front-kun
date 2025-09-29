@@ -134,6 +134,7 @@ const hasText = (v: unknown): boolean => typeof v === 'string' && v.trim().lengt
 const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
 const MINUTE_MS = 60 * 1000;
+const MEMO_MIN_HEIGHT = 80;
 
 // 滞在分の候補（5分刻み）。既定は 30〜240分
 const buildStayMinOptions = (min = 30, max = 240, step = 5) => {
@@ -277,6 +278,19 @@ export default function ReservationEditorDrawer(props: Props) {
   const [drinkLabel, setDrinkLabel] = React.useState<string>(toText(initial?.drinkLabel));
   const [eatLabel,  setEatLabel]    = React.useState<string>(toText(initial?.eatLabel));
   const [memo, setMemo] = React.useState<string>(initial?.memo ?? '');
+  const memoTextareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const adjustMemoHeight = React.useCallback(() => {
+    const el = memoTextareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const next = Math.max(el.scrollHeight, MEMO_MIN_HEIGHT);
+    el.style.height = `${next}px`;
+  }, []);
+
+  React.useLayoutEffect(() => {
+    if (!open) return;
+    adjustMemoHeight();
+  }, [open, memo, adjustMemoHeight]);
   const [tables, setTables] = React.useState<string[]>(() => {
     if (initial?.tables && initial.tables.length > 0) return initial.tables;
     if (initial?.table) return [initial.table];
@@ -855,10 +869,11 @@ export default function ReservationEditorDrawer(props: Props) {
           {/* 備考（グループ） */}
           <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3">
             <div className="mb-2 text-xs font-semibold text-amber-700">備考</div>
-            <div className="flex items-center gap-2">
-              <label className="w-[7em] shrink-0 text-sm font-medium">メモ</label>
+            <div className="flex items-start gap-2">
+              <label className="w-[7em] shrink-0 pt-2 text-sm font-medium">メモ</label>
               <textarea
-                className="flex-1 rounded border px-3 py-2 min-h-[80px]"
+                ref={memoTextareaRef}
+                className="flex-1 rounded border px-3 py-2 min-h-[80px] resize-none leading-relaxed"
                 value={memo}
                 onChange={(e) => setMemo(e.currentTarget.value)}
                 placeholder="アレルギー、席希望など"

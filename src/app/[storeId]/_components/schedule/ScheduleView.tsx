@@ -123,6 +123,12 @@ const [isTablet, setIsTablet] = useState(() =>
   (typeof window !== 'undefined' ? window.innerWidth >= 768 : false),
 );
 
+const safeAreaTopExpr = 'env(safe-area-inset-top, 0px)';
+const stickyHeaderTopCss = isTablet ? '0px' : `calc(${STICKY_TOP_PX}px + ${safeAreaTopExpr})`;
+const stickyLeftColumnTopCss = isTablet
+  ? `${headerH}px`
+  : `calc(${headerH + STICKY_TOP_PX}px + ${safeAreaTopExpr})`;
+
 // 左の卓番号列の幅（px）: スマホ 56 / タブレット 64
 const leftColW = isTablet ? 64 : 56;
   // 5分スロット幅(px)。タブレットは少し広め
@@ -562,11 +568,15 @@ const leftColW = isTablet ? 64 : 56;
     const startHour = Number.isFinite(rawStart) ? Math.trunc(rawStart) : 0;
     const rawEnd = Number(scheduleEndHour);
     const diff = Number.isFinite(rawEnd) ? rawEnd - startHour : 0;
-    const windowH = diff > 0 ? Math.max(4, diff) : 4;
+    // If parent doesn't specify end hour, default visible window:
+    // - smartphone: 4h
+    // - tablet: 7h
+    const fallbackHours = isTablet ? 7 : 4;
+    const windowH = diff > 0 ? Math.max(4, diff) : fallbackHours;
     const startMs = day0 + startHour * 60 * 60 * 1000;
     const endMs = startMs + windowH * 60 * 60 * 1000;
     return { anchorStartMs: startMs, rangeEndMs: endMs, windowHours: windowH };
-  }, [day0, scheduleStartHour, scheduleEndHour]);
+  }, [day0, scheduleStartHour, scheduleEndHour, isTablet]);
 
   // 3) 列数（5分 = 1 列）: (時間差 * 60分) / SLOT_MIN = (時間差 * 3600000) / SLOT_MS
   const nCols = useMemo(() => {
@@ -598,7 +608,8 @@ const leftColW = isTablet ? 64 : 56;
     const viewport = el?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 0);
     if (!viewport) return;
     const slotMs = SLOT_MS;
-    const visibleCols = Math.max(1, Math.round((4 * 60 * 60 * 1000) / slotMs));
+    const hoursToFit = isTablet ? 7 : 4; // tablet shows ~7h across, phone ~4h
+    const visibleCols = Math.max(1, Math.round((hoursToFit * 60 * 60 * 1000) / slotMs));
     const desired = (viewport - leftColW) / visibleCols;
     if (!Number.isFinite(desired) || desired <= 0) return;
     const min = isTablet ? 9 : 4.5;
@@ -1346,8 +1357,13 @@ const handleDragMove = useCallback((e: any) => {
         >
           {/* === 上部ヘッダー（左上は常に白／時刻は左余白分だけオフセット）=== */}
           <div
-            className={`sticky top-0 z-40 bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
-            style={{ height: headerH, boxShadow: '0 1px 0 0 #e5e7eb', overflow: 'clip' }}
+            className={`sticky z-40 bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
+            style={{
+              top: stickyHeaderTopCss,
+              height: headerH,
+              boxShadow: '0 1px 0 0 #e5e7eb',
+              overflow: 'clip',
+            }}
           >
             <div
               className="relative h-full"
@@ -1422,7 +1438,7 @@ const handleDragMove = useCallback((e: any) => {
           <div
             className="sticky left-0 bg-sky-50 z-30 select-none"
             style={{
-              top: headerH,
+              top: stickyLeftColumnTopCss,
               width: leftColW,
               height: gridHeightPx,
               borderRight: '1px solid #cbd5e1',
@@ -1446,8 +1462,8 @@ const handleDragMove = useCallback((e: any) => {
 
           {/* 左上角のホワイト・マスク（横/縦スクロール時も常に空白を維持） */}
           <div
-            className="sticky top-0 left-0 z-[110] bg-white border-b border-r pointer-events-none"
-            style={{ width: leftColW, height: headerH }}
+            className="sticky left-0 z-[110] bg-white border-b border-r pointer-events-none"
+            style={{ top: stickyHeaderTopCss, width: leftColW, height: headerH }}
             aria-hidden
           />
 
