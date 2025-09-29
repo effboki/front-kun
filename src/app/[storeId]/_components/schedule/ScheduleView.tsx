@@ -53,8 +53,8 @@ function patchSatisfiedByItem(item: UnknownRecord | undefined | null, patch: Opt
   return true;
 }
 
-// アプリ上部バーの高さ(px)。時間ヘッダーをこの位置に固定
-const STICKY_TOP_PX = 48; // 必要なら 70 等に調整
+// アプリ上部バー（安全領域含む）のフォールバック高さ(px)。実端末では後で実測する。
+const DEFAULT_TOP_BAR_PX = 48;
 // 画面下部のタブバー（フッター）高さ(px)。端末により前後する場合は調整
 const BOTTOM_TAB_PX = 70;
 
@@ -116,21 +116,17 @@ export default function ScheduleView({
   onToggleDeparture,
 }: Props) {
   // --- 列幅・端末判定 ---
-const headerH = 40; // 時刻ヘッダーの高さ(px)
+  const headerH = 40; // 時刻ヘッダーの高さ(px)
 
-// 端末幅で判定（スマホ/タブレット）
-const [isTablet, setIsTablet] = useState(() =>
-  (typeof window !== 'undefined' ? window.innerWidth >= 768 : false),
-);
+  // 端末幅で判定（スマホ/タブレット）
+  const [isTablet, setIsTablet] = useState(() =>
+    (typeof window !== 'undefined' ? window.innerWidth >= 768 : false),
+  );
 
-const safeAreaTopExpr = 'env(safe-area-inset-top, 0px)';
-const stickyHeaderTopCss = isTablet ? '0px' : `calc(${STICKY_TOP_PX}px + ${safeAreaTopExpr})`;
-const stickyLeftColumnTopCss = isTablet
-  ? `${headerH}px`
-  : `calc(${headerH + STICKY_TOP_PX}px + ${safeAreaTopExpr})`;
-
-// 左の卓番号列の幅（px）: スマホ 56 / タブレット 64
-const leftColW = isTablet ? 64 : 56;
+  // 左の卓番号列の幅（px）: スマホ 56 / タブレット 64
+  const leftColW = isTablet ? 64 : 56;
+  const [topInsetPx, setTopInsetPx] = useState<number>(DEFAULT_TOP_BAR_PX);
+  const extraTopMargin = Math.max(0, topInsetPx - DEFAULT_TOP_BAR_PX);
   // 5分スロット幅(px)。タブレットは少し広め
   const [colW, setColW] = useState(() => (typeof window !== 'undefined' && window.innerWidth >= 768 ? 12 : 6));
   useEffect(() => {
@@ -141,6 +137,38 @@ const leftColW = isTablet ? 64 : 56;
     onResize();
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const updateInset = () => {
+      const safe = document.querySelector('[data-app-top-safe]') as HTMLElement | null;
+      const bar = document.querySelector('[data-app-top-bar]') as HTMLElement | null;
+      const safeHeight = safe?.getBoundingClientRect().height ?? 0;
+      const barHeight = bar?.getBoundingClientRect().height ?? 0;
+      const total = Math.round(safeHeight + barHeight);
+      const next = total > 0 ? total : DEFAULT_TOP_BAR_PX;
+      setTopInsetPx((prev) => (Math.abs(prev - next) > 0.5 ? next : prev));
+    };
+
+    updateInset();
+
+    const handleResize = () => updateInset();
+
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+
+    const viewport = typeof window.visualViewport !== 'undefined' ? window.visualViewport : undefined;
+    viewport?.addEventListener('resize', handleResize);
+    viewport?.addEventListener('scroll', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+      viewport?.removeEventListener('resize', handleResize);
+      viewport?.removeEventListener('scroll', handleResize);
+    };
   }, []);
 
   // スクロール方向の影用（ヘッダー/左列にシャドウを付ける）
@@ -189,7 +217,7 @@ const leftColW = isTablet ? 64 : 56;
     const compute = () => {
       const viewportH = window.innerHeight;
       // スクロール親の高さ計算と合わせる（上部バー + 下部タブを控除）
-      const usableH = Math.max(160, viewportH - (STICKY_TOP_PX + BOTTOM_TAB_PX));
+      const usableH = Math.max(160, viewportH - (topInsetPx + BOTTOM_TAB_PX));
       const scrollableHeight = Math.max(MIN_CARD_HEIGHT_PX, usableH - headerH);
       const rowsFitMin = Math.max(1, Math.floor(scrollableHeight / MIN_CARD_HEIGHT_PX));
       const targetRows = Math.max(1, Math.min(MAX_VISIBLE_ROWS, rowsFitMin));
@@ -202,7 +230,7 @@ const leftColW = isTablet ? 64 : 56;
     compute();
     window.addEventListener('resize', compute);
     return () => window.removeEventListener('resize', compute);
-  }, []);
+  }, [topInsetPx, rowHeightPx]);
 
   // 実際に使う行高：ビュー由来の自動計算と指定値のうち大きい方
   const effectiveRowH = Math.max(rowHeightPx, autoRowH);
@@ -1324,7 +1352,10 @@ const handleDragMove = useCallback((e: any) => {
 
   const gridHeightPx = rowHeightsPx.reduce((a, b) => a + b, 0);
   return (
-    <div className="relative w-full bg-transparent">
+    <div
+      className="relative w-full bg-transparent"
+      style={extraTopMargin ? { marginTop: extraTopMargin } : undefined}
+    >
       {/* 共通スクロール領域（縦・横ともにこの要素がスクロール親） */}
       <div
         ref={scrollParentRef}
@@ -1338,7 +1369,7 @@ const handleDragMove = useCallback((e: any) => {
         onWheel={handleWheelLock}
         style={{
           // 画面上部のアプリバー分だけ余白を見込んで高さを固定（必要なら調整）
-          height: `calc(100vh - ${STICKY_TOP_PX + BOTTOM_TAB_PX}px - env(safe-area-inset-bottom))`,
+          height: `calc(100vh - ${topInsetPx + BOTTOM_TAB_PX}px - env(safe-area-inset-bottom))`,
           overscrollBehavior: 'none',
           overscrollBehaviorX: 'none',
           overscrollBehaviorY: 'none',
@@ -1357,13 +1388,8 @@ const handleDragMove = useCallback((e: any) => {
         >
           {/* === 上部ヘッダー（左上は常に白／時刻は左余白分だけオフセット）=== */}
           <div
-            className={`sticky z-40 bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
-            style={{
-              top: stickyHeaderTopCss,
-              height: headerH,
-              boxShadow: '0 1px 0 0 #e5e7eb',
-              overflow: 'clip',
-            }}
+            className={`sticky top-0 z-40 bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
+            style={{ height: headerH, boxShadow: '0 1px 0 0 #e5e7eb', overflow: 'clip' }}
           >
             <div
               className="relative h-full"
@@ -1438,7 +1464,7 @@ const handleDragMove = useCallback((e: any) => {
           <div
             className="sticky left-0 bg-sky-50 z-30 select-none"
             style={{
-              top: stickyLeftColumnTopCss,
+              top: headerH,
               width: leftColW,
               height: gridHeightPx,
               borderRight: '1px solid #cbd5e1',
@@ -1462,8 +1488,8 @@ const handleDragMove = useCallback((e: any) => {
 
           {/* 左上角のホワイト・マスク（横/縦スクロール時も常に空白を維持） */}
           <div
-            className="sticky left-0 z-[110] bg-white border-b border-r pointer-events-none"
-            style={{ top: stickyHeaderTopCss, width: leftColW, height: headerH }}
+            className="sticky top-0 left-0 z-[110] bg-white border-b border-r pointer-events-none"
+            style={{ width: leftColW, height: headerH }}
             aria-hidden
           />
 
