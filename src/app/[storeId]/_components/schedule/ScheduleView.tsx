@@ -126,9 +126,18 @@ export default function ScheduleView({
   // 左の卓番号列の幅（px）: スマホ 56 / タブレット 64
   const leftColW = isTablet ? 64 : 56;
   const [topInsetPx, setTopInsetPx] = useState<number>(DEFAULT_TOP_BAR_PX);
-  const extraTopMargin = Math.max(0, topInsetPx - DEFAULT_TOP_BAR_PX);
+  // Display-pixel snapping to avoid subpixel drift between CSS Grid and gradients
+  const snapPx = useCallback((n: number) => {
+    const dpr =
+      typeof window !== 'undefined' && window.devicePixelRatio
+        ? window.devicePixelRatio
+        : 1;
+    return Math.round(n * dpr) / Math.max(1, dpr);
+  }, []);
+  const headerOffsetPx = Math.max(0, topInsetPx - DEFAULT_TOP_BAR_PX);
   // 5分スロット幅(px)。タブレットは少し広め
   const [colW, setColW] = useState(() => (typeof window !== 'undefined' && window.innerWidth >= 768 ? 12 : 6));
+  const colWpx = useMemo(() => snapPx(colW), [colW, snapPx]);
   useEffect(() => {
     setColW(isTablet ? 12 : 6);
   }, [isTablet]);
@@ -174,6 +183,62 @@ export default function ScheduleView({
   // スクロール方向の影用（ヘッダー/左列にシャドウを付ける）
   const [scrolled, setScrolled] = useState({ x: false, y: false });
   const headerLeftOverlayRef = useRef<HTMLDivElement | null>(null);
+  // ===== Floating timeline header (smartphone): fixed overlay that tracks horizontal scroll (DOM refs to minimize lag) =====
+  const floatHeaderRef = useRef<HTMLDivElement | null>(null);
+  const floatRailRef = useRef<HTMLDivElement | null>(null);
+  const floatContentRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const lastFloatRef = useRef<{ left: number; width: number; rail: number; contentShift: number }>({
+    left: -1,
+    width: -1,
+    rail: -1,
+    contentShift: -1,
+  });
+
+  // Apply current geometry to the floating header (called via rAF)
+  const applyFloatingHeaderLayout = useCallback(() => {
+    const el = scrollParentRef.current;
+    const hdr = floatHeaderRef.current;
+    const rail = floatRailRef.current;
+    const content = floatContentRef.current;
+    if (!el || !hdr || !rail || !content) return;
+
+    const rect = el.getBoundingClientRect();
+    const left = snapPx(rect.left);
+    const width = snapPx(rect.width);
+    const scrollLeft = snapPx(el.scrollLeft);
+
+    const railSpan = Math.max(0, leftColW - scrollLeft);
+    const railW = snapPx(railSpan);
+    const contentShift = snapPx(-scrollLeft);
+
+    if (lastFloatRef.current.left !== left) {
+      hdr.style.left = `${left}px`;
+      lastFloatRef.current.left = left;
+    }
+    if (lastFloatRef.current.width !== width) {
+      hdr.style.width = `${width}px`;
+      lastFloatRef.current.width = width;
+    }
+    if (lastFloatRef.current.rail !== railW) {
+      rail.style.width = `${railW}px`;
+      rail.style.borderRight = railW > 0 ? '1px solid #e5e7eb' : 'none';
+      lastFloatRef.current.rail = railW;
+    }
+    if (lastFloatRef.current.contentShift !== contentShift) {
+      content.style.transform = `translate3d(${contentShift}px,0,0)`;
+      lastFloatRef.current.contentShift = contentShift;
+    }
+  }, [leftColW, snapPx]);
+
+  // rAF-scheduled updater to coalesce scroll events
+  const scheduleFloatingUpdate = useCallback(() => {
+    if (rafRef.current != null) return;
+    rafRef.current = window.requestAnimationFrame(() => {
+      rafRef.current = null;
+      applyFloatingHeaderLayout();
+    });
+  }, [applyFloatingHeaderLayout]);
   // ===== Scroll container axis-lock (screen-level) =====
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
   const scrollAxisRef = useRef<'x' | 'y' | null>(null);
@@ -205,10 +270,11 @@ export default function ScheduleView({
 
   useEffect(() => {
     if (headerLeftOverlayRef.current) {
-      const x = Math.round(scrollParentRef.current?.scrollLeft ?? 0);
+      const raw = scrollParentRef.current?.scrollLeft ?? 0;
+      const x = snapPx(raw);
       headerLeftOverlayRef.current.style.transform = `translate3d(${x}px,0,0)`;
     }
-  }, []);
+  }, [snapPx]);
 
   // ===== 行高の自動計算（スマホ：画面に約12行が収まるように） =====
   // タブレットは従来どおり `rowHeightPx` をそのまま使用し、
@@ -359,10 +425,30 @@ export default function ScheduleView({
     const ny = el.scrollTop > 1;
     setScrolled(prev => (prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny }));
     if (headerLeftOverlayRef.current) {
-      const x = Math.round(el.scrollLeft);
+      const x = snapPx(el.scrollLeft);
       headerLeftOverlayRef.current.style.transform = `translate3d(${x}px,0,0)`;
     }
-  }, [lockScrollAxis, scheduleScrollIdleReset]);
+    // keep floating header aligned with horizontal scroll (smartphone) via rAF
+    scheduleFloatingUpdate();
+  }, [lockScrollAxis, scheduleScrollIdleReset, scheduleFloatingUpdate, snapPx]);
+  useLayoutEffect(() => {
+    applyFloatingHeaderLayout();
+    const onWin = () => applyFloatingHeaderLayout();
+    window.addEventListener('resize', onWin);
+    window.addEventListener('orientationchange', onWin);
+    document.addEventListener('visibilitychange', onWin);
+    return () => {
+      window.removeEventListener('resize', onWin);
+      window.removeEventListener('orientationchange', onWin);
+      document.removeEventListener('visibilitychange', onWin);
+    };
+  }, [applyFloatingHeaderLayout]);
+
+  useLayoutEffect(() => {
+    const hdr = floatHeaderRef.current;
+    if (hdr) hdr.style.top = `${topInsetPx}px`;
+    applyFloatingHeaderLayout();
+  }, [applyFloatingHeaderLayout, leftColW, topInsetPx]);
 
   const applyOptimistic = useCallback((id: string, patch: OptimisticPatch) => {
     if (!id || !patch) return;
@@ -639,15 +725,16 @@ export default function ScheduleView({
     const viewport = el?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 0);
     if (!viewport) return;
     const slotMs = SLOT_MS;
-    const hoursToFit = isTablet ? 7 : 4; // tablet shows ~7h across, phone ~4h
+    const hoursToFit = isTablet ? 7 : 4; // tablet ~7h / phone ~4h
     const visibleCols = Math.max(1, Math.round((hoursToFit * 60 * 60 * 1000) / slotMs));
     const desired = (viewport - leftColW) / visibleCols;
     if (!Number.isFinite(desired) || desired <= 0) return;
     const min = isTablet ? 9 : 4.5;
     const max = isTablet ? 18 : 9;
-    const next = Math.max(min, Math.min(max, desired));
-    setColW((prev) => (Math.abs(prev - next) > 0.25 ? next : prev));
-  }, [isTablet, leftColW, SLOT_MS]);
+    // ★ 小数pxをデバイスピクセルに丸める
+    const snapped = snapPx(Math.max(min, Math.min(max, desired)));
+    setColW((prev) => (Math.abs(prev - snapped) > 0.25 ? snapped : prev));
+  }, [isTablet, leftColW, SLOT_MS, snapPx]);
 
   useLayoutEffect(() => {
     recomputeColWidth();
@@ -729,7 +816,7 @@ export default function ScheduleView({
 
   useEffect(() => {
     didAutoCenterRef.current = false;
-  }, [anchorStartMs, rangeEndMs, nCols, colW, leftColW]);
+  }, [anchorStartMs, rangeEndMs, nCols, colWpx, leftColW]);
 
   useEffect(() => {
     if (didAutoCenterRef.current) return;
@@ -741,13 +828,13 @@ export default function ScheduleView({
     }
 
     const viewport = el.clientWidth;
-    const contentWidth = leftColW + nCols * colW;
+    const contentWidth = leftColW + nCols * colWpx;
     if (!viewport || contentWidth <= viewport) {
       didAutoCenterRef.current = true;
       return;
     }
 
-    const offsetInTimeline = ((nowMs - anchorStartMs) / SLOT_MS) * colW;
+    const offsetInTimeline = ((nowMs - anchorStartMs) / SLOT_MS) * colWpx;
     const desired = leftColW + offsetInTimeline - viewport / 2;
     const maxScroll = Math.max(0, contentWidth - viewport);
     const nextLeft = Math.max(0, Math.min(desired, maxScroll));
@@ -767,13 +854,12 @@ export default function ScheduleView({
       lockOriginRef.current.top = target.scrollTop;
       didAutoCenterRef.current = true;
     });
-  }, [nowMs, anchorStartMs, rangeEndMs, nCols, colW, leftColW]);
+  }, [nowMs, anchorStartMs, rangeEndMs, nCols, colWpx, leftColW]);
 
-  // 1時間あたりのカラム数（SLOT_MS=5分なら 12）と、1時間のピクセル幅
+  // 1時間あたりのカラム数（SLOT_MS=5分なら 12）と、1時間のピクセル幅（ピクセルスナップ済みを使用）
   const colsPerHour = Math.round((60 * 60 * 1000) / SLOT_MS);
-  const hourPx = colW * colsPerHour;
-  // 補助縦線（実線）は 30 分固定。タブレットでは 15/45 は別レイヤーで破線オーバーレイ
-  const minorSolidStepPx = 6 * colW; // 30分 = 6スロット
+  const hourPx = useMemo(() => snapPx(colWpx * colsPerHour), [snapPx, colWpx, colsPerHour]);
+  const minorSolidStepPx = useMemo(() => snapPx(6 * colWpx), [snapPx, colWpx]); // 30分
 
   // 当日0:00基準（保存・変換は必ず「その日の0:00」基準）
   // （上で day0 を定義済み）
@@ -992,13 +1078,13 @@ export default function ScheduleView({
     const GAP = 4;       // 旧: 8
 
     // カードの左右端・幅（px）
-    const cardLeft = (startCol - 1) * colW;
-    const cardWidth = spanCols * colW;
+    const cardLeft = (startCol - 1) * colWpx;
+    const cardWidth = spanCols * colWpx;
     const cardRight = cardLeft + cardWidth;
 
     // 水平位置はカード中央に。はみ出す場合はクランプ。
     let left = cardLeft + (cardWidth - bubbleW) / 2;
-    const maxLeft = nCols * colW - bubbleW;
+    const maxLeft = nCols * colWpx - bubbleW;
     left = Math.max(4, Math.min(left, maxLeft));
 
     // 垂直位置は「真下（優先）→上」の順。どちらも 4px だけ離す。
@@ -1013,7 +1099,7 @@ export default function ScheduleView({
 
     setActionBubble({ left, top: topPos });
     setActionMenuOpen(true);
-  }, [rowHeightsPx, rowStackCount, effectiveRowH, colW, nCols]);
+  }, [rowHeightsPx, rowStackCount, effectiveRowH, colWpx, nCols]);
 
   // 同じカードが最新データで更新されたら、メニュー表示中でも状態を同期する
   useEffect(() => {
@@ -1168,7 +1254,7 @@ export default function ScheduleView({
 
     if (absX >= absY) {
       // 横移動：開始列→startMs 再計算
-      const deltaCols = Math.round(deltaX / colW);
+      const deltaCols = Math.round(deltaX / colWpx);
       if (!deltaCols) return;
       const newStartCol = Math.max(1, startCol + deltaCols);
       const newStartMs = startMsFromCol(newStartCol);
@@ -1224,7 +1310,7 @@ export default function ScheduleView({
       runSave(baseId, patch, { tables: deduped, table: patch.table, editedUntilMs: Date.now() + 15000 });
       setArmedId(null);
     }
-  }, [onSave, runSave, clipped, colW, startMsFromCol, endMsFromColSpan, durationMinFromSpan, effectiveRowH, tables, setArmedId, rowHeightsPx]);
+  }, [onSave, runSave, clipped, colWpx, startMsFromCol, endMsFromColSpan, durationMinFromSpan, effectiveRowH, tables, setArmedId, rowHeightsPx]);
 
 // DnD センサー: 長押ししてからドラッグ開始（スクロールを妨げない）
 const sensors = useSensors(
@@ -1280,7 +1366,7 @@ const handleDragMove = useCallback((e: any) => {
     const y = e.clientY - rect.top;
 
     // 列（1-based）
-    let col = Math.floor(x / colW) + 1;
+    let col = Math.floor(x / colWpx) + 1;
     col = Math.max(1, Math.min(nCols, col));
 
     // 行（1-based）：可変行高に対応
@@ -1309,7 +1395,7 @@ const handleDragMove = useCallback((e: any) => {
       initial: { startMs, tables: joined, table: mainTable, guests: 0, name: '' },
     });
     setDrawerOpen(true);
-  }, [nCols, anchorStartMs, tables, colW, rowHeightsPx, actionMenuOpen]);
+  }, [nCols, anchorStartMs, tables, colWpx, rowHeightsPx, actionMenuOpen]);
 
   // Pointer-based axis decision (touch/pen/mouse drag on the scroll area)
   const handleScrollPointerDown = useCallback((e: PointerEvent<HTMLDivElement>) => {
@@ -1378,13 +1464,74 @@ const handleDragMove = useCallback((e: any) => {
       clearScrollIdleTimer();
     };
   }, [clearScrollIdleTimer]);
+  useEffect(() => {
+    return () => {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
 
   const gridHeightPx = rowHeightsPx.reduce((a, b) => a + b, 0);
   return (
     <div
       className="relative w-full bg-transparent"
-      style={extraTopMargin ? { marginTop: extraTopMargin } : undefined}
+      style={headerOffsetPx ? { marginTop: headerOffsetPx } : undefined}
     >
+      {/* Floating time header (smartphone only): fixed, above everything, tracks horizontal scroll */}
+      {!isTablet && (
+        <div
+          ref={floatHeaderRef}
+          className="fixed z-[4000] pointer-events-none"
+          style={{ top: topInsetPx, left: 0, width: 0, height: headerH }}
+          aria-hidden
+        >
+          <div className="relative h-full w-full">
+            {/* Left white cap equals visible part of left rail */}
+            <div
+              ref={floatRailRef}
+              className="absolute inset-y-0 left-0 bg-white"
+              style={{ width: leftColW }}
+            />
+            {/* Masked viewport */}
+            <div className="absolute inset-0 overflow-hidden">
+              {/* Content positioned in content coordinates; shifted by transform */}
+              <div
+                ref={floatContentRef}
+                className="absolute inset-y-0 will-change-transform"
+                style={{ transform: 'translate3d(0,0,0)', width: leftColW + nCols * colWpx, height: headerH }}
+              >
+                <div
+                  className="absolute inset-y-0"
+                  style={{
+                    left: leftColW,
+                    width: nCols * colWpx,
+                    height: headerH,
+                    backgroundImage: `repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)`,
+                  }}
+                >
+                  {/* Now indicator */}
+                  {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
+                    <div
+                      className="absolute top-0 bottom-0"
+                      style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colWpx}px` }}
+                    >
+                      <div className="h-full border-l-2 border-red-500 opacity-70" />
+                    </div>
+                  )}
+                  <TimelineHeader
+                    nCols={nCols}
+                    rangeStartMs={anchorStartMs}
+                    colW={colWpx}
+                    compact
+                    scheduleStartHour={Number(scheduleStartHour ?? 0)}
+                    scheduleEndHour={Number(scheduleEndHour ?? 0)}
+                    colsPerHour={colsPerHour}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {/* 共通スクロール領域（縦・横ともにこの要素がスクロール親） */}
       <div
         ref={scrollParentRef}
@@ -1411,18 +1558,26 @@ const handleDragMove = useCallback((e: any) => {
           className="relative"
           style={{
             // スクロール幅 = 左列 + タイムライン幅
-            width: leftColW + nCols * colW,
+            width: leftColW + nCols * colWpx,
             height: headerH + gridHeightPx,
           }}
         >
           {/* === 上部ヘッダー（左上は常に白／時刻は左余白分だけオフセット）=== */}
           <div
             className={`sticky z-[1200] bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
-            style={{ top: 0, height: headerH, boxShadow: '0 1px 0 0 #e5e7eb', overflow: 'clip', pointerEvents: 'none' }}
+            style={{
+              top: 0,
+              height: headerH,
+              boxShadow: '0 1px 0 0 #e5e7eb',
+              overflow: 'clip',
+              pointerEvents: 'none',
+              // smartphone: keep height but hide visual (floating header will render)
+              visibility: isTablet ? 'visible' : 'hidden',
+            }}
           >
             <div
               className="relative h-full"
-              style={{ width: leftColW + nCols * colW }}
+              style={{ width: leftColW + nCols * colWpx }}
             >
               {/* 左上の常時白い帯（横スクロール時も画面端に固定） */}
               <div
@@ -1442,7 +1597,7 @@ const handleDragMove = useCallback((e: any) => {
                 className="absolute inset-y-0"
                 style={{
                   left: leftColW,
-                  width: nCols * colW,
+                  width: nCols * colWpx,
                   height: headerH,
                   overflow: 'hidden',
                   backgroundImage: `repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)`,
@@ -1453,7 +1608,7 @@ const handleDragMove = useCallback((e: any) => {
                 {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
                   <div
                     className="absolute top-0 bottom-0 pointer-events-none z-10"
-                    style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colW}px`, zIndex: 5 }}
+                    style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colWpx}px`, zIndex: 5 }}
                   >
                     <div className="h-full border-l-2 border-red-500 opacity-70" />
                   </div>
@@ -1461,7 +1616,7 @@ const handleDragMove = useCallback((e: any) => {
                 <TimelineHeader
                   nCols={nCols}
                   rangeStartMs={anchorStartMs}
-                  colW={colW}
+                  colW={colWpx}
                   compact
                   scheduleStartHour={Number(scheduleStartHour ?? 0)}
                   scheduleEndHour={Number(scheduleEndHour ?? 0)}
@@ -1535,7 +1690,7 @@ const handleDragMove = useCallback((e: any) => {
               style={{
                 left: leftColW,
                 top: headerH,
-                width: nCols * colW,
+                width: nCols * colWpx,
                 height: gridHeightPx,
                 touchAction: 'pan-x pan-y',
               }}
@@ -1545,28 +1700,28 @@ const handleDragMove = useCallback((e: any) => {
             >
               <div
                 className="relative grid h-full w-full"
-              style={{
-                gridTemplateColumns: `repeat(${nCols}, ${colW}px)`,
-                gridTemplateRows: rowHeightsPx.map(h => `${h}px`).join(' '),
-                backgroundImage: `
-                  repeating-linear-gradient(to right, #d1d5db 0, #d1d5db 1px, transparent 1px, transparent ${hourPx}px),
-                  repeating-linear-gradient(to right, #e5e7eb 0, #e5e7eb 1px, transparent 1px, transparent ${minorSolidStepPx}px),
-                  repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)
-                `,
-              }}
+                style={{
+                  gridTemplateColumns: `repeat(${nCols}, ${colWpx}px)`,
+                  gridTemplateRows: rowHeightsPx.map(h => `${h}px`).join(' '),
+                  backgroundImage: `
+                    repeating-linear-gradient(to right, #d1d5db 0, #d1d5db 1px, transparent 1px, transparent ${hourPx}px),
+                    repeating-linear-gradient(to right, #e5e7eb 0, #e5e7eb 1px, transparent 1px, transparent ${minorSolidStepPx}px),
+                    repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)
+                  `,
+                }}
               >
-                <ScheduleGrid nCols={nCols} colW={colW} rowHeights={rowHeightsPx} />
+                <ScheduleGrid nCols={nCols} colW={colWpx} rowHeights={rowHeightsPx} />
 
                 {/* 15/45 分の破線（タブレットのみ） */}
                 {isTablet && (
-                  <DashedQuarterLines nCols={nCols} colW={colW} colsPerHour={colsPerHour} />
+                  <DashedQuarterLines nCols={nCols} colW={colWpx} colsPerHour={colsPerHour} />
                 )}
 
                 {/* Now indicator */}
                 {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
                   <div
                     className="absolute top-0 bottom-0 pointer-events-none z-[20]"
-                    style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colW}px` }}
+                    style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colWpx}px` }}
                   >
                     <div className="h-full border-l-2 border-red-500 opacity-70" />
                   </div>
@@ -1594,7 +1749,7 @@ const handleDragMove = useCallback((e: any) => {
                     className="absolute z-[95]"
                     data-scroll-lock-ignore
                     style={{
-                      left: Math.max(4, Math.min(actionBubble.left, nCols * colW - 220)),
+                      left: Math.max(4, Math.min(actionBubble.left, nCols * colWpx - 220)),
                       top: actionBubble.top,
                     }}
                     onClick={(e) => e.stopPropagation()}
@@ -1707,14 +1862,14 @@ const handleDragMove = useCallback((e: any) => {
                 style={{
                   left: leftColW,
                   top: headerH,
-                  width: nCols * colW,
+                  width: nCols * colWpx,
                   height: gridHeightPx,
                 }}
               >
                 <div
                   className="relative grid h-full w-full"
                   style={{
-                    gridTemplateColumns: `repeat(${nCols}, ${colW}px)`,
+                    gridTemplateColumns: `repeat(${nCols}, ${colWpx}px)`,
                     gridTemplateRows: rowHeightsPx.map(h => `${h}px`).join(' '),
                   }}
                 >
