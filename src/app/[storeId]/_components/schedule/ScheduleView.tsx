@@ -190,20 +190,8 @@ export default function ScheduleView({
   const scrollIdleTimerRef = useRef<number | null>(null);
   const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
 
-  // Ensure the schedule container is not hidden under the top app bar (smartphone case)
-  const ensureHeaderNotUnderAppBar = useCallback(() => {
-    if (typeof window === 'undefined') return;
-    const el = scrollParentRef.current;
-    if (!el) return;
-    // Top bar + safe area height already measured in topInsetPx
-    const targetTop = Math.max(0, topInsetPx);
-    const rect = el.getBoundingClientRect();
-    // If the top of the schedule container is above the app bar, push the page down
-    if (rect.top < targetTop - 1) {
-      const delta = (targetTop - rect.top);
-      window.scrollTo({ left: window.scrollX, top: Math.max(0, window.scrollY + delta), behavior: 'auto' });
-    }
-  }, [topInsetPx]);
+  // No auto page scroll: header visibility is ensured by layering (z-index).
+  const ensureHeaderNotUnderAppBar = useCallback(() => { /* intentionally empty */ }, []);
   const didAutoCenterRef = useRef(false);
   // Backup of planned duration (minutes) before marking as departed
   const departDurationBackupRef = useRef<Record<string, number>>({});
@@ -1429,8 +1417,8 @@ const handleDragMove = useCallback((e: any) => {
         >
           {/* === 上部ヘッダー（左上は常に白／時刻は左余白分だけオフセット）=== */}
           <div
-            className={`sticky z-40 bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
-            style={{ top: topInsetPx, height: headerH, boxShadow: '0 1px 0 0 #e5e7eb', overflow: 'clip' }}
+            className={`sticky z-[1200] bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
+            style={{ top: 0, height: headerH, boxShadow: '0 1px 0 0 #e5e7eb', overflow: 'clip', pointerEvents: 'none' }}
           >
             <div
               className="relative h-full"
@@ -1505,7 +1493,7 @@ const handleDragMove = useCallback((e: any) => {
           <div
             className="sticky left-0 bg-sky-50 z-30 select-none"
             style={{
-              top: headerH + topInsetPx,
+              top: headerH,
               width: leftColW,
               height: gridHeightPx,
               borderRight: '1px solid #cbd5e1',
@@ -1529,8 +1517,8 @@ const handleDragMove = useCallback((e: any) => {
 
           {/* 左上角のホワイト・マスク（横/縦スクロール時も常に空白を維持） */}
           <div
-            className="sticky left-0 z-[110] bg-white border-b border-r pointer-events-none"
-            style={{ top: topInsetPx, width: leftColW, height: headerH }}
+            className="sticky left-0 z-[1200] bg-white border-b border-r pointer-events-none"
+            style={{ top: 0, width: leftColW, height: headerH }}
             aria-hidden
           />
 
