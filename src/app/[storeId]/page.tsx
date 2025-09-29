@@ -344,13 +344,20 @@ const [bottomTab, setBottomTab] = useState<BottomTab>('reservations');
       window.scrollTo({ top: 0, behavior: 'auto' });
     };
 
+    const cleanup: Array<() => void> = [];
+
     scrollEl();
+
     const rafId = requestAnimationFrame(scrollEl);
-    const timeoutId = window.setTimeout(scrollEl, 120);
+    cleanup.push(() => cancelAnimationFrame(rafId));
+
+    [60, 180, 360, 720].forEach((ms) => {
+      const id = window.setTimeout(scrollEl, ms);
+      cleanup.push(() => clearTimeout(id));
+    });
 
     return () => {
-      cancelAnimationFrame(rafId);
-      clearTimeout(timeoutId);
+      cleanup.forEach((fn) => fn());
     };
   }, [bottomTab, isSettings]);
   const handleBottomTabClick = (tab: BottomTab) => {
