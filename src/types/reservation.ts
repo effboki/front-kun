@@ -28,6 +28,8 @@ export interface Reservation {
 
   /** メモ（任意） */
   notes?: string | null;
+  /** 互換フィールド（既存データの memo） */
+  memo?: string | null;
 
   /** 食べ放題オプション 任意 */
   eat?: string;

@@ -163,6 +163,10 @@ export function mapReservationToScheduleItem(resv: any, dayStartMs: number, cour
   const paid = toBool(resv.paid);
   const departed = toBool(resv.departed);
 
+  const memoRaw = typeof resv.memo === 'string' ? resv.memo.trim() : undefined;
+  const notesRaw = typeof resv.notes === 'string' ? resv.notes.trim() : undefined;
+  const combinedNotes = (notesRaw ?? memoRaw ?? '').trim();
+
   return {
     id: String(resv.id ?? resv.reservationId ?? resv._id ?? cryptoRandomId()),
     name,
@@ -179,6 +183,8 @@ export function mapReservationToScheduleItem(resv: any, dayStartMs: number, cour
     arrived,
     paid,
     departed,
+    notes: combinedNotes || undefined,
+    memo: memoRaw ?? (combinedNotes || undefined),
   };
 }
 

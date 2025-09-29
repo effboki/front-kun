@@ -1,8 +1,8 @@
 'use client';
 
-import React, { memo } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import type { ChangeEvent, FormEvent } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { toggleTaskComplete } from '@/lib/reservations';
 import { renameCourseTx } from '@/lib/courses';
 import { db } from '@/lib/firebase';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
@@ -13,7 +13,6 @@ import { flushQueuedOps } from '@/lib/opsQueue';
 
 import type { StoreSettings, StoreSettingsValue } from '@/types/settings';
 import { toUISettings, toFirestorePayload, sanitizeCourses as sanitizeStoreCourses } from '@/types/settings';
-import { useState, ChangeEvent, FormEvent, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   ensureServiceWorkerRegistered,
   requestPermissionAndGetToken,
@@ -22,9 +21,8 @@ import {
 import { useReservationsData } from '@/hooks/useReservationsData';
 import { useRealtimeStoreSettings } from '@/hooks/useRealtimeStoreSettings';
 import { toast } from 'react-hot-toast';
-import { dequeueAll} from '@/lib/opsQueue';
 
-import { addReservationFS, updateReservationFS, deleteReservationFS, fetchAllReservationsOnce, deleteAllReservationsFS } from '@/lib/reservations';
+import { addReservationFS, updateReservationFS, deleteReservationFS, deleteAllReservationsFS } from '@/lib/reservations';
 
 import LoadingSpinner from './_components/LoadingSpinner';
 import ResOrderControls from './_components/ResOrderControls';
@@ -65,6 +63,23 @@ const removeIfExistsNorm = (arr: string[], target: string) =>
 const replaceLabelNorm = (arr: string[], oldLabel: string, newLabel: string) =>
   arr.map((l) => (normEq(l, oldLabel) ? newLabel : l));
 
+const cloneArray = <T,>(items?: readonly T[]): T[] => (Array.isArray(items) ? [...items] : []);
+
+const sameArrayShallow = <T,>(a?: readonly T[], b?: readonly T[]) => {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+};
+
+const setArrayIfChanged = <T,>(prevArr: readonly T[] | undefined, nextArr: readonly T[] | undefined): T[] => {
+  if (nextArr === undefined) return cloneArray(prevArr);
+  return sameArrayShallow(prevArr, nextArr) ? cloneArray(prevArr) : [...nextArr];
+};
+
 //
 // ───────────────────────────── ① TYPES ────────────────────────────────────────────
 
@@ -92,7 +107,7 @@ type RootNumPadProps = {
   onSubmit: (result: RootNumPadSubmit) => void;
 };
 
-const RootNumPad: React.FC<RootNumPadProps> = ({
+const RootNumPad = ({
   open,
   title,          // 受け取るが表示しない（シンプル化）
   value = '',
@@ -100,11 +115,11 @@ const RootNumPad: React.FC<RootNumPadProps> = ({
   multi = false,
   onCancel,
   onSubmit,
-}) => {
-  const [val, setVal] = React.useState<string>('');
-  const [list, setList] = React.useState<string[]>([]);
+}: RootNumPadProps) => {
+  const [val, setVal] = useState<string>('');
+  const [list, setList] = useState<string[]>([]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (!open) return;
     setVal(value || '');
     setList(multi ? (Array.isArray(initialList) ? [...initialList] : []) : []);
@@ -284,7 +299,7 @@ function HomeBody() {
   const search = useSearchParams();
 
 
-  const clearScheduleTab = React.useCallback(() => {
+  const clearScheduleTab = useCallback(() => {
     try {
       const q = new URLSearchParams(search ? (search as any) : undefined);
       q.delete('tab');
@@ -296,7 +311,7 @@ function HomeBody() {
   }, [router, search]);
 
   // URLの `?tab=` と bottomTab を同期（schedule を含む）
-  React.useEffect(() => {
+  useEffect(() => {
     try {
       const t = search?.get('tab');
       if (t === 'reservations' || t === 'tasks' || t === 'courseStart' || t === 'schedule') {
@@ -336,37 +351,23 @@ function HomeBody() {
   // Firestore の “直近保存済み” スナップショット（dirty 判定用）
 const [baselineSettings, setBaselineSettings] =
   useState<StoreSettingsValue | null>(null);
-  // --- shallow helpers for stable arrays (avoid needless re-renders) ---
-  const sameArrayShallow = <T,>(a?: readonly T[], b?: readonly T[]) => {
-    if (a === b) return true;
-    if (!Array.isArray(a) || !Array.isArray(b)) return false;
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-    return true;
-  };
-  const setArrayIfChanged = <T,>(prevArr: readonly T[] | undefined, nextArr: readonly T[] | undefined): T[] => {
-    if (nextArr === undefined) return (prevArr as T[]) || [];
-    return sameArrayShallow(prevArr, nextArr) ? ([...(prevArr as T[])] as T[]) : ([...(nextArr as T[])] as T[]);
-  };
-
-
-  const patchSettings = React.useCallback(
+  const patchSettings = useCallback(
     (patch: Partial<StoreSettingsValue>) => {
       // 1) Draft は従来通り、参照安定化しつつ更新
       setSettingsDraft((prev) => {
         let next: StoreSettingsValue = { ...prev };
-        if ('courses' in patch)   next.courses   = setArrayIfChanged(prev.courses,   patch.courses as any);
-        if ('positions' in patch) next.positions = setArrayIfChanged(prev.positions, patch.positions as any);
-        if ('tables' in patch)    next.tables    = setArrayIfChanged(prev.tables,    patch.tables as any);
-        if ('plans' in patch)     next.plans     = setArrayIfChanged(prev.plans,     patch.plans as any);
+        if ('courses' in patch)   next.courses   = setArrayIfChanged<CourseDef>(prev.courses, patch.courses);
+        if ('positions' in patch) next.positions = setArrayIfChanged<string>(prev.positions, patch.positions);
+        if ('tables' in patch)    next.tables    = setArrayIfChanged<string>(prev.tables, patch.tables);
+        if ('plans' in patch)     next.plans     = setArrayIfChanged<string>(prev.plans, patch.plans);
         // --- sanitize areas: block empty-name areas from being added/updated ---
         if ('areas' in patch) {
-          const src = Array.isArray((patch as any).areas) ? ((patch as any).areas as any[]) : [];
-          const filtered = src.filter((a: any) => {
+          const src = Array.isArray(patch.areas) ? patch.areas : [];
+          const filtered: AreaDef[] = src.filter((a: AreaDef) => {
             const nm = typeof a?.name === 'string' ? a.name.trim() : '';
             return nm.length > 0;
           });
-          next.areas = setArrayIfChanged(prev.areas as any, filtered as any);
+          next.areas = setArrayIfChanged<AreaDef>(prev.areas, filtered);
         }
         const { courses, positions, tables, plans, areas, ...rest } = patch as any;
         next = { ...next, ...rest };
@@ -375,16 +376,16 @@ const [baselineSettings, setBaselineSettings] =
 
       // 2) 親のライブ state も同時に更新（※差分があるときのみ）
       if ('courses' in patch) {
-        const next = (patch.courses as any) ?? [];
-        setCourses((prev) => (sameArrayShallow(prev, next) ? prev as any : ([...next] as any)));
+        const next = Array.isArray(patch.courses) ? (patch.courses as CourseDef[]) : [];
+        setCourses((prev) => (sameArrayShallow(prev, next) ? prev : [...next]));
       }
       if ('positions' in patch) {
-        const next = (patch.positions as any) ?? [];
-        setPositions((prev) => (sameArrayShallow(prev, next) ? prev as any : ([...next] as any)));
+        const next = Array.isArray(patch.positions) ? (patch.positions as string[]) : [];
+        setPositions((prev) => (sameArrayShallow(prev, next) ? prev : [...next]));
       }
       if ('tables' in patch) {
-        const next = (patch.tables as any) ?? [];
-        setPresetTables((prev) => (sameArrayShallow(prev, next) ? prev as any : ([...next] as any)));
+        const next = Array.isArray(patch.tables) ? (patch.tables as string[]) : [];
+        setPresetTables((prev) => (sameArrayShallow(prev, next) ? prev : [...next]));
       }
       if ('tasksByPosition' in patch) {
         const next = (patch.tasksByPosition as any) ?? {};
@@ -397,15 +398,15 @@ const [baselineSettings, setBaselineSettings] =
         });
       }
       if ('eatOptions' in patch) {
-        const next = (patch.eatOptions as any) ?? [];
-        setEatOptions((prev) => (sameArrayShallow(prev, next) ? prev as any : ([...next] as any)));
+        const next = Array.isArray(patch.eatOptions) ? (patch.eatOptions as string[]) : [];
+        setEatOptions((prev) => (sameArrayShallow(prev, next) ? prev : [...next]));
       }
       if ('drinkOptions' in patch) {
-        const next = (patch.drinkOptions as any) ?? [];
-        setDrinkOptions((prev) => (sameArrayShallow(prev, next) ? prev as any : ([...next] as any)));
+        const next = Array.isArray(patch.drinkOptions) ? (patch.drinkOptions as string[]) : [];
+        setDrinkOptions((prev) => (sameArrayShallow(prev, next) ? prev : [...next]));
       }
     },
-    [sameArrayShallow]
+    []
   );
 
   // === Courses state (declared early to avoid TDZ in callbacks/effects) ===
@@ -421,7 +422,7 @@ const [baselineSettings, setBaselineSettings] =
   // 読み込み前はフォールバック
   const id = typeof storeId === 'string' ? storeId : 'default';
   // Day-start baseline (ms): derived from settingsDraft.schedule.dayStartHour; fallback 15:00
-  const dayStartMs = React.useMemo(() => {
+  const dayStartMs = useMemo(() => {
     const startHour =
       typeof settingsDraft?.schedule?.dayStartHour === 'number'
         ? settingsDraft.schedule.dayStartHour
@@ -433,12 +434,12 @@ const [baselineSettings, setBaselineSettings] =
   }, [settingsDraft?.schedule?.dayStartHour]);
 
   // Display window for Schedule (parent decides; child does not hardcode)
-  const scheduleStartHour = React.useMemo(() => {
+  const scheduleStartHour = useMemo(() => {
     const h = Number((settingsDraft as any)?.schedule?.dayStartHour);
     return Number.isFinite(h) ? h : 10; // fallback 10:00
   }, [settingsDraft?.schedule?.dayStartHour]);
 
-  const scheduleEndHour = React.useMemo(() => {
+  const scheduleEndHour = useMemo(() => {
     const h = Number((settingsDraft as any)?.schedule?.dayEndHour);
     return Number.isFinite(h) ? h : 23; // fallback 23:00
   }, [settingsDraft?.schedule?.dayEndHour]);
@@ -662,7 +663,7 @@ const getTasks = (c: { tasks?: any }): { timeOffset:number; label:string; bgColo
     isSaving: isSavingSettings,
   } = useRealtimeStoreSettings(id as string);
   // Stamp to force ScheduleView re-mount when settings or display window changes
-  const schedulePropsKey = React.useMemo(() => {
+  const schedulePropsKey = useMemo(() => {
     try {
       const raw: any = (serverSettings as any)?.updatedAt;
       const updatedMs =
@@ -834,7 +835,7 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
   }, [serverSettings, settingsLoading]);
 
 // ── Areas: normalize + local table→areas map (derived from settingsDraft.areas) ──
-const usableAreas: AreaDef[] = React.useMemo<AreaDef[]>(() => {
+const usableAreas: AreaDef[] = useMemo<AreaDef[]>(() => {
   const src = Array.isArray(settingsDraft?.areas)
     ? (settingsDraft!.areas as any[])
     : [];
@@ -869,7 +870,7 @@ const usableAreas: AreaDef[] = React.useMemo<AreaDef[]>(() => {
 }, [settingsDraft?.areas]);
 
 // usableAreas から “卓番号 → 含まれるエリアID[]” を作る
-const tableToAreasLocal = React.useMemo(() => {
+const tableToAreasLocal = useMemo(() => {
   const map: Record<string, string[]> = {};
   for (const a of usableAreas) {
     const aid = a.id;
@@ -1128,10 +1129,10 @@ useEffect(() => {
   }, [taskSort]);
 
   // Tasks tab – area filter (replaces old "filterCourse")
-  const [filterArea, setFilterArea] = React.useState<string>(() =>
+  const [filterArea, setFilterArea] = useState<string>(() =>
     nsGetStr('tasks_filterArea', '全て')
   );
-  React.useEffect(() => {
+  useEffect(() => {
     if (typeof window !== 'undefined') nsSetStr('tasks_filterArea', filterArea);
   }, [filterArea]);
   // --- Course Start tab–only: show guests toggle (independent from Tasks tab) ---
@@ -1186,7 +1187,7 @@ useEffect(() => {
   // shiftTargets: 時間シフトをかける reservation.id 配列
   const [shiftTargets, setShiftTargets] = useState<string[]>([]);
   // 分移動 UI で選択中の分（例：-15, -10, -5, 5, 10, 15）。未選択は null
-  const [selectedShiftMinutes, setSelectedShiftMinutes] = React.useState<number | null>(null);
+  const [selectedShiftMinutes, setSelectedShiftMinutes] = useState<number | null>(null);
   // 一括時間調整（将来サーバ側バッチに差し替えやすい薄いラッパー）
 const batchAdjustTaskTime = (
   ids: Array<number | string>,
@@ -1439,7 +1440,7 @@ const updateReservationFieldCb = useCallback((
     setNewResTable('');
     setNewResTables([]);
     setNewResName('');
-    setNewResCourse('');
+    setNewResCourse('未選択');
     setNewResEat('');
     setNewResDrink('');
     setNewResGuests('' as any);
@@ -1612,7 +1613,7 @@ const updateReservationFieldCb = useCallback((
   const [newResTable, setNewResTable] = useState<string>('');
   const [newResTables, setNewResTables] = useState<string[]>([]);
   const [newResTime, setNewResTime] = useState<string>(() => nsGetStr('lastNewResTime', '18:00'));
-  const [newResCourse, setNewResCourse] = useState<string>('');   // 未選択で開始
+  const [newResCourse, setNewResCourse] = useState<string>('未選択');   // 未選択で開始
   const [newResGuests, setNewResGuests] = useState<number | ''>('');
   const [newResName, setNewResName] = useState<string>('');   // タブレット用：予約者氏名
   const [newResNotes, setNewResNotes] = useState<string>(''); // タブレット用：備考
@@ -1681,7 +1682,7 @@ useEffect(() => {
   nsGetJSON<string[]>('presetTables', [])
 );
   // 表示・子渡し用に、卓番号を string 化 + 数字として昇順ソート
-  const presetTablesView: string[] = React.useMemo(() => {
+  const presetTablesView: string[] = useMemo(() => {
     const src = Array.isArray(presetTables) ? presetTables : [];
     return src.map(String).sort((a, b) => Number(a) - Number(b));
   }, [presetTables]);
@@ -1692,7 +1693,7 @@ useEffect(() => {
   // フロア図エディット用テーブル設定トグル
   const [tableConfigOpen, setTableConfigOpen] = useState<boolean>(false);
   // “フィルター表示する卓番号” 用チェック済みテーブル配列
-  const [checkedTables, setCheckedTables] = React.useState<string[]>(() => {
+  const [checkedTables, setCheckedTables] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem(`${ns}-checkedTables`) ?? '[]');
     } catch {
@@ -1759,7 +1760,7 @@ useEffect(() => {
 
 
   // ── Settings: save handler (placed AFTER all live states it depends on) ─────────
-const handleStoreSave = React.useCallback(async () => {
+const handleStoreSave = useCallback(async () => {
   try {
     console.log('[handleStoreSave] start');
     // ✅ Save from current live state (親の state を唯一の真実とする)
@@ -2558,7 +2559,7 @@ const deleteCourse = async () => {
   });
 
   /* 2) フォールバック用コース名を取得 */
-  const fallback = courses.find(c => c.name !== target)?.name || '';
+  const fallback = courses.find(c => c.name !== target)?.name || '未選択';
 
   /* 3) 各選択中 state をフォールバック */
   setSelectedCourse(prev => (prev === target ? fallback : prev));
@@ -2755,7 +2756,7 @@ const deleteCourse = async () => {
 
   // 通知有効化の進行状態 & トグル処理
   const [notiBusy, setNotiBusy] = useState(false);
-  const handleRemindersToggle = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleRemindersToggle = async (e: ChangeEvent<HTMLInputElement>) => {
     const checked = e.target.checked;
     setRemindersEnabled(checked);
 
@@ -3179,10 +3180,9 @@ const onNumPadConfirm = () => {
       !newResTime ||                     // 時刻未入力
       newResGuests === '' ||             // 人数未入力
       isNaN(Number(newResGuests)) ||     // 人数が数値でない
-      !newResCourse ||                   // コース未選択
       nextResId === ''                   // ID が空  → 予約追加禁止
     ) {
-      alert('卓番号・人数・コース・ID を正しく入力してください');
+      alert('卓番号・人数・ID を正しく入力してください');
       return;
     }
 
@@ -3198,17 +3198,24 @@ const onNumPadConfirm = () => {
     const primaryTable = (Array.isArray(newResTables) && newResTables.length > 0) ? newResTables[0] : newResTable;
     const tablesPayload = (Array.isArray(newResTables) && newResTables.length > 0) ? newResTables : (newResTable ? [newResTable] : []);
 
+    const inputCourse = String(newResCourse ?? '').trim();
+    const selectedCourseLabel = String(selectedCourse ?? '').trim();
+    const firstCourseLabel =
+      Array.isArray(courses) && courses[0]?.name ? String(courses[0].name).trim() : '';
+    const courseLabel = inputCourse || selectedCourseLabel || firstCourseLabel || '未選択';
+
     const newEntry: Reservation = {
       id: idToUse,
       table: String(primaryTable || ''),
       tables: tablesPayload.map(String),
       time: newResTime,
       date: new Date().toISOString().slice(0, 10),
-      course: newResCourse,
+      course: courseLabel,
       eat: newResEat,
       drink: newResDrink,
       guests: Number(newResGuests),
       name: newResName.trim(),
+      memo: newResNotes.trim(),
       notes: newResNotes.trim(),
       completed: {},
     };
@@ -3234,7 +3241,7 @@ const onNumPadConfirm = () => {
     setNewResTables([]);
     setNewResTable('');
     setNewResGuests('');
-    setNewResCourse('');
+    setNewResCourse('未選択');
     setNewResName('');
     setNewResNotes('');
     setNewResEat('');
@@ -3384,7 +3391,7 @@ const onNumPadConfirm = () => {
 }), [groupedTasks, sortedTimeKeys, courses, filteredReservationsTasks, firstRotatingId]);
 
   // --- migrate legacy shared key → split keys (one-time) ---
-  React.useEffect(() => {
+  useEffect(() => {
     try {
       const legacy = nsGetStr('showTableStart', '');
       if (legacy) {
@@ -3396,13 +3403,13 @@ const onNumPadConfirm = () => {
   }, []);
 
   // --- ensure CourseStart flag persists to cs_showTableStart ---
-  React.useEffect(() => {
+  useEffect(() => {
     try { nsSetStr('cs_showTableStart', showTableStart ? '1' : '0'); } catch {}
   }, [showTableStart]);
 
   // --- Tasks tab: independent table-number visibility flag ---
-  const [tasksShowTable, setTasksShowTable] = React.useState<boolean>(() => nsGetStr('tasks_showTable', '1') === '1');
-  React.useEffect(() => {
+  const [tasksShowTable, setTasksShowTable] = useState<boolean>(() => nsGetStr('tasks_showTable', '1') === '1');
+  useEffect(() => {
     try { nsSetStr('tasks_showTable', tasksShowTable ? '1' : '0'); } catch {}
   }, [tasksShowTable]);
 
@@ -3580,6 +3587,8 @@ const onNumPadConfirm = () => {
       {/* ─────────────── 予約リストセクション ─────────────── */}
 {!isSettings && bottomTab === 'reservations' && (
   <ReservationsSection
+    storeId={id}
+    dayStartMs={startOfDayMs(dayStartMs)}
     /* 並び順 */
     resOrder={resOrder}
     setResOrder={setResOrder}

@@ -1,12 +1,13 @@
 // src/app/[storeId]/_components/ReservationsSection.tsx
-import React, { memo } from 'react';
-import type { ResOrder, Reservation, PendingTables } from '@/types';
+import { memo, useEffect, useMemo, useRef, useState, useLayoutEffect, useCallback } from 'react';
 import type { FormEvent, Dispatch, SetStateAction } from 'react';
+import dynamic from 'next/dynamic';
+import type { ResOrder, Reservation, PendingTables } from '@/types';
 import { parseTimeToMinutes } from '@/lib/time';
+import { useReservationMutations } from '@/hooks/useReservationMutations';
+import type { ImportedReservation } from '@/lib/clipboardImport';
 
-// 共通ヘルプ文言（食/飲 iボタン）
-const EAT_DRINK_INFO_MESSAGE =
-  '予約リストで「食べ放題／飲み放題」の列を表示・非表示できます。\n店舗設定でプラン名（例：食べ放題90分、飲み放題L）を登録しておくと、各予約の「食」「飲」欄で選択できます。\n表示をONにすると、どの予約が対象かがひと目で分かります。';
+const ReservationImportModal = dynamic(() => import('./ReservationImportModal'), { ssr: false });
 
 // ───────── Local NumPad (multi-support) ─────────
 type NumPadSubmit = { value: string; list?: string[] };
@@ -23,20 +24,19 @@ type NumPadProps = {
   beforeList?: string[]; // ← 追加
 };
 
-const NumPad: React.FC<NumPadProps> = ({
+const NumPad = ({
   open,
-  title,
   value = '',
   initialList = [],
   multi = false,
   onCancel,
   onSubmit,
   beforeList = [],
-}) => {
-  const [val, setVal] = React.useState<string>('');
-  const [list, setList] = React.useState<string[]>([]);
+}: NumPadProps) => {
+  const [val, setVal] = useState<string>('');
+  const [list, setList] = useState<string[]>([]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (!open) return;
     // 単一値は従来どおり。卓番号は空から打ち始めたい運用なので initialList は [] 想定
     setVal(value || '');
@@ -87,7 +87,7 @@ const NumPad: React.FC<NumPadProps> = ({
               </span>
               <span className="mx-2 text-gray-400">→</span>
               {(() => {
-                let after = Array.isArray(list) ? [...list] : [];
+                const after = Array.isArray(list) ? [...list] : [];
                 const v = (val || '').trim();
                 if (v && !after.includes(v)) after.push(v);
                 const joined = after.join('.');
@@ -198,6 +198,8 @@ const NumPad: React.FC<NumPadProps> = ({
 type ReservationCompat = Reservation & { timeHHmm?: string };
 
 type Props = {
+  storeId: string;
+  dayStartMs: number;
   /** 画面に表示する予約（すでに親でフィルタ＆ソート済み） */
   reservations: ReservationCompat[];
 
@@ -214,7 +216,7 @@ type Props = {
   tablesForMove: string[];
   pendingTables: PendingTables;
   toggleTableForMove: (id: string) => void;
-  setPendingTables: React.Dispatch<React.SetStateAction<PendingTables>>;
+  setPendingTables: Dispatch<SetStateAction<PendingTables>>;
   commitTableMoves: (override?: PendingTables) => Promise<void>;
 
   /** 数字入力パッドの制御（親で保持） */
@@ -226,18 +228,18 @@ type Props = {
 
   /** 表示オプション（列の表示切替） */
   showEatCol: boolean;
-  setShowEatCol: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowEatCol: Dispatch<SetStateAction<boolean>>;
   showDrinkCol: boolean;
-  setShowDrinkCol: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowDrinkCol: Dispatch<SetStateAction<boolean>>;
   showNameCol: boolean;
-  setShowNameCol: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowNameCol: Dispatch<SetStateAction<boolean>>;
   showNotesCol: boolean;
-  setShowNotesCol: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowNotesCol: Dispatch<SetStateAction<boolean>>;
   showGuestsCol: boolean;
 
   /** 変更ドット（編集打刻）の共有状態 */
   editedMarks: Record<string, number>;
-  setEditedMarks: React.Dispatch<React.SetStateAction<Record<string, number>>>;
+  setEditedMarks: Dispatch<SetStateAction<Record<string, number>>>;
 
   /** セル更新や行操作用ハンドラ（親の関数をそのまま渡す） */
   updateReservationField: (
@@ -325,7 +327,9 @@ const getDrinkValue = (r: any): string =>
 
 // ==== Component =============================================================
 
-const ReservationsSection: React.FC<Props> = ({
+const ReservationsSection = memo(function ReservationsSection({
+  storeId,
+  dayStartMs,
   reservations,
   resOrder,
   setResOrder,
@@ -378,9 +382,92 @@ const ReservationsSection: React.FC<Props> = ({
   newResNotes,
   setNewResNotes,
   addReservation,
-}) => {
+}: Props) {
+  const [showImportModal, setShowImportModal] = useState(false);
+  const { createReservation } = useReservationMutations(storeId, { dayStartMs });
+
+  const handleImportApply = useCallback(
+    async (rows: ImportedReservation[]) => {
+      for (const row of rows) {
+        const tablesToSave = Array.isArray(row.tables) && row.tables.length > 0
+          ? row.tables
+          : row.table
+            ? [row.table]
+            : [];
+        await createReservation({
+          startMs: row.startAtMs,
+          tables: tablesToSave,
+          table: tablesToSave[0],
+          guests: row.people,
+          name: row.name,
+          courseName: row.course,
+          course: row.course,
+          memo: row.notes,
+          notes: row.notes,
+        });
+      }
+    },
+    [createReservation]
+  );
+
+  const ColumnToggleButton = ({
+    label,
+    checked,
+    onToggle,
+    infoKey,
+    infoLabel,
+  }: {
+    label: string;
+    checked: boolean;
+    onToggle: () => void;
+    infoKey?:
+      | 'tableChange'
+      | 'eatInfo'
+      | 'drinkInfo'
+      | 'nameInfo'
+      | 'notesInfo'
+      | 'listInfo'
+      | 'tipsInfo'
+      | 'tips2'
+      | null;
+    infoLabel?: string;
+  }) => (
+      <div className="flex items-center gap-1.5">
+        <span className={`text-xs font-medium ${checked ? 'text-emerald-600' : 'text-gray-500'}`}>{label}</span>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-pressed={checked}
+          aria-label={`${label}列の表示切替`}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 ${
+            checked ? 'bg-emerald-500' : 'bg-gray-300'
+          }`}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${
+              checked ? 'translate-x-4' : 'translate-x-1'
+            }`}
+          />
+        </button>
+        {infoKey && (
+          <button
+            type="button"
+            onClick={() => toggleInfo(infoKey)}
+            className={`inline-flex h-4 w-4 items-center justify-center rounded-full border text-[10px] leading-none transition-colors ${
+              openInfo === infoKey ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+            }`}
+            aria-label={infoLabel || `${label}列の説明`}
+            aria-expanded={openInfo === infoKey}
+            aria-controls={infoKey ? `help-${infoKey}` : undefined}
+          >
+            i
+          </button>
+        )}
+      </div>
+    );
+
   // --- Local NumPad control (open/close & current target) ---
-  const [localNumPadState, setLocalNumPadState] = React.useState<{
+  const [localNumPadState, setLocalNumPadState] = useState<{
     id: string;
     field: 'table' | 'guests' | 'targetTable';
     value: string;
@@ -390,23 +477,23 @@ const ReservationsSection: React.FC<Props> = ({
   };
   const closeNumPad = () => setLocalNumPadState(null);
   // Optimistic inline edits for select boxes (eat/drink) to avoid flicker before server echo
-  const [inlineEdits, setInlineEdits] = React.useState<Record<string, { eat?: string; drink?: string }>>({});
+  const [inlineEdits, setInlineEdits] = useState<Record<string, { eat?: string; drink?: string }>>({});
   // NEW判定（直後ドット用のローカル検知）
   const NEW_THRESHOLD = 15 * 60 * 1000; // 15分
-  const initialRenderRef = React.useRef(true);
-  const seenRef = React.useRef<Set<string>>(new Set());
-  const localNewRef = React.useRef<Map<string, number>>(new Map());
-  const prevSnapshotRef = React.useRef<Map<string, string>>(new Map());
+  const initialRenderRef = useRef(true);
+  const seenRef = useRef<Set<string>>(new Set());
+  const localNewRef = useRef<Map<string, number>>(new Map());
+  const prevSnapshotRef = useRef<Map<string, string>>(new Map());
 
   // ドット表示のための時間進行（30秒ごと再評価）
-  const [nowTick, setNowTick] = React.useState<number>(Date.now());
-  React.useEffect(() => {
+  const [nowTick, setNowTick] = useState<number>(Date.now());
+  useEffect(() => {
     const id = setInterval(() => setNowTick(Date.now()), 30_000);
     return () => clearInterval(id);
   }, []);
 
   // Reconcile optimistic edits when parent "reservations" updates with the same value
-  React.useEffect(() => {
+  useEffect(() => {
     setInlineEdits((prev) => {
       if (!prev || Object.keys(prev).length === 0) return prev;
       const next = { ...prev };
@@ -424,7 +511,7 @@ const ReservationsSection: React.FC<Props> = ({
     });
   }, [reservations]);
 
-    React.useEffect(() => {
+    useEffect(() => {
       if (initialRenderRef.current) {
         // 初回レンダでは既存分を「既知」として登録（ドットは付けない）
         reservations.forEach((r) => {
@@ -473,11 +560,11 @@ const ReservationsSection: React.FC<Props> = ({
 
   // === 新規追加のデフォ時刻を「前回選んだ時刻」にする ===
   const LAST_TIME_KEY = 'frontkun:lastNewResTime';
-  const appliedSavedTimeRef = React.useRef(false);
-  const prevCountRef = React.useRef(reservations.length);
+  const appliedSavedTimeRef = useRef(false);
+  const prevCountRef = useRef(reservations.length);
 
   // 1) 初回だけ、保存されている最終選択時刻があれば適用
-  React.useEffect(() => {
+  useEffect(() => {
     if (appliedSavedTimeRef.current) return;
     appliedSavedTimeRef.current = true;
     try {
@@ -489,7 +576,7 @@ const ReservationsSection: React.FC<Props> = ({
   }, []);
 
   // 2) ユーザーが新規行の来店時刻を変更したら保存
-  React.useEffect(() => {
+  useEffect(() => {
     try {
       if (newResTime && timeOptions.includes(newResTime)) {
         localStorage.setItem(LAST_TIME_KEY, newResTime);
@@ -499,7 +586,7 @@ const ReservationsSection: React.FC<Props> = ({
 
   // 3) 予約が増減したら（＝追加・削除後）、保存してある時刻を再適用
   //    → 親で newResTime が初期値に戻っても、直後に前回時刻へ戻す
-  React.useEffect(() => {
+  useEffect(() => {
     const prev = prevCountRef.current;
     if (reservations.length !== prev) {
       prevCountRef.current = reservations.length;
@@ -540,7 +627,7 @@ const ReservationsSection: React.FC<Props> = ({
     return (Number.isFinite(mins) ? mins : 0) * 60_000;
   };
   // 予約リストの最終並び（セクション内で最終決定）
-  const finalReservations = React.useMemo(() => {
+  const finalReservations = useMemo(() => {
     const arr = [...reservations];
     if (resOrder === 'time') {
       // startMs（絶対ms）を優先し、なければ HH:mm を ms に換算して比較
@@ -574,7 +661,7 @@ const ReservationsSection: React.FC<Props> = ({
   }, [reservations, resOrder, editTableMode, pendingTables]);
 
   // 卓番変更モード・食飲説明パネル開閉
-  const [openInfo, setOpenInfo] = React.useState<
+  const [openInfo, setOpenInfo] = useState<
     null | 'tableChange' | 'eatInfo' | 'drinkInfo' | 'nameInfo' | 'notesInfo' | 'listInfo' | 'tipsInfo' | 'tips2'
   >(null);
   const toggleInfo = (
@@ -582,8 +669,8 @@ const ReservationsSection: React.FC<Props> = ({
   ) => setOpenInfo((p) => (p === k ? null : k));
 
   // 予約リストガイド（①〜⑤を3秒ごとにハイライト）
-  const [guideStep, setGuideStep] = React.useState<number>(1);
-  React.useEffect(() => {
+  const [guideStep, setGuideStep] = useState<number>(1);
+  useEffect(() => {
     if (openInfo === 'listInfo') {
       setGuideStep(1);
       const id = setInterval(() => {
@@ -593,7 +680,7 @@ const ReservationsSection: React.FC<Props> = ({
     }
   }, [openInfo]);
   // ペンディングの重複（同じ next に複数割当）を検知
-  const hasPendingConflict = React.useMemo(() => {
+  const hasPendingConflict = useMemo(() => {
     const counts = new Map<string, number>();
     for (const v of Object.values(pendingTables || {})) {
       const key = String(v?.nextList?.[0] ?? '');
@@ -604,24 +691,24 @@ const ReservationsSection: React.FC<Props> = ({
     return false;
   }, [pendingTables]);
   // ── Hint2: 卓番追加デモ（小さめのダミーNumPad。自動進行 & ピル操作を再現）
-  const Hint2Demo: React.FC = () => {
-    const [step, setStep] = React.useState<number>(1);
-    const [val, setVal] = React.useState<string>('');
-    const [list, setList] = React.useState<string[]>([]);
+  const Hint2Demo = () => {
+    const [step, setStep] = useState<number>(1);
+    const [val, setVal] = useState<string>('');
+    const [list, setList] = useState<string[]>([]);
     // 数字タップで初めてトップの「後」側に仮表示を出すためのフラグ
-    const [showTemp, setShowTemp] = React.useState<boolean>(false);
+    const [showTemp, setShowTemp] = useState<boolean>(false);
 
     // —— finger animation refs/state ——
-    const wrapRef = React.useRef<HTMLDivElement>(null);
-    const d1Ref = React.useRef<HTMLButtonElement>(null);
-    const d2Ref = React.useRef<HTMLButtonElement>(null);
-    const d3Ref = React.useRef<HTMLButtonElement>(null);
-    const plusRef = React.useRef<HTMLButtonElement>(null);
-    const pill2Ref = React.useRef<HTMLSpanElement>(null);
+    const wrapRef = useRef<HTMLDivElement>(null);
+    const d1Ref = useRef<HTMLButtonElement>(null);
+    const d2Ref = useRef<HTMLButtonElement>(null);
+    const d3Ref = useRef<HTMLButtonElement>(null);
+    const plusRef = useRef<HTMLButtonElement>(null);
+    const pill2Ref = useRef<HTMLSpanElement>(null);
 
-    const [fingerPos, setFingerPos] = React.useState<{ x: number; y: number }>({ x: 0, y: 0 });
-    const [isTap, setIsTap] = React.useState<boolean>(false);
-    const [flash, setFlash] = React.useState<boolean>(false);
+    const [fingerPos, setFingerPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+    const [isTap, setIsTap] = useState<boolean>(false);
+    const [flash, setFlash] = useState<boolean>(false);
 
     const moveFingerTo = (el: HTMLElement | null) => {
       if (!wrapRef.current || !el) return;
@@ -633,13 +720,13 @@ const ReservationsSection: React.FC<Props> = ({
     };
 
     // 自動デモ進行（約2.8秒ごと：少しゆっくり）
-    React.useEffect(() => {
+    useEffect(() => {
       const id = setInterval(() => setStep((s) => (s % 8) + 1), 2800);
       return () => clearInterval(id);
     }, []);
 
     // 各ステップの状態遷移（1→8）: 入力段取りのみ。確定はタップ時に行う
-    React.useEffect(() => {
+    useEffect(() => {
       switch (step) {
         case 1:
           setList([]);     // リセット
@@ -661,7 +748,7 @@ const ReservationsSection: React.FC<Props> = ({
     }, [step]);
 
     // 指をターゲットへ移動 + 到着後にタップ演出（全ターゲットで実施）
-    React.useLayoutEffect(() => {
+    useLayoutEffect(() => {
       let target: HTMLElement | null = null;
       if (step === 1) target = d1Ref.current;           // 「1」
       else if (step === 2 || step === 4 || step === 6)  // 「＋追加」
@@ -895,101 +982,52 @@ const ReservationsSection: React.FC<Props> = ({
 
   return (
     <section className="space-y-4 text-sm">
+      {showImportModal && (
+        <ReservationImportModal
+          storeId={storeId}
+          dayStartMs={dayStartMs}
+          onClose={() => setShowImportModal(false)}
+          onApply={handleImportApply}
+        />
+      )}
       {/* ─────────────── 予約リストセクション ─────────────── */}
       <section>
         {/* ── 枠外ツールバー（表示順・表示項目） ───────────────── */}
         <div className="sm:p-4 p-2 border-b border-gray-200 bg-white">
           <div className="flex flex-wrap items-center gap-3">
             {/* 表示：チップ（食・飲・氏名・備考） */}
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-3 flex-wrap">
               <span className="text-gray-500 text-xs">表示：</span>
-
-              <button
-                type="button"
-                onClick={() => setShowEatCol(!showEatCol)}
-                aria-pressed={showEatCol}
-                className={`px-2 py-0.5 text-xs rounded-full border ${
-                  showEatCol ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                }`}
-                title="食べ放題列の表示切替"
-              >
-                食
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleInfo('eatInfo')}
-                className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
-                aria-label="『食』の説明"
-                title="食べ放題の表示について"
-                aria-expanded={openInfo === 'eatInfo'}
-                aria-controls="help-eat"
-              >
-                i
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowDrinkCol(!showDrinkCol)}
-                aria-pressed={showDrinkCol}
-                className={`px-2 py-0.5 text-xs rounded-full border ${
-                  showDrinkCol ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                }`}
-                title="飲み放題列の表示切替"
-              >
-                飲
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleInfo('drinkInfo')}
-                className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
-                aria-label="『飲』の説明"
-                title="飲み放題の表示について"
-                aria-expanded={openInfo === 'drinkInfo'}
-                aria-controls="help-drink"
-              >
-                i
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowNameCol((p) => !p)}
-                aria-pressed={showNameCol}
-                className={`hidden sm:inline-flex px-2 py-0.5 text-xs rounded-full border ${
-                  showNameCol ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                氏名
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleInfo('nameInfo')}
-                className="hidden sm:inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
-                aria-label="『氏名』の説明"
-                title="氏名列の表示について"
-                aria-expanded={openInfo === 'nameInfo'}
-                aria-controls="help-name"
-              >
-                i
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowNotesCol((p) => !p)}
-                aria-pressed={showNotesCol}
-                className={`hidden sm:inline-flex px-2 py-0.5 text-xs rounded-full border ${
-                  showNotesCol ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                備考
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleInfo('notesInfo')}
-                className="hidden sm:inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
-                aria-label="『備考』の説明"
-                title="備考列の表示について"
-                aria-expanded={openInfo === 'notesInfo'}
-                aria-controls="help-notes"
-              >
-                i
-              </button>
+              {ColumnToggleButton({
+                label: '食',
+                checked: showEatCol,
+                onToggle: () => setShowEatCol((p) => !p),
+                infoKey: 'eatInfo',
+                infoLabel: '食べ放題列の説明',
+              })}
+              {ColumnToggleButton({
+                label: '飲',
+                checked: showDrinkCol,
+                onToggle: () => setShowDrinkCol((p) => !p),
+                infoKey: 'drinkInfo',
+                infoLabel: '飲み放題列の説明',
+              })}
+              <div className="hidden sm:flex items-center gap-3">
+                {ColumnToggleButton({
+                  label: '氏名',
+                  checked: showNameCol,
+                  onToggle: () => setShowNameCol((p) => !p),
+                  infoKey: 'nameInfo',
+                  infoLabel: '氏名列の説明',
+                })}
+                {ColumnToggleButton({
+                  label: '備考',
+                  checked: showNotesCol,
+                  onToggle: () => setShowNotesCol((p) => !p),
+                  infoKey: 'notesInfo',
+                  infoLabel: '備考列の説明',
+                })}
+              </div>
             </div>
             {openInfo === 'eatInfo' && (
               <div id="help-eat" className="w-full mt-2 text-[11px] leading-5 text-gray-800 bg-gray-50 border border-gray-200 rounded px-3 py-2">
@@ -1103,6 +1141,13 @@ const ReservationsSection: React.FC<Props> = ({
           <div className="flex flex-col space-y-2">
             {/* 下段：卓番変更 & 全リセット & 予約確定 */}
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowImportModal(true)}
+                className="px-3 py-1 rounded text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700"
+              >
+                インポート
+              </button>
               <button
                 onClick={onToggleEditTableMode}
                 className={`px-3 py-1 rounded text-sm font-semibold ${
@@ -1427,17 +1472,29 @@ const ReservationsSection: React.FC<Props> = ({
 
                     {/* コースセル */}
                     <td className={`border px-1 ${padY}`}>
-                      <select
-                        value={r.course ?? ''}
-                        onChange={(e) => updateReservationField(r.id, 'course', e.target.value)}
-                        className="border px-1 py-0.5 rounded text-sm"
-                      >
-                        {courses.map((c) => (
-                          <option key={c.name} value={c.name}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
+                      {(() => {
+                        const courseRaw = typeof r.course === 'string' ? r.course.trim() : '';
+                        const selectValue = courseRaw || '未選択';
+                        const handleChange = (value: string) => {
+                          const next = value.trim() === '' ? '未選択' : value;
+                          if (next === selectValue) return;
+                          updateReservationField(r.id, 'course', next);
+                        };
+                        return (
+                          <select
+                            value={selectValue}
+                            onChange={(e) => handleChange(e.target.value)}
+                            className="border px-1 py-0.5 rounded text-sm"
+                          >
+                            <option value="未選択">未設定</option>
+                            {courses.filter((c) => c.name !== '未選択').map((c) => (
+                              <option key={c.name} value={c.name}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                        );
+                      })()}
                     </td>
 
                     {/* 食・飲 列 */}
@@ -1635,8 +1692,8 @@ const ReservationsSection: React.FC<Props> = ({
                     onChange={(e) => setNewResCourse(e.target.value)}
                     className="border px-1 py-0.5 rounded text-sm"
                   >
-                    <option value="">未選択</option>
-                    {courses.map((c) => (
+                    <option value="未選択">未設定</option>
+                    {courses.filter((c) => c.name !== '未選択').map((c) => (
                       <option key={c.name} value={c.name}>
                         {c.name}
                       </option>
@@ -2043,6 +2100,6 @@ const ReservationsSection: React.FC<Props> = ({
         )}
     </section>
   );
-};
+});
 
-export default memo(ReservationsSection);
+export default ReservationsSection;

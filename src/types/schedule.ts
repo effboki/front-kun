@@ -13,6 +13,10 @@ export type ScheduleItem = {
   people: number;
   /** コース名（未設定可） */
   course?: string;
+  /** 備考メモ */
+  notes?: string;
+  /** 互換フィールド（旧 memo） */
+  memo?: string;
   /** 飲み放題フラグ */
   drink?: boolean;
   /** 食べ放題フラグ */

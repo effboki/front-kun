@@ -1,6 +1,8 @@
 'use client';
 
-import React from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
+import type { Reservation, ViewData, UiState, AreaDef } from '@/types';
 // NOTE: For further performance on very large lists,
 // consider replacing the simple .map over reservations with a
 // virtualized horizontal list (e.g., react-window FixedSizeList).
@@ -27,84 +29,75 @@ type TaskPillProps = {
   onToggleSelectComplete: (id: string) => void;
 };
 
-const TaskPill: React.FC<TaskPillProps> = React.memo(
-  ({
-    id,
-    table,
-    guests,
-    compKey,
-    completedMap,
-    showTableStart,
-    showGuestsAll,
-    keyForTask,
-    shiftModeKey,
-    selectionModeTask,
-    shiftTargets,
-    selectedForComplete,
-    isFirstRotating,
-    onToggleShiftTarget,
-    onToggleSelectComplete,
-  }) => {
-    const currentDone = Boolean(completedMap?.[compKey]);
-    const previewDone =
-      selectionModeTask === keyForTask && selectedForComplete.includes(id)
-        ? !currentDone
-        : currentDone;
+const TaskPill = memo(function TaskPill({
+  id,
+  table,
+  guests,
+  compKey,
+  completedMap,
+  showTableStart,
+  showGuestsAll,
+  keyForTask,
+  shiftModeKey,
+  selectionModeTask,
+  shiftTargets,
+  selectedForComplete,
+  isFirstRotating,
+  onToggleShiftTarget,
+  onToggleSelectComplete,
+}: TaskPillProps) {
+  const currentDone = Boolean(completedMap?.[compKey]);
+  const previewDone =
+    selectionModeTask === keyForTask && selectedForComplete.includes(id)
+      ? !currentDone
+      : currentDone;
 
-    const isShiftTarget = shiftModeKey === keyForTask && shiftTargets.includes(id);
-    const isSelectTarget =
-      selectionModeTask === keyForTask && selectedForComplete.includes(id);
+  const isShiftTarget = shiftModeKey === keyForTask && shiftTargets.includes(id);
+  const isSelectTarget =
+    selectionModeTask === keyForTask && selectedForComplete.includes(id);
 
-    const handleClick = () => {
-      if (shiftModeKey === keyForTask) {
-        onToggleShiftTarget(id);
-        return;
-      }
-      if (selectionModeTask === keyForTask) {
-        onToggleSelectComplete(id);
-      }
-    };
+  const handleClick = () => {
+    if (shiftModeKey === keyForTask) {
+      onToggleShiftTarget(id);
+      return;
+    }
+    if (selectionModeTask === keyForTask) {
+      onToggleSelectComplete(id);
+    }
+  };
 
-    return (
-      <div
-        onClick={handleClick}
-        className={`border px-2 py-1 rounded text-sm ${
-          previewDone ? 'opacity-70 text-gray-600 line-through' : ''
-        } ${isShiftTarget ? 'ring-2 ring-blue-400' : ''} ${
-          isSelectTarget ? 'ring-2 ring-yellow-400' : ''
-        } ${isFirstRotating ? 'text-red-500' : ''}`}
-        role={shiftModeKey === keyForTask ? 'checkbox' : undefined}
-        aria-checked={shiftModeKey === keyForTask ? isShiftTarget : undefined}
-      >
-        {shiftModeKey === keyForTask && (
-          <span
-            className={`inline-block mr-1 h-3 w-3 border rounded-sm text-[10px] leading-3 text-center ${
-              isShiftTarget ? 'bg-blue-600 text-white border-blue-600' : 'bg-white'
-            }`}
-            aria-hidden
-          >
-            {isShiftTarget ? '✓' : ''}
-          </span>
-        )}
-        {showTableStart && table}
-        {showGuestsAll && <>({guests})</>}
-      </div>
-    );
-  }
-);
-import type { Reservation, CourseDef, ViewData, UiState, AreaDef } from '@/types';
-
-
+  return (
+    <div
+      onClick={handleClick}
+      className={`border px-2 py-1 rounded text-sm ${
+        previewDone ? 'opacity-70 text-gray-600 line-through' : ''
+      } ${isShiftTarget ? 'ring-2 ring-blue-400' : ''} ${
+        isSelectTarget ? 'ring-2 ring-yellow-400' : ''
+      } ${isFirstRotating ? 'text-red-500' : ''}`}
+      role={shiftModeKey === keyForTask ? 'checkbox' : undefined}
+      aria-checked={shiftModeKey === keyForTask ? isShiftTarget : undefined}
+    >
+      {shiftModeKey === keyForTask && (
+        <span
+          className={`inline-block mr-1 h-3 w-3 border rounded-sm text-[10px] leading-3 text-center ${
+            isShiftTarget ? 'bg-blue-600 text-white border-blue-600' : 'bg-white'
+          }`}
+          aria-hidden
+        >
+          {isShiftTarget ? '✓' : ''}
+        </span>
+      )}
+      {showTableStart && table}
+      {showGuestsAll && <>({guests})</>}
+    </div>
+  );
+});
 export type TaskSort = 'table' | 'guests';
-
-type TaskCourseGroup = { courseName: string; reservations: Reservation[] };
-type TaskGroup = { label: string; bgColor: string; courseGroups: TaskCourseGroup[] };
-type GroupedTasks = Record<string, TaskGroup[]>;
 
 // ViewModel breakdown（親型から Pick で再利用）
 export type TasksDataVM = Pick<
   ViewData,
-  'groupedTasks' | 'sortedTimeKeys' | 'courses' | 'filteredReservations' | 'firstRotatingId'
+  'groupedTasks' | 'sortedTimeKeys' | 'filteredReservations' | 'firstRotatingId'
 >;
 
 export type TasksUiVM = Pick<
@@ -121,15 +114,15 @@ export type TasksUiVM = Pick<
 >;
 
 export type TasksActionsVM = {
-  setShowCourseAll: React.Dispatch<React.SetStateAction<boolean>>;
-  setShowGuestsAll: React.Dispatch<React.SetStateAction<boolean>>;
-  setMergeSameTasks: React.Dispatch<React.SetStateAction<boolean>>;
-  setTaskSort: React.Dispatch<React.SetStateAction<TaskSort>>;
-  setShiftModeKey: React.Dispatch<React.SetStateAction<string | null>>;
-  setShiftTargets: React.Dispatch<React.SetStateAction<string[]>>;
+  setShowCourseAll: Dispatch<SetStateAction<boolean>>;
+  setShowGuestsAll: Dispatch<SetStateAction<boolean>>;
+  setMergeSameTasks: Dispatch<SetStateAction<boolean>>;
+  setTaskSort: Dispatch<SetStateAction<TaskSort>>;
+  setShiftModeKey: Dispatch<SetStateAction<string | null>>;
+  setShiftTargets: Dispatch<SetStateAction<string[]>>;
   batchAdjustTaskTime: (ids: string[], taskLabel: string, deltaMinutes: number) => void;
-  setSelectionModeTask: React.Dispatch<React.SetStateAction<string | null>>;
-  setSelectedForComplete: React.Dispatch<React.SetStateAction<string[]>>;
+  setSelectionModeTask: Dispatch<SetStateAction<string | null>>;
+  setSelectedForComplete: Dispatch<SetStateAction<string[]>>;
   updateReservationField: (
     id: string,
     field: 'completed',
@@ -143,14 +136,14 @@ export type TasksSectionProps = {
   actions: TasksActionsVM;
   // NEW: タスク表のエリア絞り込み（親管理）
   filterArea: string; // '全て' | '未割当' | areaId
-  setFilterArea: React.Dispatch<React.SetStateAction<string>>;
+  setFilterArea: Dispatch<SetStateAction<string>>;
   // エリア定義（セレクト用・任意）
   areas?: AreaDef[];
   // 親がフィルタ済みの予約配列を渡す場合に使用（任意、未使用でもOK）
   reservations?: Reservation[];
   // Optional: 親が永続化した並び順を渡す場合に使用（未指定なら内部/既存uiを利用）
   taskSort?: TaskSort;
-  setTaskSort?: React.Dispatch<React.SetStateAction<TaskSort>>;
+  setTaskSort?: Dispatch<SetStateAction<TaskSort>>;
 };
 
 const parseTimeToMinutes = (t: string) => {
@@ -164,31 +157,24 @@ const toGuests = (g: number | string | null | undefined): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
+const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
   const { data, ui, actions } = props;
 
   // 並び順の参照優先度: props.taskSort > ui.taskSort > 内部state
-  const [innerTaskSort, setInnerTaskSort] = React.useState<TaskSort>('table');
+  const [innerTaskSort, setInnerTaskSort] = useState<TaskSort>('table');
   const curTaskSort: TaskSort = props.taskSort ?? ui.taskSort ?? innerTaskSort;
-  const onChangeTaskSort: React.Dispatch<React.SetStateAction<TaskSort>> =
+  const onChangeTaskSort: Dispatch<SetStateAction<TaskSort>> =
     props.setTaskSort ?? actions.setTaskSort ?? setInnerTaskSort;
 
-  const {
-    groupedTasks,
-    sortedTimeKeys,
-    courses,
-    filteredReservations,
-    firstRotatingId,
-  } = data;
+  const { groupedTasks, sortedTimeKeys, filteredReservations, firstRotatingId } = data;
 
   // Defer large groupedTasks updates to keep UI responsive when filters change
-  const deferredGroupedTasks = React.useDeferredValue(groupedTasks);
+  const deferredGroupedTasks = useDeferredValue(groupedTasks);
 
   const {
     showCourseAll,
     showGuestsAll,
     mergeSameTasks,
-    taskSort,
     shiftModeKey,
     selectionModeTask,
     showTableStart,
@@ -212,21 +198,21 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
   const { filterArea, setFilterArea, areas = [] } = props;
 
   // iボタン（説明ポップ）開閉状態
-  const [openInfo, setOpenInfo] = React.useState<null | 'course' | 'merge' | 'guests'>(null);
+  const [openInfo, setOpenInfo] = useState<null | 'course' | 'merge' | 'guests'>(null);
   const toggleInfo = (k: 'course' | 'merge' | 'guests') =>
     setOpenInfo((prev) => (prev === k ? null : k));
 
   // ヘルプポップオーバー（shift/complete）
-  const [taskHelp, setTaskHelp] = React.useState<null | 'shift' | 'complete'>(null);
+  const [taskHelp, setTaskHelp] = useState<null | 'shift' | 'complete'>(null);
 
   // ---- 時間変更：1ボタントグル + クイックメニュー（±15/10/5） ----
-  const [openShiftMenuFor, setOpenShiftMenuFor] = React.useState<string | null>(null);
-  const [minutePickerOpenFor, setMinutePickerOpenFor] = React.useState<string | null>(null);
-  const [selectedShiftMinutes, setSelectedShiftMinutes] = React.useState<number | null>(null);
+  const [openShiftMenuFor, setOpenShiftMenuFor] = useState<string | null>(null);
+  const [minutePickerOpenFor, setMinutePickerOpenFor] = useState<string | null>(null);
+  const [selectedShiftMinutes, setSelectedShiftMinutes] = useState<number | null>(null);
 
   // ---- 二重スクロール対策: 最寄りのスクロール親を無効化（ページ全体でスクロール） ----
-  const hostRef = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
+  const hostRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
     const root = hostRef.current;
     if (!root) return;
     const isScrollable = (el: HTMLElement) => {
@@ -247,15 +233,15 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
   }, []);
 
   // ---- 完了一括の適用ヒント（2.5秒で自動消滅） ----
-  const [completeApplyHint, setCompleteApplyHint] = React.useState<string | null>(null);
-  React.useEffect(() => {
+  const [completeApplyHint, setCompleteApplyHint] = useState<string | null>(null);
+  useEffect(() => {
     if (!completeApplyHint) return;
     const t = window.setTimeout(() => setCompleteApplyHint(null), 2500);
     return () => window.clearTimeout(t);
   }, [completeApplyHint]);
 
 
-  const handleQuickShift = React.useCallback(
+  const handleQuickShift = useCallback(
     (ids: string[], taskLabel: string, deltaMinutes: number) => {
       batchAdjustTaskTime(ids, taskLabel, deltaMinutes);
       // 実行後はメニューとモードを閉じる
@@ -269,11 +255,11 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
   );
 
   // ---- 現在時刻（分）を1分ごとに更新して、過去タスクの薄表示やスクロール基準に使う ----
-  const [nowMinutes, setNowMinutes] = React.useState(() => {
+  const [nowMinutes, setNowMinutes] = useState(() => {
     const d = new Date();
     return d.getHours() * 60 + d.getMinutes();
   });
-  React.useEffect(() => {
+  useEffect(() => {
     const id = setInterval(() => {
       const d = new Date();
       setNowMinutes(d.getHours() * 60 + d.getMinutes());
@@ -281,18 +267,18 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
     return () => clearInterval(id);
   }, []);
 
-  const timeKeys =
-    sortedTimeKeys ??
-    React.useMemo(
-      () =>
-        Object.keys(deferredGroupedTasks).sort(
-          (a, b) => parseTimeToMinutes(a) - parseTimeToMinutes(b)
-        ),
-      [deferredGroupedTasks]
-    );
+  const fallbackTimeKeys = useMemo(
+    () =>
+      Object.keys(deferredGroupedTasks).sort(
+        (a, b) => parseTimeToMinutes(a) - parseTimeToMinutes(b)
+      ),
+    [deferredGroupedTasks]
+  );
+
+  const timeKeys = sortedTimeKeys ?? fallbackTimeKeys;
 
   // ---- 初回表示時：これからの最初の時間帯へスクロール（なければ最後） ----
-  React.useEffect(() => {
+  useEffect(() => {
     if (!timeKeys || timeKeys.length === 0) return;
     const firstUpcoming = timeKeys.find((t) => parseTimeToMinutes(t) >= nowMinutes);
     const targetKey = firstUpcoming ?? timeKeys[timeKeys.length - 1];
@@ -311,8 +297,8 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
   }, []);
 
   // Normalize possibly-stale area filter that could hide all reservations on reload
-  const didNormalizeAreaFilterRef = React.useRef(false);
-  React.useEffect(() => {
+  const didNormalizeAreaFilterRef = useRef(false);
+  useEffect(() => {
     if (didNormalizeAreaFilterRef.current) return; // run only once at mount
     const valid = new Set<string>(['全て', '未割当', ...areas.map((a) => a.id)]);
     if (!filterArea || !valid.has(filterArea)) {
@@ -323,8 +309,8 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
   }, [areas]);
 
   // ---- 表示フォールバック: グループが空でも予約が存在する場合はエリア絞り込みを全体に戻す ----
-  const didCoerceAreaFilterRef = React.useRef(false);
-  React.useEffect(() => {
+  const didCoerceAreaFilterRef = useRef(false);
+  useEffect(() => {
     if (didCoerceAreaFilterRef.current) return; // coerce only once per mount if needed
     const hasGroups = Object.keys(deferredGroupedTasks ?? {}).length > 0;
     const hasReservations = (filteredReservations?.length ?? 0) > 0;
@@ -336,7 +322,7 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
     }
   }, [deferredGroupedTasks, filteredReservations, filterArea, setFilterArea]);
 
-  const onToggleShiftTarget = React.useCallback(
+  const onToggleShiftTarget = useCallback(
     (id: string) => {
       setShiftTargets(prev =>
         prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
@@ -345,7 +331,7 @@ const TasksSection: React.FC<TasksSectionProps> = React.memo((props) => {
     [setShiftTargets]
   );
 
-  const onToggleSelectComplete = React.useCallback(
+  const onToggleSelectComplete = useCallback(
     (id: string) => {
       setSelectedForComplete(prev =>
         prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]

@@ -204,7 +204,9 @@ export function useReservationsData(storeId: string, opts?: { courses?: CourseDe
 
           const drinkLabel = typeof r?.drinkLabel === 'string' ? r.drinkLabel : '';
           const eatLabel   = typeof r?.eatLabel   === 'string' ? r.eatLabel   : '';
-          const memo       = typeof r?.memo       === 'string' ? r.memo       : '';
+          const rawNotes   = typeof r?.notes     === 'string' ? r.notes     : undefined;
+          const memo       = typeof r?.memo      === 'string' ? r.memo      : (rawNotes ?? '');
+          const notes      = rawNotes ?? memo;
           const name       = typeof r?.name       === 'string' ? r.name       : '';
 
           const createdAtMsRaw = Number(r?.createdAtMs);
@@ -231,6 +233,7 @@ export function useReservationsData(storeId: string, opts?: { courses?: CourseDe
             drinkLabel,
             eatLabel,
             memo,
+            notes,
             freshUntilMs,
             editedUntilMs,
           } as Reservation;

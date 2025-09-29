@@ -24,6 +24,8 @@ export interface Reservation {
   name: string;
   /** 備考 */
   notes: string;
+  /** memo フィールド（既存データ互換用） */
+  memo?: string;
   /** タスク完了フラグ (キー: `${timeKey}_${taskLabel}_${course}`) */
   completed: Record<string, boolean>;
   /** 卓変更プレビュー用 */

@@ -815,7 +815,7 @@ export default function ReservationEditorDrawer(props: Props) {
               <button type="button" onClick={clearAllTables} className="text-xs px-2 py-1 border rounded">全解除</button>
             </div>
             {tablesOptions && tablesOptions.length > 0 ? (
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-5 gap-2">
                 {tablesOptions.map((t) => (
                   <label key={t} className="inline-flex items-center gap-2 border rounded px-2 py-1">
                     <input

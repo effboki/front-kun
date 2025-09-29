@@ -1,6 +1,7 @@
 'use client';
 
-import React from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import type { Reservation, CourseDef } from '@/types';
 import { parseTimeToMinutes } from '@/lib/time';
 
@@ -13,22 +14,21 @@ type Props = {
   sortedTimeKeys?: string[];
 
   showTableStart: boolean;
-  setShowTableStart: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowTableStart: Dispatch<SetStateAction<boolean>>;
   courseStartFiltered: boolean;
-  setCourseStartFiltered: React.Dispatch<React.SetStateAction<boolean>>;
+  setCourseStartFiltered: Dispatch<SetStateAction<boolean>>;
   filterCourse: string;
-  setFilterCourse: React.Dispatch<React.SetStateAction<string>>;
+  setFilterCourse: Dispatch<SetStateAction<string>>;
   courses: CourseDef[];
 
   startSort?: 'table' | 'guests';
-  setStartSort?: React.Dispatch<React.SetStateAction<'table' | 'guests'>>;
+  setStartSort?: Dispatch<SetStateAction<'table' | 'guests'>>;
   showGuestsAll?: boolean;
   rotatingTables?: Record<string, string> | Set<string>;
   firstRotatingId?: Record<string, string>;
 };
 
-
-const CourseStartSection: React.FC<Props> = React.memo((props) => {
+const CourseStartSection = memo(function CourseStartSection(props: Props) {
   const {
     groupedStartTimes,
     sortedTimeKeys,
@@ -43,32 +43,32 @@ const CourseStartSection: React.FC<Props> = React.memo((props) => {
   } = props;
 
   // 並び替えモード（親から渡されなければローカルで管理）
-  const [innerStartSort, setInnerStartSort] = React.useState<'table' | 'guests'>(() => {
+  const [innerStartSort, setInnerStartSort] = useState<'table' | 'guests'>(() => {
     return (props.startSort as 'table' | 'guests') ?? 'table';
   });
   const curStartSort: 'table' | 'guests' = props.startSort ?? innerStartSort;
   const onChangeStartSort = props.setStartSort ?? setInnerStartSort;
 
   // small info popovers for control toggles
-  const [openInfo, setOpenInfo] = React.useState<null | 'showTable' | 'applyPre'>(null);
+  const [openInfo, setOpenInfo] = useState<null | 'showTable' | 'applyPre'>(null);
   const toggleInfo = (k: 'showTable' | 'applyPre') => {
     setOpenInfo(prev => (prev === k ? null : k));
   };
 
   // 親が startSort を後から渡してきた場合にローカルへ反映
-  React.useEffect(() => {
+  useEffect(() => {
     if (props.startSort && !props.setStartSort) setInnerStartSort(props.startSort);
   }, [props.startSort, props.setStartSort]);
 
-  const keys =
-    sortedTimeKeys ??
-    React.useMemo(
-      () =>
-        Object.keys(groupedStartTimes).sort(
-          (a, b) => parseTimeToMinutes(a) - parseTimeToMinutes(b)
-        ),
-      [groupedStartTimes]
-    );
+  const fallbackKeys = useMemo(
+    () =>
+      Object.keys(groupedStartTimes).sort(
+        (a, b) => parseTimeToMinutes(a) - parseTimeToMinutes(b)
+      ),
+    [groupedStartTimes]
+  );
+
+  const keys = sortedTimeKeys ?? fallbackKeys;
 
   return (
     <section className="space-y-4">

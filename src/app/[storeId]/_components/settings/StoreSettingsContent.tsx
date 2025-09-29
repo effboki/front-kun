@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useMemo, useState, useCallback, useRef } from 'react';
+import { useMemo, useState, useCallback, useRef, useEffect, memo } from 'react';
+import type { ReactNode, FC, MutableRefObject } from 'react';
 import type { CourseDef, TaskDef } from '@/types';
 import type { AreaDef } from '@/types';
 import { sanitizeTableCapacities } from '@/types/settings';
@@ -25,11 +26,42 @@ const normalizeLabel = (s: string) =>
     .toLowerCase();
 const normEq = (a: string, b: string) => normalizeLabel(a) === normalizeLabel(b);
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
-const getTasks = (c?: CourseDef) => (Array.isArray(c?.tasks) ? (c!.tasks as TaskDef[]) : ([] as TaskDef[]));
+const getTasks = (c?: CourseDef) => (Array.isArray(c?.tasks) ? c.tasks : []);
 const normalizeTiny = (s: string) =>
   String(s ?? '')
     .normalize('NFKC')
     .replace(/[\s\u3000]/g, '');
+
+const sortKeysDeep = (input: unknown): unknown => {
+  if (Array.isArray(input)) return input.map(sortKeysDeep);
+  if (input && typeof input === 'object') {
+    return Object.keys(input as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((acc, key) => {
+        acc[key] = sortKeysDeep((input as Record<string, unknown>)[key]);
+        return acc;
+      }, {});
+  }
+  return input;
+};
+
+const stableStringify = (value: unknown) => JSON.stringify(sortKeysDeep(value));
+
+const useOutsideClick = (
+  targetRef: MutableRefObject<HTMLElement | null>,
+  active: boolean,
+  handleOutside: () => void,
+) => {
+  useEffect(() => {
+    if (!active) return;
+    const onDocClick = (event: MouseEvent) => {
+      if (!targetRef.current || targetRef.current.contains(event.target as Node)) return;
+      handleOutside();
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [active, handleOutside, targetRef]);
+};
 
 // Grapheme-aware slicer: correctly counts emoji + variation selectors as 1 char
 const takeGraphemes = (input: string, n: number): string => {
@@ -78,7 +110,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   const positions = useMemo(() => (Array.isArray(value.positions) ? value.positions : []), [value.positions]);
   const presetTables = useMemo(() => (Array.isArray(value.tables) ? value.tables : []), [value.tables]);
   const tableCapacities = useMemo(
-    () => sanitizeTableCapacities((value as any)?.tableCapacities, presetTables),
+    () => sanitizeTableCapacities(value.tableCapacities, presetTables),
     [value.tableCapacities, presetTables]
   );
   const eatOptions = useMemo(() => (Array.isArray(value.eatOptions) ? value.eatOptions : []), [value.eatOptions]);
@@ -90,7 +122,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
         : ({} as Record<string, Record<string, string[]>>),
     [value.tasksByPosition]
   );
-  const areas = useMemo<AreaDef[]>(() => (Array.isArray((value as any)?.areas) ? ((value as any).areas as AreaDef[]) : []), [(value as any)?.areas]);
+  const areas = useMemo<AreaDef[]>(() => (Array.isArray(value.areas) ? value.areas : []), [value.areas]);
 
   // local UI state only
   const [selectedCourse, setSelectedCourse] = useState<string>(courses[0]?.name ?? '');
@@ -101,36 +133,15 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   // positions: settings popover (only one open at a time)
   const [posMenuFor, setPosMenuFor] = useState<string | null>(null);
   const posMenuRef = useRef<HTMLDivElement | null>(null);
-  React.useEffect(() => {
-    const onDocClick = (e: MouseEvent) => {
-      if (posMenuFor && posMenuRef.current && !posMenuRef.current.contains(e.target as Node)) {
-        setPosMenuFor(null);
-      }
-    };
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
-  }, [posMenuFor]);
+  const closePosMenu = useCallback(() => setPosMenuFor(null), []);
+  useOutsideClick(posMenuRef, Boolean(posMenuFor), closePosMenu);
   // areas: settings popover (only one open at a time)
   const [areaMenuFor, setAreaMenuFor] = useState<string | null>(null);
   const areaMenuRef = useRef<HTMLDivElement | null>(null);
-  React.useEffect(() => {
-    const onDocClick = (e: MouseEvent) => {
-      if (areaMenuFor && areaMenuRef.current && !areaMenuRef.current.contains(e.target as Node)) {
-        setAreaMenuFor(null);
-      }
-    };
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
-  }, [areaMenuFor]);
-  React.useEffect(() => {
-    const onDocClick = (e: MouseEvent) => {
-      if (courseMenuFor && courseMenuRef.current && !courseMenuRef.current.contains(e.target as Node)) {
-        setCourseMenuFor(null);
-      }
-    };
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
-  }, [courseMenuFor]);
+  const closeAreaMenu = useCallback(() => setAreaMenuFor(null), []);
+  useOutsideClick(areaMenuRef, Boolean(areaMenuFor), closeAreaMenu);
+  const closeCourseMenu = useCallback(() => setCourseMenuFor(null), []);
+  useOutsideClick(courseMenuRef, Boolean(courseMenuFor), closeCourseMenu);
   // Helper to toggle course accordion (open/close) and sync selectedCourse
   const toggleCourseOpen = useCallback((name: string) => {
     setOpenCourse((prev) => {
@@ -149,7 +160,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   // track unsaved changes (for Save button "活きてる感")
   const [localDirty, setLocalDirty] = useState(false);
   const prevSavingRef = useRef<boolean>(false);
-  React.useEffect(() => {
+  useEffect(() => {
     // when saving completed, consider it saved -> clear dirty
     if (prevSavingRef.current && !isSaving) {
       setLocalDirty(false);
@@ -158,17 +169,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   }, [isSaving]);
 
   // ---- dirty 判定（baseline 優先、無い場合はローカル追跡）----
-  const stable = (v: any): any => {
-    if (Array.isArray(v)) return v.map(stable);
-    if (v && typeof v === 'object') {
-      const out: Record<string, any> = {};
-      Object.keys(v).sort().forEach((k) => { out[k] = stable((v as any)[k]); });
-      return out;
-    }
-    return v;
-  };
-  const stableStringify = (v: any) => JSON.stringify(stable(v));
-  const baselineDirty = React.useMemo(() => {
+  const baselineDirty = useMemo(() => {
     if (!baseline) return null;
     try {
       return stableStringify(value) !== stableStringify(baseline);
@@ -179,7 +180,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   const isDirty = baselineDirty ?? localDirty;
   
   // Cmd/Ctrl+S で保存（未保存かつ保存中でない場合）
-  React.useEffect(() => {
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
@@ -193,7 +194,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   }, [isDirty, isSaving, onSave]);
   
   // 未保存の変更がある場合は離脱ガード
-  React.useEffect(() => {
+  useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (!isDirty) return;
       e.preventDefault();
@@ -303,7 +304,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   }, [onChange]);
   const setAreas = useCallback((next: AreaDef[]) => {
     setLocalDirty(true);
-    onChange({ areas: next } as any);
+    onChange({ areas: next });
   }, [onChange]);
 
   // 子ページ（ミニタスク設定／波設定）からの変更も dirty を立てて親にパッチ
@@ -357,7 +358,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   const [tableEditMode, setTableEditMode] = useState(false);
 
   // keep selectedCourse valid
-  React.useEffect(() => {
+  useEffect(() => {
     if (!courses.some((c) => c.name === selectedCourse)) setSelectedCourse(courses[0]?.name ?? '');
   }, [courses, selectedCourse]);
 
@@ -384,7 +385,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     return deduped.slice().sort((a, b) => a.timeOffset - b.timeOffset);
   }, [selectedCourseDef, optimisticTasks, selectedCourse]);
   // 親から courses が更新されたら、pending をクリア（実データに置き換わったため）
-  React.useEffect(() => {
+  useEffect(() => {
     if (Object.keys(optimisticTasks).length) {
       setOptimisticTasks({});
     }
@@ -458,7 +459,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     stopHold();
     stepHoldRef.current = setInterval(() => shiftTaskOffset(offset, label, delta), 180);
   };
-  React.useEffect(() => () => stopHold(), []);
+  useEffect(() => () => stopHold(), []);
 
   const deleteTaskFromCourse = useCallback(
     (offset: number, label: string) => {
@@ -685,7 +686,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   };
 
   // ===== UI shells =====
-  const ListItem: React.FC<{ label: React.ReactNode; onClick: () => void }> = ({ label, onClick }) => (
+  const ListItem: FC<{ label: ReactNode; onClick: () => void }> = ({ label, onClick }) => (
     <div
       role="button"
       tabIndex={0}
@@ -703,7 +704,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     </div>
   );
 
-  const SubPageShell: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+  const SubPageShell: FC<{ title: string; children: ReactNode }> = ({ title, children }) => (
     <section>
       <div className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b">
         <div className="h-12 grid grid-cols-[auto,1fr,auto] items-center">
@@ -2018,7 +2019,7 @@ type NewCourseFormProps = {
   onAdd: (name: string) => boolean;
 };
 
-const NewCourseForm = React.memo(function NewCourseForm({ onAdd }: NewCourseFormProps) {
+const NewCourseForm = memo(function NewCourseForm({ onAdd }: NewCourseFormProps) {
   const [draft, setDraft] = useState('');
   const [isComposing, setIsComposing] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -2073,7 +2074,7 @@ type NewTaskFormProps = {
   onAdd: (label: string, offset: number) => boolean;
 };
 
-const NewTaskForm = React.memo(function NewTaskForm({ onAdd }: NewTaskFormProps) {
+const NewTaskForm = memo(function NewTaskForm({ onAdd }: NewTaskFormProps) {
   const [draft, setDraft] = useState('');
   const [offset, setOffset] = useState(0);
   const [isComposing, setIsComposing] = useState(false);
@@ -2160,7 +2161,7 @@ type NewPositionFormProps = {
   onAdd: (name: string) => boolean;
 };
 
-const NewPositionForm = React.memo(function NewPositionForm({ onAdd }: NewPositionFormProps) {
+const NewPositionForm = memo(function NewPositionForm({ onAdd }: NewPositionFormProps) {
   const [draft, setDraft] = useState('');
   const [isComposing, setIsComposing] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -2214,7 +2215,7 @@ type NewAreaFormProps = {
   onAdd: (name: string) => boolean;
 };
 
-const NewAreaForm = React.memo(function NewAreaForm({ onAdd }: NewAreaFormProps) {
+const NewAreaForm = memo(function NewAreaForm({ onAdd }: NewAreaFormProps) {
   const [draft, setDraft] = useState('');
   const [isComposing, setIsComposing] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -2271,7 +2272,7 @@ type EatDrinkOptionFormProps = {
   describedById: string;
 };
 
-const EatDrinkOptionForm = React.memo(function EatDrinkOptionForm({ existing, onAdd, placeholder, describedById }: EatDrinkOptionFormProps) {
+const EatDrinkOptionForm = memo(function EatDrinkOptionForm({ existing, onAdd, placeholder, describedById }: EatDrinkOptionFormProps) {
   const [draft, setDraft] = useState('');
   const [isComposing, setIsComposing] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);

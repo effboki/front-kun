@@ -129,6 +129,7 @@ export type ReservationDoc = {
   drinkLabel?: string;
   eatLabel?: string;
   memo?: string;
+  notes?: string;
   guests?: number;
   table?: string;
   completed?: Record<string, boolean>;
@@ -181,7 +182,8 @@ export const fromSnapshot = (snap: DocumentSnapshot<DocumentData>): ReservationR
     foodAllYouCan: !!x.foodAllYouCan,
     drinkLabel: coerceStr(x.drinkLabel),
     eatLabel: coerceStr(x.eatLabel),
-    memo: coerceStr(x.memo),
+    memo: coerceStr(x.memo ?? x.notes),
+    notes: coerceStr(x.notes ?? x.memo),
     completed,
     arrived: !!x.arrived,
     paid: !!x.paid,
@@ -210,7 +212,8 @@ export const toReservationDoc = (input: Partial<ReservationDoc> & { startMs: any
     foodAllYouCan: !!input.foodAllYouCan,
     drinkLabel: coerceStr(input.drinkLabel),
     eatLabel: coerceStr(input.eatLabel),
-    memo: coerceStr(input.memo),
+    memo: coerceStr((input as any).memo ?? (input as any).notes),
+    notes: coerceStr((input as any).notes ?? (input as any).memo),
     guests: input.guests != null ? Math.trunc(Number(input.guests)) : undefined,
   };
 };
@@ -313,6 +316,11 @@ export const patchReservation = async (
   if ('drinkLabel' in partial) data.drinkLabel = partial.drinkLabel ?? '';
   if ('eatLabel' in partial) data.eatLabel = partial.eatLabel ?? '';
   if ('memo' in partial) data.memo = partial.memo ?? '';
+  if ('notes' in partial) {
+    const val = (partial as any).notes ?? '';
+    data.notes = val;
+    if (!('memo' in partial)) data.memo = val;
+  }
   if (partial.guests != null) data.guests = Math.trunc(Number(partial.guests));
   // server/client timestamps for freshness markers
   (data as any).updatedAt = serverTimestamp();
