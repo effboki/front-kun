@@ -208,8 +208,7 @@ export default function ScheduleView({
     const width = snapPx(rect.width);
     const scrollLeft = snapPx(el.scrollLeft);
 
-    const railSpan = Math.max(0, leftColW - scrollLeft);
-    const railW = snapPx(railSpan);
+    const railW = snapPx(leftColW);
     const contentShift = snapPx(-scrollLeft);
 
     if (lastFloatRef.current.left !== left) {
@@ -222,9 +221,9 @@ export default function ScheduleView({
     }
     if (lastFloatRef.current.rail !== railW) {
       rail.style.width = `${railW}px`;
-      rail.style.borderRight = railW > 0 ? '1px solid #e5e7eb' : 'none';
       lastFloatRef.current.rail = railW;
     }
+    rail.style.borderRight = '1px solid #e5e7eb';
     if (lastFloatRef.current.contentShift !== contentShift) {
       content.style.transform = `translate3d(${contentShift}px,0,0)`;
       lastFloatRef.current.contentShift = contentShift;
@@ -1481,7 +1480,15 @@ const handleDragMove = useCallback((e: any) => {
         <div
           ref={floatHeaderRef}
           className="fixed z-[4000] pointer-events-none"
-          style={{ top: topInsetPx, left: 0, width: 0, height: headerH }}
+          style={{
+            top: topInsetPx,
+            left: 0,
+            width: '100vw',
+            maxWidth: '100%',
+            height: headerH,
+            backgroundColor: '#ffffff',
+            boxShadow: '0 1px 0 0 #e5e7eb'
+          }}
           aria-hidden
         >
           <div className="relative h-full w-full">
@@ -1489,7 +1496,7 @@ const handleDragMove = useCallback((e: any) => {
             <div
               ref={floatRailRef}
               className="absolute inset-y-0 left-0 bg-white"
-              style={{ width: leftColW }}
+              style={{ width: leftColW, zIndex: 5, pointerEvents: 'none', boxShadow: '2px 0 4px -2px rgba(15,23,42,0.2)' }}
             />
             {/* Masked viewport */}
             <div className="absolute inset-0 overflow-hidden">
