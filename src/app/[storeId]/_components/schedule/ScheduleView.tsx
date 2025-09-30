@@ -117,55 +117,7 @@ export default function ScheduleView({
 }: Props) {
   // --- 列幅・端末判定 ---
   const headerH = 40; // 時刻ヘッダーの高さ(px)
-  // Display-pixel snapping to avoid subpixel drift between CSS Grid and gradients
-  const snapPx = useCallback((n: number) => {
-    const dpr =
-      typeof window !== 'undefined' && window.devicePixelRatio
-        ? window.devicePixelRatio
-        : 1;
-    return Math.round(n * dpr) / Math.max(1, dpr);
-  }, []);
-  // Actual rendered height of the time header (includes border, device pixel rounding)
-  const headerStickyRef = useRef<HTMLDivElement | null>(null);
-  const [headerMeasuredPx, setHeaderMeasuredPx] = useState<number>(headerH);
   const CONTENT_TOP_GAP = 1; // ヘッダーと内容の安全な隙間(px)。1pxだけ下げて潜り込みを防止
-  useLayoutEffect(() => {
-    const el = headerStickyRef.current;
-    if (!el) return;
-
-    const measure = () => {
-      const rawH = el.getBoundingClientRect().height || 0;
-      const snapped = snapPx(rawH);
-      // Hidden tabs can report 0px; never allow less than the designed header height
-      const clamped = Math.max(headerH, snapped);
-      setHeaderMeasuredPx(prev => (Math.abs(prev - clamped) > 0.25 ? clamped : prev));
-    };
-
-    measure();
-
-    let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(() => measure());
-      ro.observe(el);
-    }
-
-    const onWin = () => measure();
-    window.addEventListener('resize', onWin);
-    window.addEventListener('orientationchange', onWin);
-    document.addEventListener('visibilitychange', onWin);
-    const vv = window.visualViewport;
-    vv?.addEventListener('resize', onWin);
-    vv?.addEventListener('scroll', onWin);
-
-    return () => {
-      ro?.disconnect();
-      window.removeEventListener('resize', onWin);
-      window.removeEventListener('orientationchange', onWin);
-      document.removeEventListener('visibilitychange', onWin);
-      vv?.removeEventListener('resize', onWin);
-      vv?.removeEventListener('scroll', onWin);
-    };
-  }, [snapPx]);
 
   // 端末幅で判定（スマホ/タブレット）
   const [isTablet, setIsTablet] = useState(() =>
@@ -175,7 +127,41 @@ export default function ScheduleView({
   // 左の卓番号列の幅（px）: スマホ 56 / タブレット 64
   const leftColW = isTablet ? 64 : 56;
   const [topInsetPx, setTopInsetPx] = useState<number>(DEFAULT_TOP_BAR_PX);
-  const contentTopPx = useMemo(() => snapPx(headerH + CONTENT_TOP_GAP), [snapPx]);
+  // Display-pixel snapping to avoid subpixel drift between CSS Grid and gradients
+  const snapPx = useCallback((n: number) => {
+    const dpr =
+      typeof window !== 'undefined' && window.devicePixelRatio
+        ? window.devicePixelRatio
+        : 1;
+    return Math.round(n * dpr) / Math.max(1, dpr);
+  }, []);
+  // Floating header bottom (measured) + small gap -> used as content's top offset
+  const [headerMeasuredPx, setHeaderMeasuredPx] = useState<number>(() => snapPx(headerH + CONTENT_TOP_GAP));
+  useLayoutEffect(() => {
+    const measure = () => {
+      // On smartphone we have the floating header; on tablet we fall back to the constant height
+      const el = floatHeaderRef.current;
+      // If floating header is present, use its real height; otherwise use the constant headerH
+      const raw = (!isTablet && el) ? el.getBoundingClientRect().height : headerH;
+      // snap to device pixels and add the small safety gap to avoid underlap
+      const next = snapPx(Math.max(headerH, Math.round(raw)) + CONTENT_TOP_GAP);
+      setHeaderMeasuredPx(prev => (Math.abs(prev - next) > 0.25 ? next : prev));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', measure);
+    const el = floatHeaderRef.current;
+    let ro: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== 'undefined' && el) {
+      ro = new ResizeObserver(() => measure());
+      ro.observe(el);
+    }
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', measure);
+      ro?.disconnect();
+    };
+  }, [isTablet, snapPx]);
   const headerOffsetPx = Math.max(0, topInsetPx - DEFAULT_TOP_BAR_PX);
   // 5分スロット幅(px)。タブレットは少し広め
   const [colW, setColW] = useState(() => (typeof window !== 'undefined' && window.innerWidth >= 768 ? 12 : 6));
@@ -225,9 +211,6 @@ export default function ScheduleView({
   // スクロール方向の影用（ヘッダー/左列にシャドウを付ける）
   const [scrolled, setScrolled] = useState({ x: false, y: false });
   const headerLeftOverlayRef = useRef<HTMLDivElement | null>(null);
-  // Disable floating header on smartphones: use the same scroll container as the grid
-  // to eliminate any scroll-sync lag.
-  const useFloatingHeader = false;
   // ===== Floating timeline header (smartphone): fixed overlay that tracks horizontal scroll (DOM refs to minimize lag) =====
   const floatHeaderRef = useRef<HTMLDivElement | null>(null);
   const floatRailRef = useRef<HTMLDivElement | null>(null);
@@ -242,7 +225,6 @@ export default function ScheduleView({
 
   // Apply current geometry to the floating header (called via rAF)
   const applyFloatingHeaderLayout = useCallback(() => {
-    if (!useFloatingHeader) return;
     const el = scrollParentRef.current;
     const hdr = floatHeaderRef.current;
     const rail = floatRailRef.current;
@@ -274,17 +256,16 @@ export default function ScheduleView({
       content.style.transform = `translate3d(${contentShift}px,0,0)`;
       lastFloatRef.current.contentShift = contentShift;
     }
-  }, [leftColW, snapPx, useFloatingHeader]);
+  }, [leftColW, snapPx]);
 
   // rAF-scheduled updater to coalesce scroll events
   const scheduleFloatingUpdate = useCallback(() => {
-    if (!useFloatingHeader) return;
     if (rafRef.current != null) return;
     rafRef.current = window.requestAnimationFrame(() => {
       rafRef.current = null;
       applyFloatingHeaderLayout();
     });
-  }, [applyFloatingHeaderLayout, useFloatingHeader]);
+  }, [applyFloatingHeaderLayout]);
   // ===== Scroll container axis-lock (screen-level) =====
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
   const scrollAxisRef = useRef<'x' | 'y' | null>(null);
@@ -474,23 +455,10 @@ export default function ScheduleView({
       const x = snapPx(el.scrollLeft);
       headerLeftOverlayRef.current.style.transform = `translate3d(${x}px,0,0)`;
     }
-
-    // --- Lag‑free sync for the floating header content on scroll (smartphone) ---
-    if (useFloatingHeader) {
-      if (floatContentRef.current) {
-        const shift = snapPx(-el.scrollLeft);
-        if (lastFloatRef.current.contentShift !== shift) {
-          floatContentRef.current.style.transform = `translate3d(${shift}px,0,0)`;
-          lastFloatRef.current.contentShift = shift;
-        }
-      }
-      // keep floating header frame geometry fresh via rAF (left/width recalculation)
-      scheduleFloatingUpdate();
-    }
+    // keep floating header aligned with horizontal scroll (smartphone) via rAF
+    scheduleFloatingUpdate();
   }, [lockScrollAxis, scheduleScrollIdleReset, scheduleFloatingUpdate, snapPx]);
   useLayoutEffect(() => {
-    // Only run once on mount: floating header event listeners are stable
-    if (!useFloatingHeader) return;
     applyFloatingHeaderLayout();
     const onWin = () => applyFloatingHeaderLayout();
     window.addEventListener('resize', onWin);
@@ -501,28 +469,13 @@ export default function ScheduleView({
       window.removeEventListener('orientationchange', onWin);
       document.removeEventListener('visibilitychange', onWin);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [applyFloatingHeaderLayout]);
 
   useLayoutEffect(() => {
-    // Only run once on mount: floating header DOM refs are stable
-    if (!useFloatingHeader) return;
     const hdr = floatHeaderRef.current;
     if (hdr) hdr.style.top = `${topInsetPx}px`;
     applyFloatingHeaderLayout();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!useFloatingHeader) return;
-    const hdr = floatHeaderRef.current;
-    if (hdr) hdr.style.top = `${topInsetPx}px`;
-    // Re-apply geometry whenever important inputs change
-    applyFloatingHeaderLayout();
-    // Also update immediately on the next microtask to catch late DOM settles
-    const t = window.setTimeout(() => applyFloatingHeaderLayout(), 0);
-    return () => window.clearTimeout(t);
-  }, [useFloatingHeader, topInsetPx, leftColW, colWpx, applyFloatingHeaderLayout]);
+  }, [applyFloatingHeaderLayout, leftColW, topInsetPx]);
 
   const applyOptimistic = useCallback((id: string, patch: OptimisticPatch) => {
     if (!id || !patch) return;
@@ -1550,8 +1503,8 @@ const handleDragMove = useCallback((e: any) => {
       className="relative w-full bg-transparent"
       style={headerOffsetPx ? { marginTop: headerOffsetPx } : undefined}
     >
-      {/* Floating time header (smartphone only): fixed overlay that tracks horizontal scroll */}
-      {useFloatingHeader && !isTablet && (
+      {/* Floating time header (smartphone only): fixed, above everything, tracks horizontal scroll */}
+      {!isTablet && (
         <div
           ref={floatHeaderRef}
           className="fixed z-[4000] pointer-events-none"
@@ -1646,16 +1599,15 @@ const handleDragMove = useCallback((e: any) => {
         >
           {/* === 上部ヘッダー（左上は常に白／時刻は左余白分だけオフセット）=== */}
           <div
-            ref={headerStickyRef}
             className={`sticky z-[1200] bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
             style={{
               top: 0,
-              height: headerMeasuredPx,
+              height: headerH,
               boxShadow: '0 1px 0 0 #e5e7eb',
               overflow: 'clip',
               pointerEvents: 'none',
               // smartphone: keep height but hide visual (floating header will render)
-              visibility: 'visible',
+              visibility: isTablet ? 'visible' : 'hidden',
             }}
           >
             <div
@@ -1756,7 +1708,7 @@ const handleDragMove = useCallback((e: any) => {
           {/* 左上角のホワイト・マスク（横/縦スクロール時も常に空白を維持） */}
           <div
             className="sticky left-0 z-[1200] bg-white border-b border-r pointer-events-none"
-            style={{ top: 0, width: leftColW, height: headerMeasuredPx }}
+            style={{ top: 0, width: leftColW, height: headerH }}
             aria-hidden
           />
 
