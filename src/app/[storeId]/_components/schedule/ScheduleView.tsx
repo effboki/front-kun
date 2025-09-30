@@ -189,9 +189,6 @@ export default function ScheduleView({
   const floatHeaderRef = useRef<HTMLDivElement | null>(null);
   const floatRailRef = useRef<HTMLDivElement | null>(null);
   const floatContentRef = useRef<HTMLDivElement | null>(null);
-  // ===== Floating timeline body overlay (smartphone): fixed overlay for background/now line =====
-  const floatBodyRef = useRef<HTMLDivElement | null>(null);
-  const floatBodyContentRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastFloatRef = useRef<{ left: number; width: number; rail: number; contentShift: number }>({
     left: -1,
@@ -200,14 +197,12 @@ export default function ScheduleView({
     contentShift: -1,
   });
 
-  // Apply current geometry to the floating header and body overlays (called via rAF)
+  // Apply current geometry to the floating header (called via rAF)
   const applyFloatingHeaderLayout = useCallback(() => {
     const el = scrollParentRef.current;
     const hdr = floatHeaderRef.current;
     const rail = floatRailRef.current;
     const content = floatContentRef.current;
-    const body = floatBodyRef.current;
-    const bodyContent = floatBodyContentRef.current;
     if (!el || !hdr || !rail || !content) return;
 
     const rect = el.getBoundingClientRect();
@@ -235,20 +230,7 @@ export default function ScheduleView({
       content.style.transform = `translate3d(${contentShift}px,0,0)`;
       lastFloatRef.current.contentShift = contentShift;
     }
-    // ==== Floating body (smartphone) ====
-    if (body && bodyContent) {
-      // viewport height of the scroll container
-      const vh = el.clientHeight || 0;
-      // place body just under the floating header (same small gap as contentTopPx)
-      body.style.top = `${snapPx(topInsetPx) + contentTopPx}px`;
-      body.style.left = `${left}px`;
-      body.style.width = `${width}px`;
-      body.style.height = `${Math.max(0, snapPx(vh - contentTopPx))}px`;
-
-      // horizontal follow
-      bodyContent.style.transform = `translate3d(${contentShift}px,0,0)`;
-    }
-  }, [leftColW, snapPx, topInsetPx, contentTopPx]);
+  }, [leftColW, snapPx]);
 
   // rAF-scheduled updater to coalesce scroll events
   const scheduleFloatingUpdate = useCallback(() => {
@@ -1559,55 +1541,6 @@ const handleDragMove = useCallback((e: any) => {
           </div>
         </div>
       )}
-      {/* Floating timeline body overlay (smartphone only): fixed, under header, tracks scroll */}
-      {!isTablet && (
-        <div
-          ref={floatBodyRef}
-          className="fixed z-[5] pointer-events-none"
-          style={{
-            top: snapPx(topInsetPx) + contentTopPx,
-            left: 0,
-            width: '100vw',
-            height: 0, // will be sized by applyFloatingHeaderLayout
-            maxWidth: '100%',
-          }}
-          aria-hidden
-        >
-          <div className="absolute inset-0 overflow-hidden">
-            <div
-              ref={floatBodyContentRef}
-              className="absolute inset-y-0 will-change-transform"
-              style={{
-                transform: 'translate3d(0,0,0)',
-                left: leftColW,
-                width: nCols * colWpx,
-                height: '100%',
-              }}
-            >
-              {/* 背景の時間ゼブラ（1時間） + 30分補助線 */}
-              <div
-                className="absolute inset-0"
-                style={{
-                  backgroundImage: `
-                repeating-linear-gradient(to right, #d1d5db 0, #d1d5db 1px, transparent 1px, transparent ${hourPx}px),
-                repeating-linear-gradient(to right, #e5e7eb 0, #e5e7eb 1px, transparent 1px, transparent ${minorSolidStepPx}px),
-                repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)
-              `,
-                }}
-              />
-              {/* 現在時刻ライン（本体と同じ式） */}
-              {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
-                <div
-                  className="absolute top-0 bottom-0 pointer-events-none z-[20]"
-                  style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colWpx}px` }}
-                >
-                  <div className="h-full border-l-2 border-red-500 opacity-70" />
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
       {/* 共通スクロール領域（縦・横ともにこの要素がスクロール親） */}
       <div
         ref={scrollParentRef}
@@ -1762,7 +1695,7 @@ const handleDragMove = useCallback((e: any) => {
             onDragEnd={(e) => { axisLockRef.current = null; handleDragEnd(e); }}
           >
             <div
-              className="absolute z-[20]"
+              className="absolute z-0"
               style={{
                 left: leftColW,
                 top: contentTopPx,
@@ -1779,13 +1712,11 @@ const handleDragMove = useCallback((e: any) => {
                 style={{
                   gridTemplateColumns: `repeat(${nCols}, ${colWpx}px)`,
                   gridTemplateRows: rowHeightsPx.map(h => `${h}px`).join(' '),
-                  backgroundImage: isTablet
-                    ? `
-      repeating-linear-gradient(to right, #d1d5db 0, #d1d5db 1px, transparent 1px, transparent ${hourPx}px),
-      repeating-linear-gradient(to right, #e5e7eb 0, #e5e7eb 1px, transparent 1px, transparent ${minorSolidStepPx}px),
-      repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)
-    `
-                    : 'none',
+                  backgroundImage: `
+                    repeating-linear-gradient(to right, #d1d5db 0, #d1d5db 1px, transparent 1px, transparent ${hourPx}px),
+                    repeating-linear-gradient(to right, #e5e7eb 0, #e5e7eb 1px, transparent 1px, transparent ${minorSolidStepPx}px),
+                    repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)
+                  `,
                 }}
               >
                 <ScheduleGrid nCols={nCols} colW={colWpx} rowHeights={rowHeightsPx} />
@@ -1795,8 +1726,8 @@ const handleDragMove = useCallback((e: any) => {
                   <DashedQuarterLines nCols={nCols} colW={colWpx} colsPerHour={colsPerHour} />
                 )}
 
-                {/* Now indicator (tablet only). On smartphone, the floating body overlay draws it to avoid double rendering */}
-                {isTablet && nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
+                {/* Now indicator */}
+                {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
                   <div
                     className="absolute top-0 bottom-0 pointer-events-none z-[20]"
                     style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colWpx}px` }}
