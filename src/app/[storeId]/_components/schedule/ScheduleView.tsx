@@ -117,7 +117,6 @@ export default function ScheduleView({
 }: Props) {
   // --- 列幅・端末判定 ---
   const headerH = 40; // 時刻ヘッダーの高さ(px)
-  const CONTENT_TOP_GAP = 1; // ヘッダーと内容の安全な隙間(px)。1pxだけ下げて潜り込みを防止
 
   // 端末幅で判定（スマホ/タブレット）
   const [isTablet, setIsTablet] = useState(() =>
@@ -135,7 +134,7 @@ export default function ScheduleView({
         : 1;
     return Math.round(n * dpr) / Math.max(1, dpr);
   }, []);
-  const contentTopPx = useMemo(() => snapPx(headerH + CONTENT_TOP_GAP), [snapPx]);
+  // Remove contentTopPx, use headerH directly for alignment below header
   const headerOffsetPx = Math.max(0, topInsetPx - DEFAULT_TOP_BAR_PX);
   // 5分スロット幅(px)。タブレットは少し広め
   const [colW, setColW] = useState(() => (typeof window !== 'undefined' && window.innerWidth >= 768 ? 12 : 6));
@@ -185,61 +184,7 @@ export default function ScheduleView({
   // スクロール方向の影用（ヘッダー/左列にシャドウを付ける）
   const [scrolled, setScrolled] = useState({ x: false, y: false });
   const headerLeftOverlayRef = useRef<HTMLDivElement | null>(null);
-  // ===== Floating timeline header (smartphone): fixed overlay that tracks horizontal scroll (DOM refs to minimize lag) =====
-  const floatHeaderRef = useRef<HTMLDivElement | null>(null);
-  const floatRailRef = useRef<HTMLDivElement | null>(null);
-  const floatContentRef = useRef<HTMLDivElement | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const lastFloatRef = useRef<{ left: number; width: number; rail: number; contentShift: number }>({
-    left: -1,
-    width: -1,
-    rail: -1,
-    contentShift: -1,
-  });
 
-  // Apply current geometry to the floating header (called via rAF)
-  const applyFloatingHeaderLayout = useCallback(() => {
-    const el = scrollParentRef.current;
-    const hdr = floatHeaderRef.current;
-    const rail = floatRailRef.current;
-    const content = floatContentRef.current;
-    if (!el || !hdr || !rail || !content) return;
-
-    const rect = el.getBoundingClientRect();
-    const left = snapPx(rect.left);
-    const width = snapPx(rect.width);
-    const scrollLeft = snapPx(el.scrollLeft);
-
-    const railW = snapPx(leftColW);
-    const contentShift = snapPx(-scrollLeft);
-
-    if (lastFloatRef.current.left !== left) {
-      hdr.style.left = `${left}px`;
-      lastFloatRef.current.left = left;
-    }
-    if (lastFloatRef.current.width !== width) {
-      hdr.style.width = `${width}px`;
-      lastFloatRef.current.width = width;
-    }
-    if (lastFloatRef.current.rail !== railW) {
-      rail.style.width = `${railW}px`;
-      lastFloatRef.current.rail = railW;
-    }
-    rail.style.borderRight = '1px solid #e5e7eb';
-    if (lastFloatRef.current.contentShift !== contentShift) {
-      content.style.transform = `translate3d(${contentShift}px,0,0)`;
-      lastFloatRef.current.contentShift = contentShift;
-    }
-  }, [leftColW, snapPx]);
-
-  // rAF-scheduled updater to coalesce scroll events
-  const scheduleFloatingUpdate = useCallback(() => {
-    if (rafRef.current != null) return;
-    rafRef.current = window.requestAnimationFrame(() => {
-      rafRef.current = null;
-      applyFloatingHeaderLayout();
-    });
-  }, [applyFloatingHeaderLayout]);
   // ===== Scroll container axis-lock (screen-level) =====
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
   const scrollAxisRef = useRef<'x' | 'y' | null>(null);
@@ -430,26 +375,7 @@ export default function ScheduleView({
       headerLeftOverlayRef.current.style.transform = `translate3d(${x}px,0,0)`;
     }
     // keep floating header aligned with horizontal scroll (smartphone) via rAF
-    scheduleFloatingUpdate();
-  }, [lockScrollAxis, scheduleScrollIdleReset, scheduleFloatingUpdate, snapPx]);
-  useLayoutEffect(() => {
-    applyFloatingHeaderLayout();
-    const onWin = () => applyFloatingHeaderLayout();
-    window.addEventListener('resize', onWin);
-    window.addEventListener('orientationchange', onWin);
-    document.addEventListener('visibilitychange', onWin);
-    return () => {
-      window.removeEventListener('resize', onWin);
-      window.removeEventListener('orientationchange', onWin);
-      document.removeEventListener('visibilitychange', onWin);
-    };
-  }, [applyFloatingHeaderLayout]);
-
-  useLayoutEffect(() => {
-    const hdr = floatHeaderRef.current;
-    if (hdr) hdr.style.top = `${topInsetPx}px`;
-    applyFloatingHeaderLayout();
-  }, [applyFloatingHeaderLayout, leftColW, topInsetPx]);
+  }, [lockScrollAxis, scheduleScrollIdleReset, snapPx]);
 
   const applyOptimistic = useCallback((id: string, patch: OptimisticPatch) => {
     if (!id || !patch) return;
@@ -1465,11 +1391,6 @@ const handleDragMove = useCallback((e: any) => {
       clearScrollIdleTimer();
     };
   }, [clearScrollIdleTimer]);
-  useEffect(() => {
-    return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    };
-  }, []);
 
   const gridHeightPx = rowHeightsPx.reduce((a, b) => a + b, 0);
   return (
@@ -1477,70 +1398,6 @@ const handleDragMove = useCallback((e: any) => {
       className="relative w-full bg-transparent"
       style={headerOffsetPx ? { marginTop: headerOffsetPx } : undefined}
     >
-      {/* Floating time header (smartphone only): fixed, above everything, tracks horizontal scroll */}
-      {!isTablet && (
-        <div
-          ref={floatHeaderRef}
-          className="fixed z-[4000] pointer-events-none"
-          style={{
-            top: topInsetPx,
-            left: 0,
-            width: '100vw',
-            maxWidth: '100%',
-            height: headerH,
-            backgroundColor: '#ffffff',
-            boxShadow: '0 1px 0 0 #e5e7eb'
-          }}
-          aria-hidden
-        >
-          <div className="relative h-full w-full">
-            {/* Left white cap equals visible part of left rail */}
-            <div
-              ref={floatRailRef}
-              className="absolute inset-y-0 left-0 bg-white"
-              style={{ width: leftColW, zIndex: 5, pointerEvents: 'none', boxShadow: '2px 0 4px -2px rgba(15,23,42,0.2)' }}
-            />
-            {/* Masked viewport */}
-            <div className="absolute inset-0 overflow-hidden">
-              {/* Content positioned in content coordinates; shifted by transform */}
-              <div
-                ref={floatContentRef}
-                className="absolute inset-y-0 will-change-transform"
-                style={{ transform: 'translate3d(0,0,0)', width: leftColW + nCols * colWpx, height: headerH }}
-              >
-                <div
-                  className="absolute inset-y-0"
-                  style={{
-                    left: leftColW,
-                    width: nCols * colWpx,
-                    height: headerH,
-                    backgroundImage: `repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)`,
-                  }}
-                >
-                  {/* Now indicator */}
-                  {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
-                    <div
-                      className="absolute top-0 bottom-0"
-                      style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colWpx}px` }}
-                    >
-                      <div className="h-full border-l-2 border-red-500 opacity-70" />
-                    </div>
-                  )}
-                  <TimelineHeader
-                    nCols={nCols}
-                    rangeStartMs={anchorStartMs}
-                    colW={colWpx}
-                    compact
-                    scheduleStartHour={Number(scheduleStartHour ?? 0)}
-                    scheduleEndHour={Number(scheduleEndHour ?? 0)}
-                    colsPerHour={colsPerHour}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
       {/* 共通スクロール領域（縦・横ともにこの要素がスクロール親） */}
       <div
         ref={scrollParentRef}
@@ -1568,7 +1425,7 @@ const handleDragMove = useCallback((e: any) => {
           style={{
             // スクロール幅 = 左列 + タイムライン幅
             width: leftColW + nCols * colWpx,
-            height: contentTopPx + gridHeightPx,
+            height: headerH + gridHeightPx,
           }}
         >
           {/* === 上部ヘッダー（左上は常に白／時刻は左余白分だけオフセット）=== */}
@@ -1580,8 +1437,7 @@ const handleDragMove = useCallback((e: any) => {
               boxShadow: '0 1px 0 0 #e5e7eb',
               overflow: 'clip',
               pointerEvents: 'none',
-              // smartphone: keep height but hide visual (floating header will render)
-              visibility: isTablet ? 'visible' : 'hidden',
+              visibility: 'visible',
             }}
           >
             <div
@@ -1640,7 +1496,7 @@ const handleDragMove = useCallback((e: any) => {
             className="absolute z-[1] pointer-events-none select-none"
             style={{
               left: 0,
-              top: contentTopPx,
+              top: headerH,
               width: leftColW,
               height: gridHeightPx,
               backgroundColor: '#eff6ff',
@@ -1657,7 +1513,7 @@ const handleDragMove = useCallback((e: any) => {
           <div
             className="sticky left-0 bg-sky-50 z-30 select-none"
             style={{
-              top: contentTopPx,
+              top: headerH,
               width: leftColW,
               height: gridHeightPx,
               borderRight: '1px solid #cbd5e1',
@@ -1698,7 +1554,7 @@ const handleDragMove = useCallback((e: any) => {
               className="absolute z-0"
               style={{
                 left: leftColW,
-                top: contentTopPx,
+                top: headerH,
                 width: nCols * colWpx,
                 height: gridHeightPx,
                 touchAction: 'pan-x pan-y',
@@ -1870,7 +1726,7 @@ const handleDragMove = useCallback((e: any) => {
                 className="absolute"
                 style={{
                   left: leftColW,
-                  top: contentTopPx,
+                  top: headerH,
                   width: nCols * colWpx,
                   height: gridHeightPx,
                 }}
