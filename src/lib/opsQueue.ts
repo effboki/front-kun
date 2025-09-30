@@ -134,7 +134,12 @@ export async function flushQueuedOps(): Promise<void> {
 
     // Firestore helpers
     const { saveStoreSettingsTx } = await import('./firebase');
-    const { addReservationFS, updateReservationFS, deleteReservationFS } = await import('./reservations');
+    const {
+      addReservationFS,
+      updateReservationFS,
+      deleteReservationFS,
+      deleteAllReservationsFS,
+    } = await import('./reservations');
 
     const failed: Op[] = [];
 
@@ -142,10 +147,10 @@ export async function flushQueuedOps(): Promise<void> {
       try {
         switch (op.type) {
           case 'storeSettings':
-            await saveStoreSettingsTx(op.payload);
+            await saveStoreSettingsTx(op.payload, { force: true });
             break;
           case 'add':
-            await addReservationFS(op.payload);
+            await addReservationFS(op.payload, { force: true });
             break;
           case 'update': {
             // timeShift.* は差分インクリメントとして扱う
@@ -153,14 +158,18 @@ export async function flushQueuedOps(): Promise<void> {
             if (m) {
               const label = m[1];
               const delta = Number(op.value) || 0;
-              await updateReservationFS(op.id, {}, { [label]: delta });
+              await updateReservationFS(op.id, {}, { [label]: delta }, { force: true });
             } else {
-              await updateReservationFS(op.id, { [op.field]: op.value });
+              await updateReservationFS(op.id, { [op.field]: op.value }, undefined, { force: true });
             }
             break;
           }
           case 'delete':
-            await deleteReservationFS(op.id);
+            if (op.id === '0') {
+              await deleteAllReservationsFS({ force: true });
+            } else {
+              await deleteReservationFS(op.id, { force: true });
+            }
             break;
           default:
             console.warn('[flushQueuedOps] Unknown op', op);

@@ -117,6 +117,7 @@ export default function ScheduleView({
 }: Props) {
   // --- 列幅・端末判定 ---
   const headerH = 40; // 時刻ヘッダーの高さ(px)
+  const CONTENT_TOP_GAP = 1; // ヘッダーと内容の安全な隙間(px)。1pxだけ下げて潜り込みを防止
 
   // 端末幅で判定（スマホ/タブレット）
   const [isTablet, setIsTablet] = useState(() =>
@@ -134,6 +135,7 @@ export default function ScheduleView({
         : 1;
     return Math.round(n * dpr) / Math.max(1, dpr);
   }, []);
+  const contentTopPx = useMemo(() => snapPx(headerH + CONTENT_TOP_GAP), [snapPx]);
   const headerOffsetPx = Math.max(0, topInsetPx - DEFAULT_TOP_BAR_PX);
   // 5分スロット幅(px)。タブレットは少し広め
   const [colW, setColW] = useState(() => (typeof window !== 'undefined' && window.innerWidth >= 768 ? 12 : 6));
@@ -1566,7 +1568,7 @@ const handleDragMove = useCallback((e: any) => {
           style={{
             // スクロール幅 = 左列 + タイムライン幅
             width: leftColW + nCols * colWpx,
-            height: headerH + gridHeightPx,
+            height: contentTopPx + gridHeightPx,
           }}
         >
           {/* === 上部ヘッダー（左上は常に白／時刻は左余白分だけオフセット）=== */}
@@ -1638,7 +1640,7 @@ const handleDragMove = useCallback((e: any) => {
             className="absolute z-[1] pointer-events-none select-none"
             style={{
               left: 0,
-              top: headerH,
+              top: contentTopPx,
               width: leftColW,
               height: gridHeightPx,
               backgroundColor: '#eff6ff',
@@ -1655,7 +1657,7 @@ const handleDragMove = useCallback((e: any) => {
           <div
             className="sticky left-0 bg-sky-50 z-30 select-none"
             style={{
-              top: headerH,
+              top: contentTopPx,
               width: leftColW,
               height: gridHeightPx,
               borderRight: '1px solid #cbd5e1',
@@ -1696,7 +1698,7 @@ const handleDragMove = useCallback((e: any) => {
               className="absolute z-0"
               style={{
                 left: leftColW,
-                top: headerH,
+                top: contentTopPx,
                 width: nCols * colWpx,
                 height: gridHeightPx,
                 touchAction: 'pan-x pan-y',
@@ -1868,7 +1870,7 @@ const handleDragMove = useCallback((e: any) => {
                 className="absolute"
                 style={{
                   left: leftColW,
-                  top: headerH,
+                  top: contentTopPx,
                   width: nCols * colWpx,
                   height: gridHeightPx,
                 }}

@@ -1,6 +1,7 @@
 'use client';
 import * as React from 'react';
 import BellMenu from '@/app/[storeId]/_components/global/BellMenu';
+import ManualSyncButton from '@/app/[storeId]/_components/global/ManualSyncButton';
 import { MiniTaskProvider } from '@/app/_providers/MiniTaskProvider';
 import { ensureStoreSettingsDefaults, type StoreSettingsValue } from '@/types/settings';
 import { selectWaveInputTasks, type WaveSourceReservation } from '@/lib/waveSelectors';
@@ -154,9 +155,12 @@ export default function StoreLayout({
       todayRange={todayRange}
       tasksForWave={tasksForWave}
     >
-      {/* 紺帯ヘッダーの右上にベルを重ねて表示 */}
-      <div className="fixed right-0 top-0 h-12 w-0 z-[100]">
-        <BellMenu />
+      {/* 紺帯ヘッダーの右上にアクション群を重ねて表示 */}
+      <div className="fixed right-0 top-0 z-[100] h-12 w-0">
+        <div className="relative h-full">
+          <ManualSyncButton />
+          <BellMenu />
+        </div>
       </div>
 
       {/* 既存画面は常に表示（下タブやサイドメニューを残す） */}

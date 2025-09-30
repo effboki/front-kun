@@ -39,8 +39,10 @@ export async function updateReservationFS(
   id: string,
   patch: Partial<any>,
   timeShiftDelta?: Record<string, number>,
-  options?: { todayStr?: string }
+  options?: { todayStr?: string; force?: boolean }
 ) {
+  const force = options?.force === true;
+
   if (!id) {
     console.warn('[updateReservationFS] called with empty id, skipping');
     return;
@@ -50,7 +52,7 @@ export async function updateReservationFS(
   const docId = sanitizeSegment(String(id));
 
   // オフライン時は即キュー退避
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+  if (!force && typeof navigator !== 'undefined' && !navigator.onLine) {
     try {
       Object.entries(patch || {}).forEach(([field, value]) => {
         if (value === undefined) return; // skip undefined for safety
@@ -185,7 +187,11 @@ export async function toggleTaskComplete(
 }
 
 /** 予約を 1 件追加 */
-export async function addReservationFS(data: any): Promise<void> {
+export async function addReservationFS(
+  data: any,
+  options?: { force?: boolean },
+): Promise<void> {
+  const force = options?.force === true;
   if (!data?.id) {
     console.warn('[addReservationFS] called with empty id, abort');
     return;
@@ -200,7 +206,7 @@ export async function addReservationFS(data: any): Promise<void> {
   const docId = sanitizeSegment(String(data.id));
 
   // オフラインは即キュー
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+  if (!force && typeof navigator !== 'undefined' && !navigator.onLine) {
     enqueueOp({
       type: 'add',
       payload: omitUndefinedDeep({
@@ -250,7 +256,8 @@ export async function addReservationFS(data: any): Promise<void> {
 }
 
 /** 予約を 1 件削除 */
-export async function deleteReservationFS(id: string): Promise<void> {
+export async function deleteReservationFS(id: string, options?: { force?: boolean }): Promise<void> {
+  const force = options?.force === true;
   if (!id) {
     console.warn('[deleteReservationFS] empty id, skip');
     return;
@@ -260,7 +267,7 @@ export async function deleteReservationFS(id: string): Promise<void> {
   const docId = sanitizeSegment(id);
 
   // オフラインは即キュー
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+  if (!force && typeof navigator !== 'undefined' && !navigator.onLine) {
     enqueueOp({ type: 'delete', id: docId });
     return;
   }
@@ -299,11 +306,12 @@ export async function fetchAllReservationsOnce(storeId: string): Promise<any[]> 
  * 予約コレクションをすべて削除するユーティリティ
  * joinedToday 端末からのみ呼び出される想定
  */
-export async function deleteAllReservationsFS(): Promise<void> {
+export async function deleteAllReservationsFS(options?: { force?: boolean }): Promise<void> {
   const rawStoreId = getStoreId();
   const storeId = sanitizeSegment(rawStoreId);
+  const force = options?.force === true;
   // オフライン時はキューに積んで終了
-  if (!navigator.onLine) {
+  if (!force && typeof navigator !== 'undefined' && !navigator.onLine) {
     enqueueOp({ type: 'delete', id: '0' });
     return;
   }

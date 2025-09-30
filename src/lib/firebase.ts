@@ -5,22 +5,8 @@
 
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
-import {
-  doc,
-  getDoc,
-  runTransaction,
-  setDoc,
-  waitForPendingWrites,
-} from 'firebase/firestore';
+import { doc, getDoc, setDoc, waitForPendingWrites } from 'firebase/firestore';
 import { enqueueOp } from './opsQueue';
-import { dequeueAll } from './opsQueue';
-import { QUEUE_KEY } from './opsQueue';
-import {
-  addReservationFS,
-  updateReservationFS,
-  deleteAllReservationsFS,
-} from './reservations';
-
 import type { StoreSettings } from '@/types/settings';
 
 // ── StoreSettings のデフォルト（Firestore / localStorage 双方で使い回す）──
@@ -225,9 +211,12 @@ export async function loadStoreSettings(): Promise<Partial<StoreSettings>> {
  */
 export async function saveStoreSettingsTx(
   settings: Partial<StoreSettings>,
+  options?: { force?: boolean },
 ): Promise<void> {
-  // オフライン時はキューに積んで終了
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+  const force = options?.force === true;
+
+  // オフライン時はキューに積んで終了（force 指定時はそのまま続行）
+  if (!force && typeof navigator !== 'undefined' && !navigator.onLine) {
     enqueueOp({ type: 'storeSettings', payload: settings });
     return;
   }
@@ -288,36 +277,19 @@ export async function saveStoreSettingsTx(
   }
 }
 
-// ── 溜め込んだ opsQueue を Firestore へ一括反映 ──────────────
-async function _flushQueuedOps() {
-  const ops = dequeueAll();
-  for (const op of ops) {
-    switch (op.type) {
-      case 'storeSettings':
-        await saveStoreSettingsTx(op.payload);
-        break;
-      case 'add':
-        await addReservationFS(op.payload);
-        break;
-      case 'update':
-        await updateReservationFS(op.id, { [op.field]: op.value });
-        break;
-      case 'delete':
-        await deleteAllReservationsFS();
-        break;
-    }
-  }
-}
-
-/** 手動 “予約確定” ボタン用：溜まったキューを送信 */
-export async function flushQueuedOps(): Promise<void> {
-  await _flushQueuedOps();
-}
-
 // ─────────────────────────────────────────────
 // オンライン復帰時に SDK キュー ＋ 自前キューを確実にフラッシュ
 // ─────────────────────────────────────────────
 let _onlineSyncStarted = false;
+
+async function flushOpsQueueSafely() {
+  try {
+    const { flushQueuedOps } = await import('./opsQueue');
+    await flushQueuedOps();
+  } catch (e) {
+    console.warn('[firebase.flushOpsQueueSafely] failed:', e);
+  }
+}
 
 async function flushAllQueues() {
   try {
@@ -326,11 +298,7 @@ async function flushAllQueues() {
   } catch (e) {
     // no-op: offline などではここで落ちる可能性があるが、自前キューの送信に進む
   }
-  try {
-    await _flushQueuedOps();
-  } catch (e) {
-    console.warn('[flushAllQueues] opsQueue flush failed:', e);
-  }
+  await flushOpsQueueSafely();
 }
 
 export function ensureOnlineSyncStarted() {
@@ -348,6 +316,9 @@ export function ensureOnlineSyncStarted() {
 
   // 2) オンライン復帰時に実行
   window.addEventListener('online', trigger);
+
+  // 2.5) フォーカス復帰時にも実行（PWA / Safari対策）
+  window.addEventListener('focus', trigger);
 
   // 3) タブ復帰時にも実行（バックグラウンドで失敗していても回収できる）
   if (typeof document !== 'undefined') {
