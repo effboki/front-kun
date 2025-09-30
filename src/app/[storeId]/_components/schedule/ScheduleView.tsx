@@ -1481,7 +1481,7 @@ const handleDragMove = useCallback((e: any) => {
       {!isTablet && (
         <div
           ref={floatHeaderRef}
-          className="fixed z-[4000] pointer-events-none"
+          className="fixed z-[1400] pointer-events-none"
           style={{
             top: topInsetPx,
             left: 0,
@@ -1489,7 +1489,8 @@ const handleDragMove = useCallback((e: any) => {
             maxWidth: '100%',
             height: headerH,
             backgroundColor: '#ffffff',
-            boxShadow: '0 1px 0 0 #e5e7eb'
+            boxShadow: '0 1px 0 0 #e5e7eb',
+            visibility: drawerOpen ? 'hidden' : 'visible',
           }}
           aria-hidden
         >
