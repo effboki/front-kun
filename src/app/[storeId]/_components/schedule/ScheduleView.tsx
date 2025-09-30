@@ -135,33 +135,7 @@ export default function ScheduleView({
         : 1;
     return Math.round(n * dpr) / Math.max(1, dpr);
   }, []);
-  // Floating header bottom (measured) + small gap -> used as content's top offset
-  const [headerMeasuredPx, setHeaderMeasuredPx] = useState<number>(() => snapPx(headerH + CONTENT_TOP_GAP));
-  useLayoutEffect(() => {
-    const measure = () => {
-      // On smartphone we have the floating header; on tablet we fall back to the constant height
-      const el = floatHeaderRef.current;
-      // If floating header is present, use its real height; otherwise use the constant headerH
-      const raw = (!isTablet && el) ? el.getBoundingClientRect().height : headerH;
-      // snap to device pixels and add the small safety gap to avoid underlap
-      const next = snapPx(Math.max(headerH, Math.round(raw)) + CONTENT_TOP_GAP);
-      setHeaderMeasuredPx(prev => (Math.abs(prev - next) > 0.25 ? next : prev));
-    };
-    measure();
-    window.addEventListener('resize', measure);
-    window.addEventListener('orientationchange', measure);
-    const el = floatHeaderRef.current;
-    let ro: ResizeObserver | undefined;
-    if (typeof ResizeObserver !== 'undefined' && el) {
-      ro = new ResizeObserver(() => measure());
-      ro.observe(el);
-    }
-    return () => {
-      window.removeEventListener('resize', measure);
-      window.removeEventListener('orientationchange', measure);
-      ro?.disconnect();
-    };
-  }, [isTablet, snapPx]);
+  const contentTopPx = useMemo(() => snapPx(headerH + CONTENT_TOP_GAP), [snapPx]);
   const headerOffsetPx = Math.max(0, topInsetPx - DEFAULT_TOP_BAR_PX);
   // 5分スロット幅(px)。タブレットは少し広め
   const [colW, setColW] = useState(() => (typeof window !== 'undefined' && window.innerWidth >= 768 ? 12 : 6));
@@ -215,6 +189,9 @@ export default function ScheduleView({
   const floatHeaderRef = useRef<HTMLDivElement | null>(null);
   const floatRailRef = useRef<HTMLDivElement | null>(null);
   const floatContentRef = useRef<HTMLDivElement | null>(null);
+  // ===== Floating timeline body overlay (smartphone): fixed overlay for background/now line =====
+  const floatBodyRef = useRef<HTMLDivElement | null>(null);
+  const floatBodyContentRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastFloatRef = useRef<{ left: number; width: number; rail: number; contentShift: number }>({
     left: -1,
@@ -223,12 +200,14 @@ export default function ScheduleView({
     contentShift: -1,
   });
 
-  // Apply current geometry to the floating header (called via rAF)
+  // Apply current geometry to the floating header and body overlays (called via rAF)
   const applyFloatingHeaderLayout = useCallback(() => {
     const el = scrollParentRef.current;
     const hdr = floatHeaderRef.current;
     const rail = floatRailRef.current;
     const content = floatContentRef.current;
+    const body = floatBodyRef.current;
+    const bodyContent = floatBodyContentRef.current;
     if (!el || !hdr || !rail || !content) return;
 
     const rect = el.getBoundingClientRect();
@@ -256,7 +235,20 @@ export default function ScheduleView({
       content.style.transform = `translate3d(${contentShift}px,0,0)`;
       lastFloatRef.current.contentShift = contentShift;
     }
-  }, [leftColW, snapPx]);
+    // ==== Floating body (smartphone) ====
+    if (body && bodyContent) {
+      // viewport height of the scroll container
+      const vh = el.clientHeight || 0;
+      // place body just under the floating header (same small gap as contentTopPx)
+      body.style.top = `${snapPx(topInsetPx) + contentTopPx}px`;
+      body.style.left = `${left}px`;
+      body.style.width = `${width}px`;
+      body.style.height = `${Math.max(0, snapPx(vh - contentTopPx))}px`;
+
+      // horizontal follow
+      bodyContent.style.transform = `translate3d(${contentShift}px,0,0)`;
+    }
+  }, [leftColW, snapPx, topInsetPx, contentTopPx]);
 
   // rAF-scheduled updater to coalesce scroll events
   const scheduleFloatingUpdate = useCallback(() => {
@@ -1567,6 +1559,55 @@ const handleDragMove = useCallback((e: any) => {
           </div>
         </div>
       )}
+      {/* Floating timeline body overlay (smartphone only): fixed, under header, tracks scroll */}
+      {!isTablet && (
+        <div
+          ref={floatBodyRef}
+          className="fixed z-[5] pointer-events-none"
+          style={{
+            top: snapPx(topInsetPx) + contentTopPx,
+            left: 0,
+            width: '100vw',
+            height: 0, // will be sized by applyFloatingHeaderLayout
+            maxWidth: '100%',
+          }}
+          aria-hidden
+        >
+          <div className="absolute inset-0 overflow-hidden">
+            <div
+              ref={floatBodyContentRef}
+              className="absolute inset-y-0 will-change-transform"
+              style={{
+                transform: 'translate3d(0,0,0)',
+                left: leftColW,
+                width: nCols * colWpx,
+                height: '100%',
+              }}
+            >
+              {/* 背景の時間ゼブラ（1時間） + 30分補助線 */}
+              <div
+                className="absolute inset-0"
+                style={{
+                  backgroundImage: `
+                repeating-linear-gradient(to right, #d1d5db 0, #d1d5db 1px, transparent 1px, transparent ${hourPx}px),
+                repeating-linear-gradient(to right, #e5e7eb 0, #e5e7eb 1px, transparent 1px, transparent ${minorSolidStepPx}px),
+                repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)
+              `,
+                }}
+              />
+              {/* 現在時刻ライン（本体と同じ式） */}
+              {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
+                <div
+                  className="absolute top-0 bottom-0 pointer-events-none z-[20]"
+                  style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colWpx}px` }}
+                >
+                  <div className="h-full border-l-2 border-red-500 opacity-70" />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {/* 共通スクロール領域（縦・横ともにこの要素がスクロール親） */}
       <div
         ref={scrollParentRef}
@@ -1594,7 +1635,7 @@ const handleDragMove = useCallback((e: any) => {
           style={{
             // スクロール幅 = 左列 + タイムライン幅
             width: leftColW + nCols * colWpx,
-            height: headerMeasuredPx + gridHeightPx,
+            height: contentTopPx + gridHeightPx,
           }}
         >
           {/* === 上部ヘッダー（左上は常に白／時刻は左余白分だけオフセット）=== */}
@@ -1666,7 +1707,7 @@ const handleDragMove = useCallback((e: any) => {
             className="absolute z-[1] pointer-events-none select-none"
             style={{
               left: 0,
-              top: headerMeasuredPx,
+              top: contentTopPx,
               width: leftColW,
               height: gridHeightPx,
               backgroundColor: '#eff6ff',
@@ -1683,7 +1724,7 @@ const handleDragMove = useCallback((e: any) => {
           <div
             className="sticky left-0 bg-sky-50 z-30 select-none"
             style={{
-              top: headerMeasuredPx,
+              top: contentTopPx,
               width: leftColW,
               height: gridHeightPx,
               borderRight: '1px solid #cbd5e1',
@@ -1721,10 +1762,10 @@ const handleDragMove = useCallback((e: any) => {
             onDragEnd={(e) => { axisLockRef.current = null; handleDragEnd(e); }}
           >
             <div
-              className="absolute z-0"
+              className="absolute z-[20]"
               style={{
                 left: leftColW,
-                top: headerMeasuredPx,
+                top: contentTopPx,
                 width: nCols * colWpx,
                 height: gridHeightPx,
                 touchAction: 'pan-x pan-y',
@@ -1738,11 +1779,13 @@ const handleDragMove = useCallback((e: any) => {
                 style={{
                   gridTemplateColumns: `repeat(${nCols}, ${colWpx}px)`,
                   gridTemplateRows: rowHeightsPx.map(h => `${h}px`).join(' '),
-                  backgroundImage: `
-                    repeating-linear-gradient(to right, #d1d5db 0, #d1d5db 1px, transparent 1px, transparent ${hourPx}px),
-                    repeating-linear-gradient(to right, #e5e7eb 0, #e5e7eb 1px, transparent 1px, transparent ${minorSolidStepPx}px),
-                    repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)
-                  `,
+                  backgroundImage: isTablet
+                    ? `
+      repeating-linear-gradient(to right, #d1d5db 0, #d1d5db 1px, transparent 1px, transparent ${hourPx}px),
+      repeating-linear-gradient(to right, #e5e7eb 0, #e5e7eb 1px, transparent 1px, transparent ${minorSolidStepPx}px),
+      repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)
+    `
+                    : 'none',
                 }}
               >
                 <ScheduleGrid nCols={nCols} colW={colWpx} rowHeights={rowHeightsPx} />
@@ -1752,8 +1795,8 @@ const handleDragMove = useCallback((e: any) => {
                   <DashedQuarterLines nCols={nCols} colW={colWpx} colsPerHour={colsPerHour} />
                 )}
 
-                {/* Now indicator */}
-                {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
+                {/* Now indicator (tablet only). On smartphone, the floating body overlay draws it to avoid double rendering */}
+                {isTablet && nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
                   <div
                     className="absolute top-0 bottom-0 pointer-events-none z-[20]"
                     style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colWpx}px` }}
@@ -1896,7 +1939,7 @@ const handleDragMove = useCallback((e: any) => {
                 className="absolute"
                 style={{
                   left: leftColW,
-                  top: headerMeasuredPx,
+                  top: contentTopPx,
                   width: nCols * colWpx,
                   height: gridHeightPx,
                 }}
