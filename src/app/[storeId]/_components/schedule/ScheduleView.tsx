@@ -134,9 +134,11 @@ export default function ScheduleView({
     if (!el) return;
 
     const measure = () => {
-      const rect = el.getBoundingClientRect();
-      const snapped = snapPx(rect.height);
-      setHeaderMeasuredPx(prev => (Math.abs(prev - snapped) > 0.25 ? snapped : prev));
+      const rawH = el.getBoundingClientRect().height || 0;
+      const snapped = snapPx(rawH);
+      // Hidden tabs can report 0px; never allow less than the designed header height
+      const clamped = Math.max(headerH, snapped);
+      setHeaderMeasuredPx(prev => (Math.abs(prev - clamped) > 0.25 ? clamped : prev));
     };
 
     measure();
@@ -223,6 +225,9 @@ export default function ScheduleView({
   // スクロール方向の影用（ヘッダー/左列にシャドウを付ける）
   const [scrolled, setScrolled] = useState({ x: false, y: false });
   const headerLeftOverlayRef = useRef<HTMLDivElement | null>(null);
+  // Disable floating header on smartphones: use the same scroll container as the grid
+  // to eliminate any scroll-sync lag.
+  const useFloatingHeader = false;
   // ===== Floating timeline header (smartphone): fixed overlay that tracks horizontal scroll (DOM refs to minimize lag) =====
   const floatHeaderRef = useRef<HTMLDivElement | null>(null);
   const floatRailRef = useRef<HTMLDivElement | null>(null);
@@ -237,6 +242,7 @@ export default function ScheduleView({
 
   // Apply current geometry to the floating header (called via rAF)
   const applyFloatingHeaderLayout = useCallback(() => {
+    if (!useFloatingHeader) return;
     const el = scrollParentRef.current;
     const hdr = floatHeaderRef.current;
     const rail = floatRailRef.current;
@@ -268,16 +274,17 @@ export default function ScheduleView({
       content.style.transform = `translate3d(${contentShift}px,0,0)`;
       lastFloatRef.current.contentShift = contentShift;
     }
-  }, [leftColW, snapPx]);
+  }, [leftColW, snapPx, useFloatingHeader]);
 
   // rAF-scheduled updater to coalesce scroll events
   const scheduleFloatingUpdate = useCallback(() => {
+    if (!useFloatingHeader) return;
     if (rafRef.current != null) return;
     rafRef.current = window.requestAnimationFrame(() => {
       rafRef.current = null;
       applyFloatingHeaderLayout();
     });
-  }, [applyFloatingHeaderLayout]);
+  }, [applyFloatingHeaderLayout, useFloatingHeader]);
   // ===== Scroll container axis-lock (screen-level) =====
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
   const scrollAxisRef = useRef<'x' | 'y' | null>(null);
@@ -467,10 +474,23 @@ export default function ScheduleView({
       const x = snapPx(el.scrollLeft);
       headerLeftOverlayRef.current.style.transform = `translate3d(${x}px,0,0)`;
     }
-    // keep floating header aligned with horizontal scroll (smartphone) via rAF
-    scheduleFloatingUpdate();
+
+    // --- Lag‑free sync for the floating header content on scroll (smartphone) ---
+    if (useFloatingHeader) {
+      if (floatContentRef.current) {
+        const shift = snapPx(-el.scrollLeft);
+        if (lastFloatRef.current.contentShift !== shift) {
+          floatContentRef.current.style.transform = `translate3d(${shift}px,0,0)`;
+          lastFloatRef.current.contentShift = shift;
+        }
+      }
+      // keep floating header frame geometry fresh via rAF (left/width recalculation)
+      scheduleFloatingUpdate();
+    }
   }, [lockScrollAxis, scheduleScrollIdleReset, scheduleFloatingUpdate, snapPx]);
   useLayoutEffect(() => {
+    // Only run once on mount: floating header event listeners are stable
+    if (!useFloatingHeader) return;
     applyFloatingHeaderLayout();
     const onWin = () => applyFloatingHeaderLayout();
     window.addEventListener('resize', onWin);
@@ -481,13 +501,28 @@ export default function ScheduleView({
       window.removeEventListener('orientationchange', onWin);
       document.removeEventListener('visibilitychange', onWin);
     };
-  }, [applyFloatingHeaderLayout]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useLayoutEffect(() => {
+    // Only run once on mount: floating header DOM refs are stable
+    if (!useFloatingHeader) return;
     const hdr = floatHeaderRef.current;
     if (hdr) hdr.style.top = `${topInsetPx}px`;
     applyFloatingHeaderLayout();
-  }, [applyFloatingHeaderLayout, leftColW, topInsetPx]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!useFloatingHeader) return;
+    const hdr = floatHeaderRef.current;
+    if (hdr) hdr.style.top = `${topInsetPx}px`;
+    // Re-apply geometry whenever important inputs change
+    applyFloatingHeaderLayout();
+    // Also update immediately on the next microtask to catch late DOM settles
+    const t = window.setTimeout(() => applyFloatingHeaderLayout(), 0);
+    return () => window.clearTimeout(t);
+  }, [useFloatingHeader, topInsetPx, leftColW, colWpx, applyFloatingHeaderLayout]);
 
   const applyOptimistic = useCallback((id: string, patch: OptimisticPatch) => {
     if (!id || !patch) return;
@@ -1515,8 +1550,8 @@ const handleDragMove = useCallback((e: any) => {
       className="relative w-full bg-transparent"
       style={headerOffsetPx ? { marginTop: headerOffsetPx } : undefined}
     >
-      {/* Floating time header (smartphone only): fixed, above everything, tracks horizontal scroll */}
-      {!isTablet && (
+      {/* Floating time header (smartphone only): fixed overlay that tracks horizontal scroll */}
+      {useFloatingHeader && !isTablet && (
         <div
           ref={floatHeaderRef}
           className="fixed z-[4000] pointer-events-none"
