@@ -430,8 +430,11 @@ export default function ScheduleView({
       headerLeftOverlayRef.current.style.transform = `translate3d(${x}px,0,0)`;
     }
     // keep floating header aligned with horizontal scroll (smartphone) via rAF
+    if (!isTablet) {
+      applyFloatingHeaderLayout();
+    }
     scheduleFloatingUpdate();
-  }, [lockScrollAxis, scheduleScrollIdleReset, scheduleFloatingUpdate, snapPx]);
+  }, [lockScrollAxis, scheduleScrollIdleReset, scheduleFloatingUpdate, applyFloatingHeaderLayout, snapPx, isTablet]);
   useLayoutEffect(() => {
     applyFloatingHeaderLayout();
     const onWin = () => applyFloatingHeaderLayout();
@@ -1526,11 +1529,12 @@ const handleDragMove = useCallback((e: any) => {
       left: 0,
       right: 0,
       bottom: `calc(${BOTTOM_TAB_PX}px + env(safe-area-inset-bottom))`,
-      zIndex: 500,
+      zIndex: 40,
       backgroundColor: '#ffffff',
       overflow: 'hidden',
       display: 'flex',
       flexDirection: 'column',
+      width: '100%',
     } satisfies CSSProperties;
   }, [isTablet, headerOffsetPx, topInsetPx]);
 
