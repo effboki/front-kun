@@ -727,9 +727,18 @@ export default function ScheduleView({
   const restoreViewportScroll = useCallback(() => {
     if (typeof window === 'undefined') return;
     try {
-      const target = document.scrollingElement || document.documentElement;
-      if (target && target.scrollTop !== 0) {
-        target.scrollTop = 0;
+      const scrollingElement = document.scrollingElement;
+      const docEl = document.documentElement;
+      const body = document.body;
+
+      if (scrollingElement && scrollingElement.scrollTop !== 0) {
+        scrollingElement.scrollTop = 0;
+      }
+      if (docEl && docEl.scrollTop !== 0) {
+        docEl.scrollTop = 0;
+      }
+      if (body && body.scrollTop !== 0) {
+        body.scrollTop = 0;
       }
       if (typeof window.scrollTo === 'function') {
         window.scrollTo({ top: 0, behavior: 'auto' });
@@ -840,11 +849,14 @@ export default function ScheduleView({
     run();
 
     const rafId = window.requestAnimationFrame(run);
-    const timeoutId = window.setTimeout(run, 200);
+    const timers: number[] = [];
+    [120, 320, 640].forEach((ms) => {
+      timers.push(window.setTimeout(run, ms));
+    });
 
     return () => {
       window.cancelAnimationFrame(rafId);
-      window.clearTimeout(timeoutId);
+      timers.forEach((id) => window.clearTimeout(id));
     };
   }, [resetScrollOffsets, restoreViewportScroll]);
 
