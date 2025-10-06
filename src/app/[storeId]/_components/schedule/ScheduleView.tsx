@@ -706,19 +706,37 @@ export default function ScheduleView({
     const container = scrollParentRef.current;
     if (!container) return;
 
-    const forceTop = () => {
+    const forceReset = () => {
       if (!container) return;
       if (container.scrollTop !== 0) {
         container.scrollTop = 0;
       }
+      if (container.scrollLeft !== 0) {
+        container.scrollLeft = 0;
+      }
     };
 
-    forceTop();
-    requestAnimationFrame(forceTop);
-    setTimeout(forceTop, 120);
+    forceReset();
+    requestAnimationFrame(forceReset);
+    setTimeout(forceReset, 120);
 
     scrollPosRef.current = { left: container.scrollLeft, top: container.scrollTop };
     lockOriginRef.current = { left: container.scrollLeft, top: container.scrollTop };
+  }, []);
+
+  const restoreViewportScroll = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const target = document.scrollingElement || document.documentElement;
+      if (target && target.scrollTop !== 0) {
+        target.scrollTop = 0;
+      }
+      if (typeof window.scrollTo === 'function') {
+        window.scrollTo({ top: 0, behavior: 'auto' });
+      }
+    } catch {
+      // ignore scroll restoration failures (iOS quirks etc.)
+    }
   }, []);
 
   const recomputeColWidth = useCallback(() => {
@@ -811,9 +829,24 @@ export default function ScheduleView({
     return () => obs.disconnect();
   }, [resetScrollOffsets, ensureHeaderNotUnderAppBar]);
 
-  useEffect(() => {
-    resetScrollOffsets();
-  }, [resetScrollOffsets]);
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const run = () => {
+      restoreViewportScroll();
+      resetScrollOffsets();
+    };
+
+    run();
+
+    const rafId = window.requestAnimationFrame(run);
+    const timeoutId = window.setTimeout(run, 200);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [resetScrollOffsets, restoreViewportScroll]);
 
   useEffect(() => {
     didAutoCenterRef.current = false;
