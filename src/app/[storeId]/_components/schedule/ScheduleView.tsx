@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState, useCallback, useEffect, useRef, useLayoutEffect } from 'react';
-import type { UIEvent, MouseEvent, PointerEvent, WheelEvent, KeyboardEvent } from 'react';
+import type { UIEvent, MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, CSSProperties } from 'react';
 import type { ScheduleItem } from '@/types/schedule';
 import type { StoreSettingsValue } from '@/types/settings';
 import type { Reservation } from '@/types/reservation';
@@ -1516,11 +1516,52 @@ const handleDragMove = useCallback((e: any) => {
     };
   }, []);
 
+  const rootStyle = useMemo<CSSProperties | undefined>(() => {
+    if (isTablet) {
+      return headerOffsetPx ? { marginTop: headerOffsetPx } : undefined;
+    }
+    return {
+      position: 'fixed',
+      top: topInsetPx,
+      left: 0,
+      right: 0,
+      bottom: `calc(${BOTTOM_TAB_PX}px + env(safe-area-inset-bottom))`,
+      zIndex: 500,
+      backgroundColor: '#ffffff',
+      overflow: 'hidden',
+      display: 'flex',
+      flexDirection: 'column',
+    } satisfies CSSProperties;
+  }, [isTablet, headerOffsetPx, topInsetPx]);
+
+  const scrollParentStyle = useMemo<CSSProperties>(() => {
+    if (isTablet) {
+      return {
+        height: `calc(100vh - ${topInsetPx + BOTTOM_TAB_PX}px - env(safe-area-inset-bottom))`,
+        overscrollBehavior: 'none',
+        overscrollBehaviorX: 'none',
+        overscrollBehaviorY: 'none',
+        touchAction: 'pan-x pan-y',
+        WebkitOverflowScrolling: 'touch',
+      } satisfies CSSProperties;
+    }
+    return {
+      height: '100%',
+      maxHeight: '100%',
+      overscrollBehavior: 'contain',
+      overscrollBehaviorX: 'contain',
+      overscrollBehaviorY: 'contain',
+      touchAction: 'pan-x pan-y',
+      WebkitOverflowScrolling: 'touch',
+      paddingBottom: 12,
+    } satisfies CSSProperties;
+  }, [isTablet, topInsetPx]);
+
   const gridHeightPx = rowHeightsPx.reduce((a, b) => a + b, 0);
   return (
     <div
       className="relative w-full bg-transparent"
-      style={headerOffsetPx ? { marginTop: headerOffsetPx } : undefined}
+      style={rootStyle}
     >
       {/* Floating time header (smartphone only): fixed, above everything, tracks horizontal scroll */}
       {!isTablet && (
@@ -1598,15 +1639,7 @@ const handleDragMove = useCallback((e: any) => {
         onPointerCancel={handleScrollPointerUp}
         onLostPointerCapture={handleScrollPointerUp}
         onWheel={handleWheelLock}
-        style={{
-          // 画面上部のアプリバー分だけ余白を見込んで高さを固定（必要なら調整）
-          height: `calc(100vh - ${topInsetPx + BOTTOM_TAB_PX}px - env(safe-area-inset-bottom))`,
-          overscrollBehavior: 'none',
-          overscrollBehaviorX: 'none',
-          overscrollBehaviorY: 'none',
-          touchAction: 'pan-x pan-y',
-          WebkitOverflowScrolling: 'touch',
-        }}
+        style={scrollParentStyle}
       >
         {/* スクロール可能領域（縦・横） */}
         <div
