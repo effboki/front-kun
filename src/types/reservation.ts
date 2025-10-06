@@ -1,5 +1,9 @@
 // src/types/reservation.ts
 
+import type { Timestamp } from 'firebase/firestore';
+
+export type FirestoreTimestampLike = Timestamp | Date | { toMillis(): number } | number;
+
 /** 予約 1 件の型定義 */
 export interface Reservation {
   /** Firestore ドキュメント ID（数値文字列でも OK） */
@@ -35,6 +39,14 @@ export interface Reservation {
   eat?: string;
   /** 飲み放題オプション 任意 */
   drink?: string;
+  /** 食べ放題ラベル（UI入力用） */
+  eatLabel?: string | null;
+  /** 飲み放題ラベル（UI入力用） */
+  drinkLabel?: string | null;
+  /** 食べ放題フラグ */
+  foodAllYouCan?: boolean;
+  /** 飲み放題フラグ */
+  drinkAllYouCan?: boolean;
   /** 卓変更プレビュー用 任意 */
   pendingTable?: string;
   /** 来店済みフラグ 任意 */
@@ -45,7 +57,7 @@ export interface Reservation {
   departed?: boolean;
 
   /** 最終更新時刻（サーバ側で自動付与） */
-  updatedAt?: any;  // Firebase Timestamp
+  updatedAt?: FirestoreTimestampLike;
 
   /** ドキュメントの世代番号（1,2,3…） */
   version?: number;

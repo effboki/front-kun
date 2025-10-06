@@ -7,12 +7,20 @@ import { renameCourseTx } from '@/lib/courses';
 import { db } from '@/lib/firebase';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { flushQueuedOps } from '@/lib/opsQueue';
-/* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-expressions */
 // 📌 ChatGPT からのテスト編集: 拡張機能連携確認済み
 // 📌 Policy: UI preview must NOT read/write r.pendingTable. Preview state lives only in pendingTables.
 
 import type { StoreSettings, StoreSettingsValue } from '@/types/settings';
-import { toUISettings, toFirestorePayload, sanitizeCourses as sanitizeStoreCourses } from '@/types/settings';
+import {
+  toUISettings,
+  toFirestorePayload,
+  sanitizeCourses as sanitizeStoreCourses,
+  sanitizeStringList,
+  sanitizeTables,
+  toPositionNames,
+  sanitizeTasksByPosition,
+  sanitizeAreas,
+} from '@/types/settings';
 import {
   ensureServiceWorkerRegistered,
   requestPermissionAndGetToken,
@@ -25,10 +33,18 @@ import { toast } from 'react-hot-toast';
 import { addReservationFS, updateReservationFS, deleteReservationFS, deleteAllReservationsFS } from '@/lib/reservations';
 
 import LoadingSpinner from './_components/LoadingSpinner';
-import ResOrderControls from './_components/ResOrderControls';
 import ReservationsSection from './_components/ReservationsSection';
 import CourseStartSection from './_components/CourseStartSection';
-import type { ResOrder, Reservation, PendingTables, NumPadField, TaskDef, CourseDef } from '@/types';
+import type {
+  ResOrder,
+  Reservation,
+  PendingTables,
+  NumPadField,
+  TaskDef,
+  CourseDef,
+  ReservationFieldKey,
+  ReservationFieldValue,
+} from '@/types';
 
 import TasksSection from './_components/TasksSection';
 import ScheduleView from './_components/schedule/ScheduleView'; // NOTE: render with storeSettings={settingsDraft}
@@ -39,6 +55,61 @@ import PreopenSettingsContent from "./_components/preopen/PreopenSettingsContent
 import type { AreaDef } from '@/types';
 import { useReservationMutations } from '@/hooks/useReservationMutations';
 type BottomTab = 'reservations' | 'schedule' | 'tasks' | 'courseStart';
+
+type NamespaceHelpers = {
+  key: (suffix: string) => string;
+  getJSON: <T,>(suffix: string, fallback: T) => T;
+  setJSON: (suffix: string, val: unknown) => void;
+  getStr: (suffix: string, fallback?: string) => string;
+  setStr: (suffix: string, val: string) => void;
+};
+
+const createNamespaceHelpers = (ns: string): NamespaceHelpers => {
+  const nsKey = (suffix: string) => `${ns}-${suffix}`;
+
+  const readJSON = <T,>(key: string, fallback: T): T => {
+    if (typeof window === 'undefined') return fallback;
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? (JSON.parse(raw) as T) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const writeJSON = (key: string, val: unknown) => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(key, JSON.stringify(val));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const getJSON = <T,>(suffix: string, fallback: T): T => readJSON(nsKey(suffix), fallback);
+  const setJSON = (suffix: string, val: unknown) => writeJSON(nsKey(suffix), val);
+
+  const getStr = (suffix: string, fallback = ''): string => {
+    if (typeof window === 'undefined') return fallback;
+    try {
+      const value = localStorage.getItem(nsKey(suffix));
+      return value ?? fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const setStr = (suffix: string, val: string) => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(nsKey(suffix), val);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  return { key: nsKey, getJSON, setJSON, getStr, setStr };
+};
 
 /** ラベル比較の正規化（前後空白 / 全角半角 / 大文字小文字の揺れを吸収） */
 const normalizeLabel = (s: string): string =>
@@ -59,9 +130,6 @@ const addIfMissingNorm = (arr: string[], target: string) =>
 
 const removeIfExistsNorm = (arr: string[], target: string) =>
   arr.filter((l) => !normEq(l, target));
-
-const replaceLabelNorm = (arr: string[], oldLabel: string, newLabel: string) =>
-  arr.map((l) => (normEq(l, oldLabel) ? newLabel : l));
 
 const cloneArray = <T,>(items?: readonly T[]): T[] => (Array.isArray(items) ? [...items] : []);
 
@@ -85,10 +153,10 @@ const setArrayIfChanged = <T,>(prevArr: readonly T[] | undefined, nextArr: reado
 
 
 // 予約IDの次番号を計算（配列中の最大ID+1）。数値に変換できないIDは無視
-const calcNextResIdFrom = (list: Reservation[] | any[]): string => {
-  const maxId = (list || []).reduce((m: number, r: any) => {
-    const n = Number(r?.id);
-    return Number.isFinite(n) ? (n > m ? n : m) : m;
+const calcNextResIdFrom = (list: Array<{ id: string }>): string => {
+  const maxId = list.reduce((max, item) => {
+    const n = Number(item.id);
+    return Number.isFinite(n) && n > max ? n : max;
   }, 0);
   return String(maxId + 1);
 };
@@ -98,7 +166,6 @@ type RootNumPadSubmit = { value: string; list?: string[] };
 
 type RootNumPadProps = {
   open: boolean;
-  title?: string;
   value?: string;
   initialList?: string[];
   /** 卓番号入力のとき true */
@@ -109,7 +176,6 @@ type RootNumPadProps = {
 
 const RootNumPad = ({
   open,
-  title,          // 受け取るが表示しない（シンプル化）
   value = '',
   initialList = [],
   multi = false,
@@ -159,7 +225,7 @@ const RootNumPad = ({
           {multi ? (
             <div className="ml-auto max-w-full tabular-nums text-right bg-gray-100 border border-gray-200 rounded px-3 py-1.5">
               {(() => {
-                let after = Array.isArray(list) ? [...list] : [];
+                const after = Array.isArray(list) ? [...list] : [];
                 const v = (val || '').trim();
                 if (v && !after.includes(v)) after.push(v);
                 const joined = after.join('.');
@@ -301,12 +367,12 @@ const [bottomTab, setBottomTab] = useState<BottomTab>('reservations');
 
   const clearScheduleTab = useCallback(() => {
     try {
-      const q = new URLSearchParams(search ? (search as any) : undefined);
+      const q = new URLSearchParams(search?.toString() ?? undefined);
       q.delete('tab');
       const s = q.toString();
-      router.push(s ? `?${s}` : '.', { scroll: false } as any);
+      router.push(s ? `?${s}` : '.', { scroll: false });
     } catch {
-      router.push('.', { scroll: false } as any);
+      router.push('.', { scroll: false });
     }
   }, [router, search]);
 
@@ -398,7 +464,14 @@ const [baselineSettings, setBaselineSettings] =
           });
           next.areas = setArrayIfChanged<AreaDef>(prev.areas, filtered);
         }
-        const { courses, positions, tables, plans, areas, ...rest } = patch as any;
+        const {
+          courses: _courses,
+          positions: _positions,
+          tables: _tables,
+          plans: _plans,
+          areas: _areas,
+          ...rest
+        } = patch;
         next = { ...next, ...rest };
         return next;
       });
@@ -417,7 +490,7 @@ const [baselineSettings, setBaselineSettings] =
         setPresetTables((prev) => (sameArrayShallow(prev, next) ? prev : [...next]));
       }
       if ('tasksByPosition' in patch) {
-        const next = (patch.tasksByPosition as any) ?? {};
+        const next = patch.tasksByPosition ?? {};
         setTasksByPosition((prev) => {
           try {
             return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
@@ -460,36 +533,36 @@ const [baselineSettings, setBaselineSettings] =
     const d0 = new Date(now);
     d0.setHours(startHour, 0, 0, 0);
     return d0.getTime();
-  }, [settingsDraft?.schedule?.dayStartHour]);
+  }, [settingsDraft]);
 
   // Display window for Schedule (parent decides; child does not hardcode)
   const scheduleStartHour = useMemo(() => {
     const h = Number((settingsDraft as any)?.schedule?.dayStartHour);
     return Number.isFinite(h) ? h : 10; // fallback 10:00
-  }, [settingsDraft?.schedule?.dayStartHour]);
+  }, [settingsDraft]);
 
   const scheduleEndHour = useMemo(() => {
     const h = Number((settingsDraft as any)?.schedule?.dayEndHour);
     return Number.isFinite(h) ? h : 23; // fallback 23:00
-  }, [settingsDraft?.schedule?.dayEndHour]);
+  }, [settingsDraft]);
 
 const {
   createReservation: createReservationMut,
   updateReservation: updateReservationMut,
   deleteReservation: deleteReservationMut,
 } = useReservationMutations(id as string, { dayStartMs });
-  
 
   // 名前空間付き localStorage キー定義
-  const ns        = `front-kun-${id}`;
-  const RES_KEY   = `${ns}-reservations`;
+  const ns = useMemo(() => `front-kun-${id}`, [id]);
+  const { key: nsKey, getJSON: nsGetJSON, setJSON: nsSetJSON, getStr: nsGetStr, setStr: nsSetStr } = useMemo(
+    () => createNamespaceHelpers(ns),
+    [ns]
+  );
+  const RES_KEY = `${ns}-reservations`;
   const CACHE_KEY = `${ns}-reservations_cache`;
 
-  // --- localStorage helpers (namespace-aware) -------------------------------
-  const nsKey = (suffix: string) => `${ns}-${suffix}`;
-
   // --- (optional) one-time migration from old localStorage keys -------------
-  const migrateLegacyKeys = () => {
+  const migrateLegacyKeys = useCallback(() => {
     if (typeof window === 'undefined') return;
 
     const moves: Array<{ oldKey: string; newKey: string }> = [
@@ -564,72 +637,15 @@ const {
       }
     } catch {/* ignore */}
     // -----------------------------------------------------------------------------
-  };
+  }, [nsKey]);
 
   // run once on mount
   useEffect(() => {
     migrateLegacyKeys();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const readJSON = <T,>(key: string, fallback: T): T => {
-    if (typeof window === 'undefined') return fallback;
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? (JSON.parse(raw) as T) : fallback;
-    } catch {
-      return fallback;
-    }
-  };
-
-  const writeJSON = (key: string, val: unknown) => {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem(key, JSON.stringify(val));
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const nsGetJSON = <T,>(suffix: string, fallback: T): T =>
-    readJSON<T>(nsKey(suffix), fallback);
-
-  const nsSetJSON = (suffix: string, val: unknown) =>
-    writeJSON(nsKey(suffix), val);
-
-  const nsGetStr = (suffix: string, fallback = ''): string => {
-    if (typeof window === 'undefined') return fallback;
-    try {
-      const v = localStorage.getItem(nsKey(suffix));
-      return v ?? fallback;
-    } catch {
-      return fallback;
-    }
-  };
-
-  const nsSetStr = (suffix: string, val: string) => {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem(nsKey(suffix), val);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  // --- helper: normalize Firestore positions (string[] | {id?:string; name:string}[]) -> string[] ---
-  const toPositionNames = (arr: unknown): string[] => {
-    if (!Array.isArray(arr)) return [];
-    const names = (arr as any[]).map((p) => {
-      if (typeof p === 'string') return p;
-      if (p && typeof p.name === 'string') return p.name as string;
-      return undefined;
-    }).filter((v): v is string => typeof v === 'string' && v.length > 0);
-    // 重複除去（順序維持）
-    return Array.from(new Set(names));
-  };
+  }, [migrateLegacyKeys]);
 
   // --- helper: normalize/sanitize courses payload (unknown -> CourseDef[]) ---
-  const sanitizeCourses = (arr: unknown): CourseDef[] => {
+  const sanitizeCourses = useCallback((arr: unknown): CourseDef[] => {
     const normalized = sanitizeStoreCourses(arr);
     if (!Array.isArray(normalized)) return [];
 
@@ -654,19 +670,18 @@ const {
         tasks,
       } satisfies CourseDef;
     });
-  };
+  }, []);
 
 // --- defensive accessor: always return an array for c.tasks ---
 const getTasks = (c: { tasks?: any }): { timeOffset:number; label:string; bgColor:string }[] =>
   (Array.isArray(c?.tasks) ? (c.tasks as { timeOffset:number; label:string; bgColor:string }[]) : []);
   
   // Reservation storage helpers (namespace-scoped)
-  const loadReservations = (): Reservation[] => nsGetJSON<Reservation[]>('reservations', []);
-  const persistReservations = (arr: Reservation[]) => {
+  const persistReservations = useCallback((arr: Reservation[]) => {
     nsSetJSON('reservations', arr);
-  };
+  }, [nsSetJSON]);
   // Keep both RES_KEY and CACHE_KEY synchronized in one place
-  const writeReservationsCache = (arr: Reservation[]) => {
+  const writeReservationsCache = useCallback((arr: Reservation[]) => {
     try {
       const json = JSON.stringify(arr);
       localStorage.setItem(CACHE_KEY, json);
@@ -674,7 +689,7 @@ const getTasks = (c: { tasks?: any }): { timeOffset:number; label:string; bgColo
     } catch {
       /* ignore */
     }
-  };
+  }, [CACHE_KEY, RES_KEY]);
   // -------------------------------------------------------------------------
   // Sidebar open state
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
@@ -691,20 +706,6 @@ const getTasks = (c: { tasks?: any }): { timeOffset:number; label:string; bgColo
     loading: settingsLoading,
     isSaving: isSavingSettings,
   } = useRealtimeStoreSettings(id as string);
-  // Stamp to force ScheduleView re-mount when settings or display window changes
-  const schedulePropsKey = useMemo(() => {
-    try {
-      const raw: any = (serverSettings as any)?.updatedAt;
-      const updatedMs =
-        raw && typeof raw?.toMillis === 'function'
-          ? raw.toMillis()
-          : (typeof raw === 'number' ? raw : 0);
-      return `sched-${scheduleStartHour}-${scheduleEndHour}-${updatedMs}`;
-    } catch {
-      return `sched-${scheduleStartHour}-${scheduleEndHour}`;
-    }
-  }, [serverSettings, scheduleStartHour, scheduleEndHour]);
-    
   // Reflect Firestore realtime settings into UI draft (overwrite on arrival/updates)
   useEffect(() => {
     try {
@@ -731,24 +732,20 @@ const getTasks = (c: { tasks?: any }): { timeOffset:number; label:string; bgColo
   //
   // ───────── 食・飲 オプション ─────────
   //
-  // 食べ放題/飲み放題設定セクションの開閉
-  const [eatDrinkSettingsOpen, setEatDrinkSettingsOpen] = useState<boolean>(false);
 const [eatOptions, setEatOptions] = useState<string[]>(
   () => nsGetJSON<string[]>('eatOptions', ['⭐︎', '⭐︎⭐︎'])
 );
 const [drinkOptions, setDrinkOptions] = useState<string[]>(
   () => nsGetJSON<string[]>('drinkOptions', ['スタ', 'プレ'])
 );
-const [newEatOption, setNewEatOption]   = useState('');
-const [newDrinkOption, setNewDrinkOption] = useState('');
 // 保存用のuseEffect
 useEffect(() => {
   nsSetJSON('eatOptions', eatOptions);
-}, [eatOptions]);
+}, [eatOptions, nsSetJSON]);
 
 useEffect(() => {
   nsSetJSON('drinkOptions', drinkOptions);
-}, [drinkOptions]);
+}, [drinkOptions, nsSetJSON]);
 
 
   // ─── 2.2 予約(来店) の状態管理（統合フック） ────────────────────────────
@@ -791,35 +788,32 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
       if (!cached || Object.keys(cached).length === 0) return;
 
       // 最低限 eat/drinkOptions / positions / tasksByPosition を復元
-      setEatOptions(cached.eatOptions ?? []);
-      setDrinkOptions(cached.drinkOptions ?? []);
-      if (cached.positions) setPositions(toPositionNames(cached.positions as any));
-      if (cached.tasksByPosition) setTasksByPosition(cached.tasksByPosition);
+      const cachedEat = sanitizeStringList(cached.eatOptions);
+      setEatOptions(cachedEat);
+      const cachedDrink = sanitizeStringList(cached.drinkOptions);
+      setDrinkOptions(cachedDrink);
+      const cachedPositions = toPositionNames(cached.positions);
+      if (cachedPositions.length > 0) setPositions(cachedPositions);
+      const cachedTasks = sanitizeTasksByPosition(cached.tasksByPosition);
+      if (cachedTasks) setTasksByPosition(cachedTasks);
 
       // courses（空配列では上書きしない）
-      if (Array.isArray(cached.courses)) {
-        const normalized = sanitizeCourses(cached.courses);
-        if (normalized.length > 0) {
-          setCourses(normalized);
-          nsSetJSON('courses', normalized);
-        } else {
-          console.log('[settings-cache] skip empty courses');
-        }
+      const cachedCourses = sanitizeCourses(cached.courses);
+      if (cachedCourses.length > 0) {
+        setCourses(cachedCourses);
+        nsSetJSON('courses', cachedCourses);
+      } else {
+        console.log('[settings-cache] skip empty courses');
       }
     } catch (err) {
       console.warn('SETTINGS_CACHE read failed', err);
     }
-  }, [settingsLoading]);
+  }, [settingsLoading, nsGetJSON, nsSetJSON, sanitizeCourses]);
 
   // ─── Firestore からの店舗設定を UI State へ反映 ─────────────────
   useEffect(() => {
     if (settingsLoading || !serverSettings) return; // まだ取得前
     // ① 既存キャッシュの timestamp を取得（無ければ 0）
-    const cache = nsGetJSON<{ cachedAt: number; data: Partial<StoreSettings> }>(
-      'settings-cache',
-      { cachedAt: 0, data: {} }
-    );
-    const cachedAt = cache.cachedAt ?? 0;
     // ② Firestore データの更新時刻を取得（無ければ 0）
     const rawUpdatedAt: any = (serverSettings as any).updatedAt ?? 0;
     const fsUpdated =
@@ -828,74 +822,47 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
         : (typeof rawUpdatedAt === 'number' ? rawUpdatedAt : 0);
     // ③ Firestore を常に真実として反映（キャッシュ新しさによるスキップを撤廃）
     // ④ Firestore を優先して UI & localStorage を更新
-    setEatOptions(serverSettings.eatOptions ?? []);
-    nsSetJSON('eatOptions', serverSettings.eatOptions ?? []);
-    setDrinkOptions(serverSettings.drinkOptions ?? []);
-    nsSetJSON('drinkOptions', serverSettings.drinkOptions ?? []);
-    if (Array.isArray(serverSettings.courses)) {
-      const normalized = sanitizeCourses(serverSettings.courses);
-      if (normalized.length > 0) {
-        setCourses(normalized);
-        nsSetJSON('courses', normalized);
-      } else {
-        console.log('[fs] skip empty courses');
-      }
-    }
-    if (serverSettings.tables && serverSettings.tables.length > 0) {
-      const list = (serverSettings.tables as any[]).map(String);
-      setPresetTables(list);
-      nsSetJSON('presetTables', list);
-    }
-    if (Array.isArray(serverSettings.positions) && serverSettings.positions.length > 0) {
-      const posNames = toPositionNames(serverSettings.positions as any);
-      setPositions(posNames);
-      nsSetJSON('positions', posNames);
-    }
-    if (
-      serverSettings.tasksByPosition &&
-      typeof serverSettings.tasksByPosition === 'object' &&
-      Object.keys(serverSettings.tasksByPosition).length > 0
-    ) {
-      setTasksByPosition(serverSettings.tasksByPosition);
-      nsSetJSON('tasksByPosition', serverSettings.tasksByPosition);
-    }
+    const eatOpts = sanitizeStringList(serverSettings.eatOptions);
+    setEatOptions(eatOpts);
+    nsSetJSON('eatOptions', eatOpts);
+
+    const drinkOpts = sanitizeStringList(serverSettings.drinkOptions);
+    setDrinkOptions(drinkOpts);
+    nsSetJSON('drinkOptions', drinkOpts);
+
+    const normalizedCourses = sanitizeCourses(serverSettings.courses);
+    setCourses(normalizedCourses);
+    nsSetJSON('courses', normalizedCourses);
+
+    const tableList = sanitizeTables(serverSettings.tables);
+    setPresetTables(tableList);
+    nsSetJSON('presetTables', tableList);
+
+    const posNames = toPositionNames(serverSettings.positions);
+    setPositions(posNames);
+    nsSetJSON('positions', posNames);
+
+    const tasksByPos = sanitizeTasksByPosition(serverSettings.tasksByPosition) ?? {};
+    setTasksByPosition(tasksByPos);
+    nsSetJSON('tasksByPosition', tasksByPos);
+
+    const cachePayload: Partial<StoreSettings> = {
+      courses: normalizedCourses,
+      positions: posNames,
+      tables: tableList,
+      eatOptions: eatOpts,
+      drinkOptions: drinkOpts,
+      tasksByPosition: Object.keys(tasksByPos).length > 0 ? tasksByPos : undefined,
+      updatedAt: fsUpdated,
+    };
+
     // ⑤ キャッシュ更新
-    nsSetJSON('settings-cache', { cachedAt: Date.now(), data: serverSettings });
-  }, [serverSettings, settingsLoading]);
+    nsSetJSON('settings-cache', { cachedAt: Date.now(), data: cachePayload });
+  }, [serverSettings, settingsLoading, nsSetJSON, sanitizeCourses, sanitizeStringList, sanitizeTables, toPositionNames, sanitizeTasksByPosition]);
 
 // ── Areas: normalize + local table→areas map (derived from settingsDraft.areas) ──
 const usableAreas: AreaDef[] = useMemo<AreaDef[]>(() => {
-  const src = Array.isArray(settingsDraft?.areas)
-    ? (settingsDraft!.areas as any[])
-    : [];
-
-  return src
-    // 無名エリアを除外（name の空白も除外）
-    .filter((a) => {
-      const nm =
-        typeof (a as any)?.name === 'string'
-          ? String((a as any).name).trim()
-          : '';
-      return a && typeof (a as any).id === 'string' && nm.length > 0;
-    })
-    // tables は文字列化 + 重複除去（戻りを AreaDef に固定）
-    .map<AreaDef>((a: any): AreaDef => {
-      const id: string = String((a as any).id);
-      const name: string = String((a as any).name);
-      const tables: string[] = Array.from(
-        new Set<string>(
-          (Array.isArray((a as any).tables) ? (a as any).tables : []).map(
-            (t: any) => String(t)
-          )
-        )
-      );
-      const color: string | undefined =
-        typeof (a as any).color === 'string' ? (a as any).color : undefined;
-      const icon: string | undefined =
-        typeof (a as any).icon === 'string' ? (a as any).icon : undefined;
-
-      return { id, name, tables, color, icon };
-    });
+  return sanitizeAreas(settingsDraft?.areas);
 }, [settingsDraft?.areas]);
 
 // usableAreas から “卓番号 → 含まれるエリアID[]” を作る
@@ -931,25 +898,11 @@ const tableToAreasLocal = useMemo(() => {
   }, []);
   const hasLoadedStore = useRef(false); // 店舗設定を 1 回だけ取得
   // ---- field updater (hoisted before use) ----
-async function updateReservationField(
+const updateReservationField = useCallback(async (
   id: string,
-  field:
-    | 'time'
-    | 'course'
-    | 'eat'
-    | 'drink'
-    | 'guests'
-    | 'name'
-    | 'notes'
-    | 'date'
-    | 'table'
-    | 'tables'
-    | 'completed'
-    | 'arrived'
-    | 'paid'
-    | 'departed',
-  value: string | number | { [key: string]: boolean } | boolean | string[]
-) {
+  field: ReservationFieldKey,
+  value: ReservationFieldValue,
+) => {
   // ⏱ 時刻変更は startMs と同時更新（当日0:00基準で安全に計算）
   if (field === 'time') {
     const hhmm = String(value).trim();
@@ -969,7 +922,7 @@ async function updateReservationField(
 
     // ② Firestore へも time と startMs を同時に保存（ミューテーション経由）
     try {
-      await updateReservationMut(id, { time: hhmm, startMs: newStartMs } as any);
+      await updateReservationMut(id, { time: hhmm, startMs: newStartMs });
     } catch {
       /* noop */
     }
@@ -1005,9 +958,13 @@ async function updateReservationField(
       } else if (field === 'table') {
         return { ...r, table: String(value) };
       } else if (field === 'tables') {
-        return { ...r, tables: (value as string[]) };
+        return { ...r, tables: Array.isArray(value) ? value.slice() : [] };
+      } else if (field === 'eat' || field === 'drink' || field === 'name' || field === 'notes' || field === 'date' || field === 'eatLabel' || field === 'drinkLabel') {
+        return { ...r, [field]: typeof value === 'string' ? value : '' } as Reservation;
+      } else if (field === 'foodAllYouCan' || field === 'drinkAllYouCan') {
+        return { ...r, [field]: Boolean(value) } as Reservation;
       } else {
-        return { ...r, [field]: value as any };
+        return { ...r, [field]: value } as Reservation;
       }
     });
 
@@ -1018,15 +975,14 @@ async function updateReservationField(
 
   // Firestore 側も更新（オフライン時は SDK がキュー）
   try {
-    updateReservationFS(id, { [field]: value } as any);
+    updateReservationFS(id, { [field]: value });
   } catch {
     /* noop */
   }
-}
+}, [dayStartMs, persistReservations, writeReservationsCache, updateReservationMut]);
 /* ─────────────── 卓番変更用 ─────────────── */
 const [tablesForMove, setTablesForMove] = useState<string[]>([]); // 変更対象
 // 現在入力中の “変更後卓番号”
-const [targetTable, setTargetTable] = useState<string>('');
 // ─────────────────────────────────────────────────────────────────────────────
 // NOTE: Edit Table Mode の OFF は **commitTableMoves** が唯一の責務。
 // 子コンポーネントや他の処理からは onToggleEditTableMode() を呼ばないこと。
@@ -1085,19 +1041,6 @@ const toggleTableForMove = useCallback((id: string) => {
   );
 }, []);
 
-// 卓番号変更プレビュー: 1件のみキャンセル（pendingTables, tablesForMove から除去）
-const cancelOnePending = useCallback((id: string) => {
-  // pendingTables から対象IDを削除
-  setPendingTables(prev => {
-    if (!prev || !(id in prev)) return prev;
-    const next = { ...prev } as any;
-    delete next[id];
-    return next;
-  });
-  // 選択対象からも除外
-  setTablesForMove(prev => prev.filter(x => x !== id));
-  // ※ NumPad の開閉は子コンポーネント側で制御
-}, []);
 　/* ──────────────────────────────── */
   // 店舗設定タブを初めて開いたときのみ Firestore を 1 read（※統合フックに置換のため停止）
   useEffect(() => {
@@ -3216,8 +3159,8 @@ const onNumPadConfirm = () => {
     }
 
     // --- Robust ID assignment: ensure uniqueness vs current reservations ---
-    const usedIds = new Set(reservations.map(r => r.id));
-    let idToUse = (nextResId && nextResId.trim() !== '' ? nextResId : calcNextResIdFrom(reservations as any));
+    const usedIds = new Set(reservations.map((r) => r.id));
+    let idToUse = nextResId && nextResId.trim() !== '' ? nextResId : calcNextResIdFrom(reservations);
     // もし重複していたら次の空き番号までインクリメント
     while (usedIds.has(idToUse)) {
       idToUse = String(Number(idToUse || '0') + 1);
@@ -3733,9 +3676,8 @@ scheduleEndHour={scheduleEndHour}
 )}
       {/* ─────────────── 5. 数値パッドモーダル ─────────────── */}
       {numPadState && (
-        <RootNumPad
-          open={!!numPadState}
-          title=""
+      <RootNumPad
+        open={!!numPadState}
           multi={numPadState.id === '-1' && numPadState.field === 'table'}
           initialList={numPadState.id === '-1' && numPadState.field === 'table' ? newResTables : []}
           value={numPadState.value || ''}

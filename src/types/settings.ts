@@ -25,6 +25,8 @@ export type AreaDef = {
 
 export type TableCapacityMap = Record<string, number>;
 
+type UnknownRecord = Record<string, unknown>;
+
 export type ScheduleConfig = {
   dayStartHour: number; // 0-47 を想定（跨ぎ運用も許容）
   dayEndHour: number;   // 0-47 を想定（跨ぎ運用も許容）
@@ -51,19 +53,19 @@ export type MiniTaskTemplate = {
 
 // ========== Firestore 側（親が保存・読込で扱う型） ==========
 export type StoreSettings = {
-  courses?: any[];
-  positions?: (string | { name: string })[];
-  tables?: string[];
-  tableCapacities?: TableCapacityMap;
-  plans?: string[];
-  tasksByPosition?: Record<string, Record<string, string[]>>;
-  eatOptions?: string[];
-  drinkOptions?: string[];
-  areas?: AreaDef[];
-  miniTasksByPosition?: Record<string, MiniTaskTemplate[]>;
-  wave?: WaveConfig;
-  schedule?: ScheduleConfig;
-  updatedAt?: number;
+  courses?: unknown;
+  positions?: unknown;
+  tables?: unknown;
+  tableCapacities?: unknown;
+  plans?: unknown;
+  tasksByPosition?: unknown;
+  eatOptions?: unknown;
+  drinkOptions?: unknown;
+  areas?: unknown;
+  miniTasksByPosition?: unknown;
+  wave?: unknown;
+  schedule?: unknown;
+  updatedAt?: number | null;
 };
 
 // ========== UI 側（子コンポーネントが扱うドラフト型） ==========
@@ -96,22 +98,38 @@ export type StoreSettingsValue = {
 export const sanitizeCourses = (arr: unknown): CourseDef[] => {
   if (!Array.isArray(arr)) return [];
   const out: CourseDef[] = [];
-  for (const c of arr as any[]) {
-    const name = typeof c?.name === 'string' ? c.name : (typeof c === 'string' ? c : '');
+  for (const candidate of arr as unknown[]) {
+    let name = '';
+    let tasksInput: unknown;
+    let stayInput: unknown;
+
+    if (typeof candidate === 'string') {
+      name = candidate.trim();
+    } else if (candidate && typeof candidate === 'object') {
+      const courseObj = candidate as UnknownRecord;
+      if (typeof courseObj.name === 'string') name = courseObj.name;
+      tasksInput = courseObj.tasks;
+      stayInput = courseObj.stayMinutes;
+    }
+
     if (!name) continue;
-    const rawTasks = Array.isArray(c?.tasks) ? c.tasks : [];
-    const tasks: CourseTask[] = (rawTasks as any[])
-      .map((t) => {
-        const label = typeof t?.label === 'string' ? t.label : '';
+
+    const rawTasks = Array.isArray(tasksInput) ? (tasksInput as unknown[]) : [];
+    const tasks: CourseTask[] = rawTasks
+      .map((taskCandidate): CourseTask | null => {
+        if (!taskCandidate || typeof taskCandidate !== 'object') return null;
+        const taskObj = taskCandidate as UnknownRecord;
+        const label = typeof taskObj.label === 'string' ? taskObj.label : '';
         if (!label) return null;
-        const timeOffsetNum = Number(t?.timeOffset);
+        const timeOffsetNum = Number(taskObj.timeOffset);
         const timeOffset = Number.isFinite(timeOffsetNum) ? timeOffsetNum : 0;
-        const bgColor = typeof t?.bgColor === 'string' ? t.bgColor : 'bg-gray-100/80';
+        const bgColor = typeof taskObj.bgColor === 'string' ? taskObj.bgColor : 'bg-gray-100/80';
         return { timeOffset, label, bgColor };
       })
-      .filter((v): v is CourseTask => !!v)
+      .filter((task): task is CourseTask => task !== null)
       .sort((a, b) => a.timeOffset - b.timeOffset);
-    const stayRaw = Number((c as any)?.stayMinutes);
+
+    const stayRaw = Number(stayInput);
     const stayMinutes = Number.isFinite(stayRaw) && stayRaw > 0 ? stayRaw : undefined;
     out.push({ name, stayMinutes, tasks });
   }
@@ -121,11 +139,14 @@ export const sanitizeCourses = (arr: unknown): CourseDef[] => {
 /** positions: string[] | {name:string}[] -> string[] (trim + empty除去) */
 export const toPositionNames = (v: unknown): string[] => {
   if (!Array.isArray(v)) return [];
-  return (v as any[])
-    .map((p) => {
-      if (typeof p === 'string') return p.trim();
-      const name = p && typeof p.name === 'string' ? p.name : '';
-      return name.trim();
+  return (v as unknown[])
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item === 'object') {
+        const record = item as UnknownRecord;
+        if (typeof record.name === 'string') return record.name.trim();
+      }
+      return '';
     })
     .filter((s) => !!s);
 };
@@ -133,10 +154,12 @@ export const toPositionNames = (v: unknown): string[] => {
 /** 安全な文字列配列化（trim + 空要素除去） */
 const toStringList = (v: unknown): string[] => {
   if (!Array.isArray(v)) return [];
-  return (v as any[])
-    .map((s) => (typeof s === 'string' ? s.trim() : ''))
+  return (v as unknown[])
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
     .filter((s) => !!s);
 };
+
+export const sanitizeStringList = (v: unknown): string[] => toStringList(v);
 
 const pruneUndefined = <T>(value: T): T => {
   if (Array.isArray(value)) {
@@ -164,8 +187,8 @@ export const sanitizeTables = (v: unknown): string[] => {
   if (!Array.isArray(v)) return [];
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const x of v as any[]) {
-    const s = String(x ?? '').trim();
+  for (const value of v as unknown[]) {
+    const s = String(value ?? '').trim();
     if (!s || seen.has(s)) continue;
     seen.add(s);
     out.push(s);
@@ -177,7 +200,7 @@ export const sanitizeTableCapacities = (input: unknown, allowed?: string[]): Tab
   if (!input || typeof input !== 'object') return {};
   const allow = allowed ? new Set(allowed.map((id) => String(id))) : null;
   const out: TableCapacityMap = {};
-  for (const [rawKey, rawVal] of Object.entries(input as Record<string, unknown>)) {
+  for (const [rawKey, rawVal] of Object.entries(input as UnknownRecord)) {
     const key = String(rawKey ?? '').trim();
     if (!key) continue;
     if (allow && !allow.has(key)) continue;
@@ -191,23 +214,23 @@ export const sanitizeTableCapacities = (input: unknown, allowed?: string[]): Tab
 };
 
 /** tasksByPosition の配列要素を文字列に限定（undefined/null を除去） */
-const sanitizeTasksByPosition = (
+export const sanitizeTasksByPosition = (
   obj: unknown
 ): Record<string, Record<string, string[]>> | undefined => {
   if (!obj || typeof obj !== 'object') return undefined;
   const out: Record<string, Record<string, string[]>> = {};
-  for (const [pos, m] of Object.entries(obj as Record<string, unknown>)) {
-    if (!m || typeof m !== 'object') continue;
+  for (const [pos, value] of Object.entries(obj as UnknownRecord)) {
+    if (!value || typeof value !== 'object') continue;
     const inner: Record<string, string[]> = {};
-    for (const [course, arr] of Object.entries(m as Record<string, unknown>)) {
+    for (const [course, arr] of Object.entries(value as UnknownRecord)) {
       if (Array.isArray(arr)) {
-        const list = (arr as any[])
-          .map((s) => (typeof s === 'string' ? s.trim() : ''))
+        const list = (arr as unknown[])
+          .map((item) => (typeof item === 'string' ? item.trim() : ''))
           .filter((s) => !!s);
-        inner[course] = list;
+        if (list.length) inner[course] = list;
       }
     }
-    out[pos] = inner;
+    if (Object.keys(inner).length > 0) out[pos] = inner;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 };
@@ -222,17 +245,20 @@ const sanitizeMiniTasksByPosition = (
     s.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '');
 
   const out: Record<string, MiniTaskTemplate[]> = {};
-  for (const [pos, arr] of Object.entries(obj as Record<string, unknown>)) {
+  for (const [pos, arr] of Object.entries(obj as UnknownRecord)) {
     if (!Array.isArray(arr)) continue;
     const list: MiniTaskTemplate[] = [];
-    (arr as any[]).forEach((t, i) => {
-      const label = typeof t?.label === 'string' ? t.label.trim() : '';
+    (arr as unknown[]).forEach((item, index) => {
+      if (!item || typeof item !== 'object') return;
+      const task = item as UnknownRecord;
+      const rawLabel = typeof task.label === 'string' ? task.label : '';
+      const label = rawLabel.trim();
       if (!label) return;
-      const idRaw = typeof t?.id === 'string' ? t.id.trim() : '';
-      const id = idRaw || `auto_${slug(label)}_${i}`;
-      const active = typeof t?.active === 'boolean' ? t.active : true;
-      const orderNum = Number((t as any)?.order);
-      const order = Number.isFinite(orderNum) ? orderNum : i;
+      const idRaw = typeof task.id === 'string' ? task.id.trim() : '';
+      const id = idRaw || `auto_${slug(label)}_${index}`;
+      const active = typeof task.active === 'boolean' ? task.active : true;
+      const orderNum = Number(task.order);
+      const order = Number.isFinite(orderNum) ? orderNum : index;
       list.push({ id, label, active, order });
     });
     if (list.length) out[pos] = list.sort((a, b) => a.order - b.order);
@@ -243,21 +269,22 @@ const sanitizeMiniTasksByPosition = (
 /** wave を安全に正規化（unknown -> WaveConfig | undefined） */
 const sanitizeWave = (obj: unknown): WaveConfig | undefined => {
   if (!obj || typeof obj !== 'object') return undefined;
-  const n = (v: any, def: number) => {
-    const num = Number(v);
+  const record = obj as UnknownRecord;
+  const n = (value: unknown, def: number) => {
+    const num = Number(value);
     return Number.isFinite(num) ? num : def;
   };
-  const modeRaw = (obj as any).mode;
+  const modeRaw = record.mode;
   const mode: 'fixed' | 'maxRatio' | 'percentile' | 'hybrid' =
     modeRaw === 'fixed' || modeRaw === 'maxRatio' || modeRaw === 'percentile' || modeRaw === 'hybrid' ? modeRaw : 'hybrid';
   const clampNum = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-  const pRaw = n((obj as any).percentile, 30);
-  const rRaw = Number((obj as any).maxRatio);
+  const pRaw = n(record.percentile, 30);
+  const rRaw = Number(record.maxRatio);
   const p = clampNum(pRaw, 10, 50);
   const r = clampNum(Number.isFinite(rRaw) ? rRaw : 0.3, 0.1, 0.5);
   return {
-    threshold: n((obj as any).threshold, 50),
-    bucketMinutes: n((obj as any).bucketMinutes, 5),
+    threshold: n(record.threshold, 50),
+    bucketMinutes: n(record.bucketMinutes, 5),
     minCalmMinutes: 15,
     notifyDelayMinutes: 3,
     mode,
@@ -270,13 +297,14 @@ const sanitizeWave = (obj: unknown): WaveConfig | undefined => {
 /** schedule を安全に正規化（unknown -> ScheduleConfig | undefined） */
 const sanitizeSchedule = (obj: unknown): ScheduleConfig | undefined => {
   if (!obj || typeof obj !== 'object') return undefined;
-  const n = (v: any) => {
-    const num = Number(v);
+  const record = obj as UnknownRecord;
+  const parseHour = (value: unknown) => {
+    const num = Number(value);
     return Number.isFinite(num) ? Math.floor(num) : NaN;
   };
   const clamp = (v: number) => Math.min(47, Math.max(0, v)); // 0-47 を許容
-  const s = clamp(n((obj as any).dayStartHour));
-  const e = clamp(n((obj as any).dayEndHour));
+  const s = clamp(parseHour(record.dayStartHour));
+  const e = clamp(parseHour(record.dayEndHour));
   if (Number.isNaN(s) || Number.isNaN(e)) return undefined;
   return { dayStartHour: s, dayEndHour: e };
 };
@@ -285,13 +313,15 @@ const sanitizeSchedule = (obj: unknown): ScheduleConfig | undefined => {
 export const sanitizeAreas = (arr: unknown): AreaDef[] => {
   if (!Array.isArray(arr)) return [];
   const out: AreaDef[] = [];
-  for (const a of arr as any[]) {
-    const idRaw = typeof a?.id === 'string' ? a.id.trim() : '';
-    const nameRaw = typeof a?.name === 'string' ? a.name.trim() : '';
+  for (const value of arr as unknown[]) {
+    if (!value || typeof value !== 'object') continue;
+    const area = value as UnknownRecord;
+    const idRaw = typeof area.id === 'string' ? area.id.trim() : '';
+    const nameRaw = typeof area.name === 'string' ? area.name.trim() : '';
     if (!idRaw || !nameRaw) continue;
-    const tables = toStringList(a?.tables);
-    const color = typeof a?.color === 'string' ? a.color : undefined;
-    const icon = typeof a?.icon === 'string' ? a.icon : undefined;
+    const tables = toStringList(area.tables);
+    const color = typeof area.color === 'string' ? area.color : undefined;
+    const icon = typeof area.icon === 'string' ? area.icon : undefined;
     out.push({ id: idRaw, name: nameRaw, tables, color, icon });
   }
   return out;
@@ -307,7 +337,7 @@ export const toUISettings = (fs: StoreSettings): StoreSettingsValue => {
 
   // tables/plans/eatOptions/drinkOptions は文字列配列化
   const tables: string[] = sanitizeTables(fs?.tables);
-  const tableCapacities = sanitizeTableCapacities((fs as any)?.tableCapacities, tables);
+  const tableCapacities = sanitizeTableCapacities(fs?.tableCapacities, tables);
   const plans: string[] = toStringList(fs?.plans);
   const eatOptions: string[] = toStringList(fs?.eatOptions);
   const drinkOptions: string[] = toStringList(fs?.drinkOptions);
@@ -322,9 +352,9 @@ export const toUISettings = (fs: StoreSettings): StoreSettingsValue => {
 
   // miniTasks & wave
   const miniTasksByPosition: Record<string, MiniTaskTemplate[]> =
-    sanitizeMiniTasksByPosition((fs as any)?.miniTasksByPosition) ?? {};
-  const waveCfg = sanitizeWave((fs as any)?.wave);
-  const schedule = sanitizeSchedule((fs as any)?.schedule);
+    sanitizeMiniTasksByPosition(fs?.miniTasksByPosition) ?? {};
+  const waveCfg = sanitizeWave(fs?.wave);
+  const schedule = sanitizeSchedule(fs?.schedule);
 
   return {
     courses,
@@ -352,17 +382,17 @@ export const toFirestorePayload = (ui: StoreSettingsValue): StoreSettings => {
 
   const positions = toPositionNames(ui.positions);
   const tables = sanitizeTables(ui.tables);
-  const tableCapacities = sanitizeTableCapacities((ui as any)?.tableCapacities, tables);
+  const tableCapacities = sanitizeTableCapacities(ui.tableCapacities, tables);
   const plans = toStringList(ui.plans);
   const eatOptions = toStringList(ui.eatOptions);
   const drinkOptions = toStringList(ui.drinkOptions);
 
   const tasksByPosition = sanitizeTasksByPosition(ui.tasksByPosition);
-  const areas = sanitizeAreas(ui.areas as unknown);
+  const areas = sanitizeAreas(ui.areas);
 
-  const miniTasksByPosition = sanitizeMiniTasksByPosition((ui as any)?.miniTasksByPosition);
-  const wave = sanitizeWave((ui as any)?.wave);
-  const schedule = sanitizeSchedule((ui as any)?.schedule);
+  const miniTasksByPosition = sanitizeMiniTasksByPosition(ui.miniTasksByPosition);
+  const wave = sanitizeWave(ui.wave);
+  const schedule = sanitizeSchedule(ui.schedule);
 
   const payload: StoreSettings = {
     courses,

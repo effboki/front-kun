@@ -40,6 +40,10 @@ export interface Reservation {
   date?: string;
   eat?: string;
   drink?: string;
+  eatLabel?: string;
+  drinkLabel?: string;
+  foodAllYouCan?: boolean;
+  drinkAllYouCan?: boolean;
 }
 
 // 卓番変更プレビュー用マップ
@@ -87,7 +91,7 @@ export type AreaDef = {
 export type StoreSettingsValue = {
   tables?: string[];
   areas?: AreaDef[];
-} & Record<string, any>;
+} & Record<string, unknown>;
 
 // ======== Shared ViewModel types for cross-file reuse ========
 
@@ -147,27 +151,41 @@ export type UiState = {
   shiftTargets: string[];
 };
 
+export type ReservationFieldKey =
+  | 'time'
+  | 'course'
+  | 'eat'
+  | 'drink'
+  | 'eatLabel'
+  | 'drinkLabel'
+  | 'foodAllYouCan'
+  | 'drinkAllYouCan'
+  | 'guests'
+  | 'name'
+  | 'notes'
+  | 'date'
+  | 'table'
+  | 'tables'
+  | 'completed'
+  | 'arrived'
+  | 'paid'
+  | 'departed';
+
+export type ReservationFieldValue =
+  | string
+  | number
+  | boolean
+  | null
+  | string[]
+  | Record<string, boolean>;
+
 export type TasksActions = {
   addReservation: (e: FormEvent) => Promise<void>;
   deleteReservation: (id: string) => void;
   updateReservationField: (
     id: string,
-    field:
-      | 'time'
-      | 'course'
-      | 'eat'
-      | 'drink'
-      | 'guests'
-      | 'name'
-      | 'notes'
-      | 'date'
-      | 'table'
-      | 'tables'
-      | 'completed'
-      | 'arrived'
-      | 'paid'
-      | 'departed',
-    value: any
+    field: ReservationFieldKey,
+    value: ReservationFieldValue
   ) => void;
   toggleArrivalChecked: (id: string) => void;
   togglePaymentChecked: (id: string) => void;
