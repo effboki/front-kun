@@ -38,6 +38,8 @@ export type PendingTables = Record<string, { old: string; next: string }>;
 export interface TaskDef {
   /** 来店から何分後か */
   timeOffset: number;
+  /** 来店から何分後までか（未設定時は timeOffset と同じ） */
+  timeOffsetEnd?: number;
   /** タスク名 */
   label: string;
   /** テーブル管理画面での背景色 Tailwind クラス */

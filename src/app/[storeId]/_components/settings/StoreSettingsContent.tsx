@@ -26,11 +26,62 @@ const normalizeLabel = (s: string) =>
     .toLowerCase();
 const normEq = (a: string, b: string) => normalizeLabel(a) === normalizeLabel(b);
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+const TASK_OFFSET_MIN = -180;
+const TASK_OFFSET_MAX = 180;
+const clampTaskOffset = (offset: number) => clamp(Math.round(offset), TASK_OFFSET_MIN, TASK_OFFSET_MAX);
+const formatTaskOffset = (offset: number) => {
+  if (offset > 0) return `${offset}分後`;
+  if (offset < 0) return `${Math.abs(offset)}分前`;
+  return '0分後';
+};
+const clampTaskRange = (start: number, end?: number) => {
+  const clampedStart = clampTaskOffset(start);
+  if (typeof end === 'number' && Number.isFinite(end)) {
+    const clampedEnd = clampTaskOffset(end);
+    return { start: clampedStart, end: Math.max(clampedStart, clampedEnd) };
+  }
+  return { start: clampedStart, end: clampedStart };
+};
+const formatTaskRange = (start: number, end?: number) => {
+  const normalizedEnd = typeof end === 'number' ? end : start;
+  if (normalizedEnd === start) return formatTaskOffset(start);
+  return `${formatTaskOffset(start)} - ${formatTaskOffset(normalizedEnd)}`;
+};
 const getTasks = (c?: CourseDef) => (Array.isArray(c?.tasks) ? c.tasks : []);
 const normalizeTiny = (s: string) =>
   String(s ?? '')
     .normalize('NFKC')
     .replace(/[\s\u3000]/g, '');
+
+type TaskColorOption = {
+  value: string;
+  label: string;
+};
+
+const TASK_COLOR_OPTIONS: TaskColorOption[] = [
+  { value: 'bg-red-300/80', label: '赤' },
+  { value: 'bg-orange-300/80', label: 'オレンジ' },
+  { value: 'bg-yellow-200/80', label: '黄色' },
+  { value: 'bg-lime-200/80', label: '黄緑' },
+  { value: 'bg-green-300/80', label: '緑' },
+  { value: 'bg-sky-200/80', label: '水色' },
+  { value: 'bg-blue-300/80', label: '青' },
+  { value: 'bg-violet-300/80', label: '紫' },
+  { value: 'bg-pink-300/80', label: 'ピンク' },
+  { value: 'bg-rose-200/80', label: '薄ピンク' },
+  { value: 'bg-amber-300/80', label: '黄土色' },
+  { value: 'bg-stone-500/80', label: '茶色' },
+  { value: 'bg-gray-100/80', label: 'ライトグレー' },
+  { value: 'bg-slate-200/80', label: 'ブルーグレー' },
+];
+
+type TaskColorValue = (typeof TASK_COLOR_OPTIONS)[number]['value'];
+
+const TASK_COLOR_VALUE_SET = new Set<string>(TASK_COLOR_OPTIONS.map((opt) => opt.value));
+const DEFAULT_TASK_COLOR: TaskColorValue = 'bg-gray-100/80';
+
+const normalizeTaskColor = (color: string | null | undefined): TaskColorValue =>
+  TASK_COLOR_VALUE_SET.has(color ?? '') ? ((color ?? DEFAULT_TASK_COLOR) as TaskColorValue) : DEFAULT_TASK_COLOR;
 
 const sortKeysDeep = (input: unknown): unknown => {
   if (Array.isArray(input)) return input.map(sortKeysDeep);
@@ -151,10 +202,11 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     });
   }, []);
   const [editingLabelTask, setEditingLabelTask] = useState<{ offset: number; label: string } | null>(null);
-  const [editingTimeTask, setEditingTimeTask] = useState<{ offset: number; label: string } | null>(null);
+  const [editingTimeTask, setEditingTimeTask] = useState<{ offset: number; end: number; label: string } | null>(null);
   const [editingTaskDraft, setEditingTaskDraft] = useState('');
   const editingInputRef = useRef<HTMLInputElement | null>(null);
   const editingLabelComposingRef = useRef(false);
+  const [isTablet, setIsTablet] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 768 : false));
 
 
   // track unsaved changes (for Save button "活きてる感")
@@ -203,6 +255,13 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [isDirty]);
+
+  useEffect(() => {
+    const handleResize = () => setIsTablet(window.innerWidth >= 768);
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // ===== patch helpers =====
   const setCourses = useCallback((next: CourseDef[]) => {
@@ -377,12 +436,24 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     // timeOffset + 正規化ラベルで重複排除
     const seen = new Set<string>();
     const deduped = merged.filter((t) => {
-      const k = `${t.timeOffset}__${normalizeLabel(t.label)}`;
+      const endKey = typeof t.timeOffsetEnd === 'number' ? t.timeOffsetEnd : t.timeOffset;
+      const k = `${t.timeOffset}_${endKey}__${normalizeLabel(t.label)}`;
       if (seen.has(k)) return false;
       seen.add(k);
       return true;
     });
-    return deduped.slice().sort((a, b) => a.timeOffset - b.timeOffset);
+    return deduped
+      .slice()
+      .sort((a, b) => a.timeOffset - b.timeOffset)
+      .map((task) => {
+        const { start, end } = clampTaskRange(task.timeOffset, task.timeOffsetEnd);
+        return {
+          ...task,
+          timeOffset: start,
+          timeOffsetEnd: end,
+          bgColor: normalizeTaskColor(task.bgColor),
+        };
+      });
   }, [selectedCourseDef, optimisticTasks, selectedCourse]);
   // 親から courses が更新されたら、pending をクリア（実データに置き換わったため）
   useEffect(() => {
@@ -393,14 +464,16 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
 
   // ===== courses & tasks =====
   const addTaskToCourse = useCallback(
-    (label: string, offset: number): boolean => {
-      const base = courses.map((c) => ({ ...c, tasks: getTasks(c).slice() }));
+    (label: string, offsetStart: number, offsetEnd: number, color: string): boolean => {
+      const normalizedColor = normalizeTaskColor(color);
+      const base = courses.map((c) => ({ ...c, tasks: getTasks(c).map((t) => ({ ...t })) }));
       const idx = base.findIndex((c) => c.name === selectedCourse);
       if (idx < 0) {
         console.warn('[addTaskToCourse] selectedCourse not found:', selectedCourse);
         return false;
       }
-      const newTask: TaskDef = { label, timeOffset: clamp(offset, 0, 180), bgColor: 'default' } as TaskDef; // bgColor 必須対策
+      const { start, end } = clampTaskRange(offsetStart, offsetEnd);
+      const newTask: TaskDef = { label, timeOffset: start, timeOffsetEnd: end, bgColor: normalizedColor };
       base[idx].tasks.push(newTask);
       base[idx].tasks.sort((a, b) => a.timeOffset - b.timeOffset);
       setCourses(base);
@@ -410,10 +483,11 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   );
 
   const handleAddNewTask = useCallback(
-    (rawLabel: string, offset: number): boolean => {
+    (rawLabel: string, offsetStart: number, offsetEnd: number, color: string): boolean => {
       const label = rawLabel.trim();
       if (!label) return false;
-      const ok = addTaskToCourse(label, offset);
+      const normalizedColor = normalizeTaskColor(color);
+      const ok = addTaskToCourse(label, offsetStart, offsetEnd, normalizedColor);
       if (!ok) {
         // 追加できなかった場合は何も消さず残す
         return false;
@@ -421,7 +495,8 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
       // 楽観的に画面へ即時反映（親の onChange 反映前に“消えた”ように見えないように）
       setOptimisticTasks((prev) => {
         const arr = prev[selectedCourse] ?? [];
-        const nextTask: TaskDef = { label, timeOffset: clamp(offset, 0, 180), bgColor: 'default' } as TaskDef;
+        const { start, end } = clampTaskRange(offsetStart, offsetEnd);
+        const nextTask: TaskDef = { label, timeOffset: start, timeOffsetEnd: end, bgColor: normalizedColor };
         return { ...prev, [selectedCourse]: [...arr, nextTask] };
       });
       return true;
@@ -430,18 +505,69 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   );
 
   const shiftTaskOffset = useCallback(
-    (offset: number, label: string, delta: number) => {
+    (offset: number, label: string, delta: number, target: 'start' | 'end' = 'start') => {
       const base = courses.map((c) => ({ ...c, tasks: getTasks(c).slice() }));
       const idx = base.findIndex((c) => c.name === selectedCourse);
       if (idx < 0) return;
-      const newOffset = clamp(offset + delta, 0, 180);
+      let found = false;
+      let nextStart = offset;
+      let nextEnd = offset;
       base[idx].tasks = base[idx].tasks
-        .map((t) => (t.timeOffset !== offset || !normEq(t.label, label) ? t : { ...t, timeOffset: newOffset }))
+        .map((t) => {
+          if (t.timeOffset !== offset || !normEq(t.label, label)) return t;
+          found = true;
+          const currentEnd = typeof t.timeOffsetEnd === 'number' ? t.timeOffsetEnd : t.timeOffset;
+          if (target === 'start') {
+            const newStart = clampTaskOffset(t.timeOffset + delta);
+            const newEnd = Math.max(currentEnd, newStart);
+            nextStart = newStart;
+            nextEnd = newEnd;
+            return { ...t, timeOffset: newStart, timeOffsetEnd: newEnd };
+          }
+          const newEnd = Math.max(clampTaskOffset(currentEnd + delta), t.timeOffset);
+          nextStart = t.timeOffset;
+          nextEnd = newEnd;
+          return { ...t, timeOffsetEnd: newEnd };
+        })
         .sort((a, b) => a.timeOffset - b.timeOffset);
+      if (!found) return;
       setCourses(base);
       // keep editing state pinned to the same task while its offset changes
-      setEditingTimeTask((curr) => (curr && curr.offset === offset && normEq(curr.label, label) ? { offset: newOffset, label: curr.label } : curr));
-      setEditingLabelTask((curr) => (curr && curr.offset === offset && normEq(curr.label, label) ? { offset: newOffset, label: curr.label } : curr));
+      setEditingTimeTask((curr) => {
+        if (!curr || !normEq(curr.label, label) || curr.offset !== offset) return curr;
+        return {
+          offset: target === 'start' ? nextStart : curr.offset,
+          end: nextEnd,
+          label: curr.label,
+        };
+      });
+      if (target === 'start') {
+        setEditingLabelTask((curr) =>
+          curr && curr.offset === offset && normEq(curr.label, label) ? { offset: nextStart, label: curr.label } : curr
+        );
+      }
+    },
+    [courses, selectedCourse, setCourses]
+  );
+
+  const updateTaskColor = useCallback(
+    (offset: number, label: string, color: string) => {
+      const normalized = normalizeTaskColor(color);
+      const base = courses.map((c) => ({ ...c, tasks: getTasks(c).map((t) => ({ ...t })) }));
+      const idx = base.findIndex((c) => c.name === selectedCourse);
+      if (idx < 0) return;
+      let changed = false;
+      base[idx].tasks = base[idx].tasks.map((t) => {
+        if (t.timeOffset === offset && normEq(t.label, label)) {
+          const current = normalizeTaskColor(t.bgColor);
+          if (current === normalized) return t;
+          changed = true;
+          return { ...t, bgColor: normalized };
+        }
+        return t;
+      });
+      if (!changed) return;
+      setCourses(base);
     },
     [courses, selectedCourse, setCourses]
   );
@@ -454,10 +580,10 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
       stepHoldRef.current = null;
     }
   };
-  const startHold = (delta: number, offset: number, label: string) => {
-    shiftTaskOffset(offset, label, delta);
+  const startHold = (delta: number, offset: number, label: string, target: 'start' | 'end') => {
+    shiftTaskOffset(offset, label, delta, target);
     stopHold();
-    stepHoldRef.current = setInterval(() => shiftTaskOffset(offset, label, delta), 180);
+    stepHoldRef.current = setInterval(() => shiftTaskOffset(offset, label, delta, target), 180);
   };
   useEffect(() => () => stopHold(), []);
 
@@ -480,9 +606,9 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     setEditingTaskDraft(label);
   }, []);
 
-  const startTimeEdit = useCallback((offset: number, label: string) => {
+  const startTimeEdit = useCallback((offset: number, end: number, label: string) => {
     setEditingLabelTask(null); // 時間編集時はラベル編集を必ずオフ
-    setEditingTimeTask({ offset, label });
+    setEditingTimeTask({ offset, end, label });
   }, []);
 
   const cancelTaskLabelEdit = useCallback(() => {
@@ -769,8 +895,9 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                 <strong className="mx-1">タスク（開始から何分後に行うか）</strong>を作成・編集します。
               </li>
               <li>
-                ヒント：タスクの時間は「0分後」「15分後」のように、
-                <strong className="mx-1">開始時刻から何分後に行うか</strong>で設定します。
+                ヒント：タスクの時間は「0分後」「15分後」「-15分（開始15分前）」のように、
+                <strong className="mx-1">開始時刻からの相対時間</strong>で設定します。必要に応じて「5分後-20分後」のように
+                <strong className="mx-1">開始と終了の幅</strong>も指定できます。
               </li>
             </ul>
             <div className="mt-2">
@@ -1215,6 +1342,11 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                     {/* 展開エリア：タスク編集（既存UIを流用） */}
                     {isOpen && selectedCourse === name && (
                       <div id={`course-panel-${name}`} className="p-3 space-y-3">
+                        {!isTablet && (
+                          <p className="text-xs text-gray-600 px-2">
+                            色の変更はタブレット端末からのみ操作できます。
+                          </p>
+                        )}
                         {/* 既存タスクリスト */}
                         <div className="space-y-1">
                           {courseTasksForList.length === 0 ? (
@@ -1224,57 +1356,102 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                           ) : (
                             courseTasksForList.map((task, idx) => (
                               <div
-                                key={`${task.timeOffset}_${normalizeLabel(task.label)}_${idx}`}
+                                key={`${task.timeOffset}_${task.timeOffsetEnd ?? task.timeOffset}_${normalizeLabel(task.label)}_${idx}`}
                                 className="py-2 px-2 bg-white rounded-md border border-gray-200 shadow-sm hover:shadow-md transition group"
                               >
-                                <div className="grid grid-cols-[auto,1fr,64px] items-center gap-3">
+                                <div
+                                  className={`grid items-center gap-3 ${
+                                    isTablet ? 'grid-cols-[auto,1fr,auto,64px]' : 'grid-cols-[auto,1fr,64px]'
+                                  }`}
+                                >
                                   {/* col 1: time (with stepper in edit mode) */}
                                   {editingTimeTask && editingTimeTask.offset === task.timeOffset && normEq(editingTimeTask.label, task.label) ? (
-                                    <div className="flex items-center justify-center shrink-0 min-w-[152px]">
-                                      <div className="inline-flex items-stretch rounded-md border border-sky-300 bg-sky-50/70 shadow-sm overflow-hidden shrink-0" role="group" aria-label="時間調整">
-                                        <button
-                                          type="button"
-                                          data-keepedit="1"
-                                          onPointerDown={(e) => { e.preventDefault(); startHold(-5, task.timeOffset, task.label); }}
-                                          onPointerUp={stopHold}
-                                          onPointerCancel={stopHold}
-                                          onPointerLeave={stopHold}
-                                          className="px-2 w-10 h-10 text-sm font-medium text-sky-700 bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                                          aria-label="5分早く"
-                                        >
-                                          -5
-                                        </button>
-                                        <button
-                                          type="button"
-                                          data-keepedit="1"
-                                          onClick={() => { stopHold(); setEditingTimeTask(null); }}
-                                          className="min-w-[72px] h-10 px-2 grid place-items-center text-sm font-semibold text-sky-900 tabular-nums bg-sky-50 shrink-0"
-                                          aria-label="時間編集を閉じる"
-                                        >
-                                          {task.timeOffset}分後
-                                        </button>
-                                        <button
-                                          type="button"
-                                          data-keepedit="1"
-                                          onPointerDown={(e) => { e.preventDefault(); startHold(+5, task.timeOffset, task.label); }}
-                                          onPointerUp={stopHold}
-                                          onPointerCancel={stopHold}
-                                          onPointerLeave={stopHold}
-                                          className="px-2 w-10 h-10 text-sm font-medium text-sky-700 bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                                          aria-label="5分遅く"
-                                        >
-                                          +5
-                                        </button>
+                                    <div className="flex flex-col items-center gap-2 shrink-0 min-w-[220px]" data-keepedit="1">
+                                      <div className="flex flex-wrap items-center justify-center gap-3">
+                                        <div className="flex flex-col items-center gap-1">
+                                          <span className="text-[11px] font-medium text-sky-700">開始</span>
+                                          <div className="inline-flex items-stretch rounded-md border border-sky-300 bg-sky-50/70 shadow-sm overflow-hidden" role="group" aria-label="開始時間調整">
+                                            <button
+                                              type="button"
+                                              data-keepedit="1"
+                                              onPointerDown={(e) => { e.preventDefault(); startHold(-5, editingTimeTask.offset, task.label, 'start'); }}
+                                              onPointerUp={stopHold}
+                                              onPointerCancel={stopHold}
+                                              onPointerLeave={stopHold}
+                                              className="px-2 w-10 h-10 text-sm font-medium text-sky-700 bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                                              aria-label="開始を5分早く"
+                                            >
+                                              -5
+                                            </button>
+                                            <div className="min-w-[80px] h-10 px-2 grid place-items-center text-sm font-semibold text-sky-900 tabular-nums bg-sky-50 shrink-0">
+                                              {formatTaskOffset(editingTimeTask.offset)}
+                                            </div>
+                                            <button
+                                              type="button"
+                                              data-keepedit="1"
+                                              onPointerDown={(e) => { e.preventDefault(); startHold(+5, editingTimeTask.offset, task.label, 'start'); }}
+                                              onPointerUp={stopHold}
+                                              onPointerCancel={stopHold}
+                                              onPointerLeave={stopHold}
+                                              className="px-2 w-10 h-10 text-sm font-medium text-sky-700 bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                                              aria-label="開始を5分遅く"
+                                            >
+                                              +5
+                                            </button>
+                                          </div>
+                                        </div>
+                                        <span className="text-xs font-semibold text-sky-700" aria-hidden="true">〜</span>
+                                        <div className="flex flex-col items-center gap-1">
+                                          <span className="text-[11px] font-medium text-sky-700">終了</span>
+                                          <div className="inline-flex items-stretch rounded-md border border-sky-300 bg-sky-50/70 shadow-sm overflow-hidden" role="group" aria-label="終了時間調整">
+                                            <button
+                                              type="button"
+                                              data-keepedit="1"
+                                              onPointerDown={(e) => { e.preventDefault(); startHold(-5, editingTimeTask.offset, task.label, 'end'); }}
+                                              onPointerUp={stopHold}
+                                              onPointerCancel={stopHold}
+                                              onPointerLeave={stopHold}
+                                              className="px-2 w-10 h-10 text-sm font-medium text-sky-700 bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                                              aria-label="終了を5分早く"
+                                            >
+                                              -5
+                                            </button>
+                                            <div className="min-w-[80px] h-10 px-2 grid place-items-center text-sm font-semibold text-sky-900 tabular-nums bg-sky-50 shrink-0">
+                                              {formatTaskOffset(editingTimeTask.end)}
+                                            </div>
+                                            <button
+                                              type="button"
+                                              data-keepedit="1"
+                                              onPointerDown={(e) => { e.preventDefault(); startHold(+5, editingTimeTask.offset, task.label, 'end'); }}
+                                              onPointerUp={stopHold}
+                                              onPointerCancel={stopHold}
+                                              onPointerLeave={stopHold}
+                                              className="px-2 w-10 h-10 text-sm font-medium text-sky-700 bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                                              aria-label="終了を5分遅く"
+                                            >
+                                              +5
+                                            </button>
+                                          </div>
+                                        </div>
                                       </div>
+                                      <button
+                                        type="button"
+                                        data-keepedit="1"
+                                        onClick={() => { stopHold(); setEditingTimeTask(null); }}
+                                        className="px-3 py-1.5 rounded-md border border-sky-200 bg-white text-xs font-medium text-sky-700 hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                                        aria-label="時間編集を閉じる"
+                                      >
+                                        編集を閉じる
+                                      </button>
                                     </div>
                                   ) : (
                                     <button
                                       type="button"
-                                      onClick={() => startTimeEdit(task.timeOffset, task.label)}
+                                      onClick={() => startTimeEdit(task.timeOffset, task.timeOffsetEnd ?? task.timeOffset, task.label)}
                                       className="h-9 inline-flex items-center justify-center px-3 rounded-full border border-sky-200 bg-sky-50 text-sky-800 text-sm font-medium tabular-nums active:scale-[.99] hover:bg-sky-100 focus:outline-none focus:ring-2 focus:ring-sky-400 shrink-0"
                                       title="タップで時間編集"
                                     >
-                                      {task.timeOffset}分後
+                                      {formatTaskRange(task.timeOffset, task.timeOffsetEnd)}
                                     </button>
                                   )}
 
@@ -1306,7 +1483,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                                       onClick={(e) => e.stopPropagation()}
                                       autoFocus
                                       className="min-w-0 h-9 w-full px-3 rounded-md border border-gray-300 bg-white text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                                      key={`edit-${task.timeOffset}-${task.label}`}
+                                      key={`edit-${task.timeOffset}-${task.timeOffsetEnd ?? task.timeOffset}-${task.label}`}
                                     />
                                   ) : (
                                     <span
@@ -1315,11 +1492,26 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                                       onClick={() => startLabelEdit(task.timeOffset, task.label)}
                                       title="クリックして名前を編集"
                                     >
+                                      {!isTablet && (
+                                        <span
+                                          aria-hidden="true"
+                                          className={`mr-2 inline-flex h-3 w-3 flex-none rounded-full border border-gray-300 ${task.bgColor}`}
+                                        />
+                                      )}
                                       {task.label}
                                     </span>
                                   )}
 
-                                  {/* col 3: delete */}
+                                  {isTablet && (
+                                    <TaskColorSelector
+                                      value={task.bgColor}
+                                      onChange={(nextColor) => updateTaskColor(task.timeOffset, task.label, nextColor)}
+                                      ariaLabel={`${task.label} の色`}
+                                      compact
+                                    />
+                                  )}
+
+                                  {/* delete */}
                                   <button
                                     onClick={() => deleteTaskFromCourse(task.timeOffset, task.label)}
                                     className="w-[56px] h-9 rounded-md border border-red-200 text-red-600/90 hover:bg-red-50 active:scale-[.99] justify-self-end text-sm shrink-0"
@@ -1346,9 +1538,9 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                               <span className="text-sm font-semibold text-emerald-700">このコースに新しいタスクを追加</span>
                             </header>
                             <p className="text-gray-500 text-xs">
-                              タスク名を入力し<strong className="mx-1">時間（0〜180分）</strong>を調整して「追加」を押してください。
+                              タスク名を入力し<strong className="mx-1">開始・終了（-180〜180分）</strong>を調整して「追加」を押してください。
                             </p>
-                            <NewTaskForm onAdd={handleAddNewTask} />
+                            <NewTaskForm onAdd={handleAddNewTask} allowColorSelection={isTablet} />
                           </div>
                         </div>
                       </div>
@@ -1520,10 +1712,10 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                           <div>
                             {tasksForCourse.map((task) => (
                               <div
-                                key={`${task.timeOffset}_${task.label}`}
+                                key={`${task.timeOffset}_${task.timeOffsetEnd ?? task.timeOffset}_${task.label}`}
                                 className="flex flex-wrap items-center px-3 py-2 border-t odd:bg-white even:bg-gray-50/40 hover:bg-gray-50 text-sm gap-4 md:gap-6"
                               >
-                                <div className="min-w-[5.5rem] tabular-nums text-gray-700">{task.timeOffset}分後</div>
+                                <div className="min-w-[5.5rem] tabular-nums text-gray-700">{formatTaskRange(task.timeOffset, task.timeOffsetEnd)}</div>
                                 <div className="flex-1 min-w-0 truncate" title={task.label}>{task.label}</div>
                                 <div className="ml-4 md:ml-6 text-right">
                                   <input
@@ -2070,13 +2262,50 @@ const NewCourseForm = memo(function NewCourseForm({ onAdd }: NewCourseFormProps)
   );
 });
 
-type NewTaskFormProps = {
-  onAdd: (label: string, offset: number) => boolean;
+type TaskColorSelectorProps = {
+  value: string;
+  onChange: (next: TaskColorValue) => void;
+  ariaLabel?: string;
+  compact?: boolean;
+  id?: string;
 };
 
-const NewTaskForm = memo(function NewTaskForm({ onAdd }: NewTaskFormProps) {
+const TaskColorSelector: FC<TaskColorSelectorProps> = ({ value, onChange, ariaLabel, compact = false, id }) => {
+  const normalized = normalizeTaskColor(value);
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        aria-hidden="true"
+        className={`h-6 w-6 rounded-full border border-gray-300 shadow-inner ${normalized}`}
+        title="選択中の色"
+      />
+      <select
+        id={id}
+        value={normalized}
+        onChange={(e) => onChange(normalizeTaskColor(e.currentTarget.value))}
+        aria-label={ariaLabel ?? 'タスクの色'}
+        className={`h-9 px-2 rounded-md border border-gray-300 bg-white text-sm shadow-sm ${compact ? 'min-w-[7.5rem]' : 'min-w-[9.5rem]'}`}
+      >
+        {TASK_COLOR_OPTIONS.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+};
+
+type NewTaskFormProps = {
+  onAdd: (label: string, offsetStart: number, offsetEnd: number, color: string) => boolean;
+  allowColorSelection: boolean;
+};
+
+const NewTaskForm = memo(function NewTaskForm({ onAdd, allowColorSelection }: NewTaskFormProps) {
   const [draft, setDraft] = useState('');
   const [offset, setOffset] = useState(0);
+  const [offsetEnd, setOffsetEnd] = useState(0);
+  const [color, setColor] = useState<TaskColorValue>(DEFAULT_TASK_COLOR);
   const [isComposing, setIsComposing] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -2084,12 +2313,19 @@ const NewTaskForm = memo(function NewTaskForm({ onAdd }: NewTaskFormProps) {
 
   const submit = useCallback(() => {
     if (!canSubmit) return;
-    const ok = onAdd(draft, offset);
+    const nextColor = allowColorSelection ? color : DEFAULT_TASK_COLOR;
+    const ok = onAdd(draft, offset, offsetEnd, nextColor);
     if (!ok) return;
     setDraft('');
     setOffset(0);
+    setOffsetEnd(0);
+    setColor(DEFAULT_TASK_COLOR);
     requestAnimationFrame(() => inputRef.current?.focus());
-  }, [canSubmit, draft, offset, onAdd]);
+  }, [allowColorSelection, canSubmit, draft, offset, offsetEnd, color, onAdd]);
+
+  useEffect(() => {
+    setOffsetEnd((prev) => Math.max(prev, offset));
+  }, [offset]);
 
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -2121,29 +2357,96 @@ const NewTaskForm = memo(function NewTaskForm({ onAdd }: NewTaskFormProps) {
           }
         }}
       />
-      <div className="inline-flex items-stretch rounded-md border border-gray-300 overflow-hidden" role="group" aria-label="追加するタスクの時間">
-        <button
-          type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setOffset((prev) => clamp(prev - 5, 0, 180))}
-          className="px-3 h-10 text-sm bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
-          aria-label="5分早く"
-        >
-          -5
-        </button>
-        <div className="min-w-[72px] h-10 grid place-items-center px-2 text-sm font-semibold tabular-nums bg-gray-50">
-          {offset}分後
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-col items-center gap-1">
+          <span className="text-[11px] font-medium text-emerald-700">開始</span>
+          <div className="inline-flex items-stretch rounded-md border border-emerald-300 bg-emerald-50/70 overflow-hidden" role="group" aria-label="開始時間">
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() =>
+                setOffset((prev) => {
+                  const next = clampTaskOffset(prev - 5);
+                  setOffsetEnd((endPrev) => Math.max(endPrev, next));
+                  return next;
+                })
+              }
+              className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+              aria-label="開始を5分早く"
+            >
+              -5
+            </button>
+            <div className="min-w-[80px] h-10 grid place-items-center px-2 text-sm font-semibold tabular-nums text-emerald-900">
+              {formatTaskOffset(offset)}
+            </div>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() =>
+                setOffset((prev) => {
+                  const next = clampTaskOffset(prev + 5);
+                  setOffsetEnd((endPrev) => Math.max(endPrev, next));
+                  return next;
+                })
+              }
+              className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+              aria-label="開始を5分遅く"
+            >
+              +5
+            </button>
+          </div>
         </div>
-        <button
-          type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setOffset((prev) => clamp(prev + 5, 0, 180))}
-          className="px-3 h-10 text-sm bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
-          aria-label="5分遅く"
-        >
-          +5
-        </button>
+        <div className="flex flex-col items-center gap-1">
+          <span className="text-[11px] font-medium text-emerald-700">終了</span>
+          <div className="inline-flex items-stretch rounded-md border border-emerald-300 bg-emerald-50/70 overflow-hidden" role="group" aria-label="終了時間">
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() =>
+                setOffsetEnd((prev) => {
+                  const next = clampTaskOffset(prev - 5);
+                  return Math.max(next, offset);
+                })
+              }
+              className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+              aria-label="終了を5分早く"
+            >
+              -5
+            </button>
+            <div className="min-w-[80px] h-10 grid place-items-center px-2 text-sm font-semibold tabular-nums text-emerald-900">
+              {formatTaskOffset(offsetEnd)}
+            </div>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() =>
+                setOffsetEnd((prev) => {
+                  const next = clampTaskOffset(prev + 5);
+                  return Math.max(next, offset);
+                })
+              }
+              className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+              aria-label="終了を5分遅く"
+            >
+              +5
+            </button>
+          </div>
+        </div>
       </div>
+      <span className="text-xs text-gray-500 min-w-[10rem]">
+        現在の範囲: {formatTaskRange(offset, offsetEnd)}
+      </span>
+      {allowColorSelection ? (
+        <TaskColorSelector
+          value={color}
+          onChange={setColor}
+          ariaLabel="新規タスクの色"
+        />
+      ) : (
+        <span className="h-10 flex items-center text-xs text-gray-500">
+          色の変更はタブレットからのみ行えます
+        </span>
+      )}
       <button
         type="button"
         onClick={submit}

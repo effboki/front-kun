@@ -1,10 +1,20 @@
 import React from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import type { AreaDef } from '@/types';
+import type { AreaDef, CourseDef, TaskDef } from '@/types';
+
+const formatTaskOffset = (offset: number) => {
+  if (offset > 0) return `${offset}分後`;
+  if (offset < 0) return `${Math.abs(offset)}分前`;
+  return '0分後';
+};
+const formatTaskRange = (start: number, end?: number) => {
+  const normalizedEnd = typeof end === 'number' ? end : start;
+  if (normalizedEnd === start) return formatTaskOffset(start);
+  return `${formatTaskOffset(start)} - ${formatTaskOffset(normalizedEnd)}`;
+};
 
 // ===== Types =====
-export type CourseTask = { timeOffset: number; label: string };
-export type CourseDef = { name: string; tasks: CourseTask[] };
+export type CourseTask = TaskDef;
 
 // Props expected from the parent page
 export type PreopenSettingsProps = {
@@ -39,7 +49,7 @@ export type PreopenSettingsProps = {
   selectedDisplayPosition: string;
   setSelectedDisplayPosition: (pos: string) => void;
   displayTaskCourse: string;
-  setDisplayTaskCourse: (courseName: string) => void;
+  setDisplayTaskCourse: React.Dispatch<React.SetStateAction<string>>;
 };
 
 const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
@@ -203,12 +213,33 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
   // --- Popover state for task settings (anchor: position button) ---
   const [taskPopover, setTaskPopover] = React.useState<{ open: boolean; x: number; y: number } | null>(null);
 
+  const handleSelectPosition = React.useCallback(
+    (pos: string) => {
+      // queue state updates so React applies them after the current render
+      Promise.resolve().then(() => {
+        setSelectedDisplayPosition(pos);
+        if (courses.length === 0) return;
+        const fallback = courses[0]?.name ?? '';
+        setDisplayTaskCourse((current: string) => {
+          if (pos === 'その他') {
+            return current && current.length > 0 ? current : fallback;
+          }
+          if (current && courses.some((c) => c.name === current)) {
+            return current;
+          }
+          return fallback;
+        });
+      });
+    },
+    [courses, setDisplayTaskCourse, setSelectedDisplayPosition]
+  );
+
   const openTaskPopover = React.useCallback((el: HTMLElement, pos: string) => {
     // select position and open bubble near the button
-    setSelectedDisplayPosition(pos);
+    handleSelectPosition(pos);
     const r = el.getBoundingClientRect();
     setTaskPopover({ open: true, x: r.left + r.width / 2, y: r.bottom });
-  }, [setSelectedDisplayPosition]);
+  }, [handleSelectPosition]);
 
   const closeTaskPopover = React.useCallback(() => setTaskPopover(null), []);
 
@@ -233,11 +264,15 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
   const togglePositionEnabled = React.useCallback((pos: string) => {
     setEnabledPositions((prev) => {
       const set = new Set(prev);
-      if (set.has(pos)) set.delete(pos);
-      else set.add(pos);
+      if (set.has(pos)) {
+        set.delete(pos);
+      } else {
+        set.add(pos);
+        handleSelectPosition(pos);
+      }
       return Array.from(set);
     });
-  }, []);
+  }, [handleSelectPosition]);
 
   // ===== Render =====
   if (section === 'tables') {
@@ -420,7 +455,20 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
             {[...positions, 'その他'].map((pos) => {
               const enabled = isEnabledPosition(pos);
               return (
-                <div key={pos} className="rounded-lg border bg-white px-3 py-2 shadow-sm">
+                <div
+                  key={pos}
+                  className="rounded-lg border bg-white px-3 py-2 shadow-sm cursor-pointer transition hover:border-blue-200"
+                  onClick={() => handleSelectPosition(pos)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleSelectPosition(pos);
+                    }
+                  }}
+                  aria-pressed={selectedDisplayPosition === pos}
+                >
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="font-medium truncate">{pos}</div>
@@ -440,11 +488,17 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
                       </button>
 
                       {/* ON/OFF トグル */}
-                      <label className="relative inline-flex items-center cursor-pointer select-none">
+                      <label
+                        className="relative inline-flex items-center cursor-pointer select-none"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <input
                           type="checkbox"
                           checked={enabled}
-                          onChange={() => togglePositionEnabled(pos)}
+                          onChange={(event) => {
+                            event.stopPropagation();
+                            togglePositionEnabled(pos);
+                          }}
                           className="sr-only peer"
                         />
                         <span className="w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-blue-600 transition-colors"></span>
@@ -528,9 +582,9 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
                                 {list.map((task) => {
                                   const checked = checkedSet.has(task.label);
                                   return (
-                                    <div key={`${task.timeOffset}_${task.label}_${course.name}`} className="flex items-center gap-3 py-2 text-sm">
+                                    <div key={`${task.timeOffset}_${task.timeOffsetEnd ?? task.timeOffset}_${task.label}_${course.name}`} className="flex items-center gap-3 py-2 text-sm">
                                       <span className="inline-flex min-w-[56px] justify-center px-2 py-0.5 rounded-full text-[11px] bg-blue-50 text-blue-700">
-                                        {task.timeOffset}分後
+                                        {formatTaskRange(task.timeOffset, task.timeOffsetEnd)}
                                       </span>
                                       <span className="flex-1">{task.label}</span>
                                       <label className="flex items-center space-x-1">
@@ -584,9 +638,9 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
                               return (
                                 <>
                                   {list.map((task) => (
-                                    <div key={`${course?.name ?? 'course'}_${task.timeOffset}_${task.label}`} className="flex items-center gap-3 py-2 text-sm">
+                                    <div key={`${course?.name ?? 'course'}_${task.timeOffset}_${task.timeOffsetEnd ?? task.timeOffset}_${task.label}`} className="flex items-center gap-3 py-2 text-sm">
                                       <span className="inline-flex min-w-[56px] justify-center px-2 py-0.5 rounded-full text-[11px] bg-blue-50 text-blue-700">
-                                        {task.timeOffset}分後
+                                      {formatTaskRange(task.timeOffset, task.timeOffsetEnd)}
                                       </span>
                                       <span className="flex-1">{task.label}</span>
                                       <label className="flex items-center space-x-1">

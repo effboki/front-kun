@@ -55,8 +55,8 @@ function patchSatisfiedByItem(item: UnknownRecord | undefined | null, patch: Opt
 
 // アプリ上部バー（安全領域含む）のフォールバック高さ(px)。実端末では後で実測する。
 const DEFAULT_TOP_BAR_PX = 48;
-// 画面下部のタブバー（フッター）高さ(px)。端末により前後する場合は調整
-const BOTTOM_TAB_PX = 70;
+// 画面下部のタブバー（フッター）高さ(px)。実端末では後で実測する。
+const DEFAULT_BOTTOM_BAR_PX = 70;
 
 type Props = {
   /** 表示開始/終了の“時”（0-24想定）。親から渡される（この子では既定値を持たない） */
@@ -88,6 +88,7 @@ type Props = {
   onToggleArrival?: (id: string) => void;
   onTogglePayment?: (id: string) => void;
   onToggleDeparture?: (id: string) => void;
+  sidebarOpen?: boolean;
 };
 
 /**
@@ -114,6 +115,7 @@ export default function ScheduleView({
   onToggleArrival,
   onTogglePayment,
   onToggleDeparture,
+  sidebarOpen = false,
 }: Props) {
   // --- 列幅・端末判定 ---
   const headerH = 40; // 時刻ヘッダーの高さ(px)
@@ -127,6 +129,7 @@ export default function ScheduleView({
   // 左の卓番号列の幅（px）: スマホ 56 / タブレット 64
   const leftColW = isTablet ? 64 : 56;
   const [topInsetPx, setTopInsetPx] = useState<number>(DEFAULT_TOP_BAR_PX);
+  const [bottomInsetPx, setBottomInsetPx] = useState<number>(DEFAULT_BOTTOM_BAR_PX);
   // Display-pixel snapping to avoid subpixel drift between CSS Grid and gradients
   const snapPx = useCallback((n: number) => {
     const dpr =
@@ -136,6 +139,7 @@ export default function ScheduleView({
     return Math.round(n * dpr) / Math.max(1, dpr);
   }, []);
   const contentTopPx = useMemo(() => snapPx(headerH + CONTENT_TOP_GAP), [snapPx]);
+  const bottomOffsetPx = useMemo(() => snapPx(bottomInsetPx), [bottomInsetPx, snapPx]);
   const headerOffsetPx = Math.max(0, topInsetPx - DEFAULT_TOP_BAR_PX);
   // 5分スロット幅(px)。タブレットは少し広め
   const [colW, setColW] = useState(() => (typeof window !== 'undefined' && window.innerWidth >= 768 ? 12 : 6));
@@ -153,14 +157,38 @@ export default function ScheduleView({
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return;
 
+    const measureSafeAreaBottom = () => {
+      const el = document.createElement('div');
+      el.style.position = 'fixed';
+      el.style.bottom = '0';
+      el.style.width = '0';
+      el.style.height = 'env(safe-area-inset-bottom)';
+      el.style.visibility = 'hidden';
+      el.style.pointerEvents = 'none';
+      document.body.appendChild(el);
+      const val = Math.round(el.getBoundingClientRect().height || 0);
+      document.body.removeChild(el);
+      return val;
+    };
+
     const updateInset = () => {
       const safe = document.querySelector('[data-app-top-safe]') as HTMLElement | null;
       const bar = document.querySelector('[data-app-top-bar]') as HTMLElement | null;
+      const bottomBar = document.querySelector('[data-app-bottom-bar]') as HTMLElement | null;
       const safeHeight = safe?.getBoundingClientRect().height ?? 0;
       const barHeight = bar?.getBoundingClientRect().height ?? 0;
       const total = Math.round(safeHeight + barHeight);
       const next = total > 0 ? total : DEFAULT_TOP_BAR_PX;
       setTopInsetPx((prev) => (Math.abs(prev - next) > 0.5 ? next : prev));
+
+      const bottomHeightRaw = bottomBar?.getBoundingClientRect().height ?? 0;
+      const safeBottom = measureSafeAreaBottom();
+      const hasBottomBar = Boolean(bottomBar);
+      const measuredBottom = hasBottomBar
+        ? (bottomHeightRaw > 0 ? Math.round(bottomHeightRaw) : DEFAULT_BOTTOM_BAR_PX)
+        : 0;
+      const nextBottom = Math.max(0, Math.round(measuredBottom + safeBottom));
+      setBottomInsetPx((prev) => (Math.abs(prev - nextBottom) > 0.5 ? nextBottom : prev));
     };
 
     updateInset();
@@ -174,11 +202,19 @@ export default function ScheduleView({
     viewport?.addEventListener('resize', handleResize);
     viewport?.addEventListener('scroll', handleResize);
 
+    const bottomBarEl = document.querySelector('[data-app-bottom-bar]') as HTMLElement | null;
+    let bottomObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && bottomBarEl) {
+      bottomObserver = new ResizeObserver(() => updateInset());
+      bottomObserver.observe(bottomBarEl);
+    }
+
     return () => {
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('orientationchange', handleResize);
       viewport?.removeEventListener('resize', handleResize);
       viewport?.removeEventListener('scroll', handleResize);
+      bottomObserver?.disconnect();
     };
   }, []);
 
@@ -287,7 +323,7 @@ export default function ScheduleView({
     const compute = () => {
       const viewportH = window.innerHeight;
       // スクロール親の高さ計算と合わせる（上部バー + 下部タブを控除）
-      const usableH = Math.max(160, viewportH - (topInsetPx + BOTTOM_TAB_PX));
+      const usableH = Math.max(160, viewportH - (topInsetPx + bottomInsetPx));
       const scrollableHeight = Math.max(MIN_CARD_HEIGHT_PX, usableH - headerH);
       const rowsFitMin = Math.max(1, Math.floor(scrollableHeight / MIN_CARD_HEIGHT_PX));
       const targetRows = Math.max(1, Math.min(MAX_VISIBLE_ROWS, rowsFitMin));
@@ -300,17 +336,10 @@ export default function ScheduleView({
     compute();
     window.addEventListener('resize', compute);
     return () => window.removeEventListener('resize', compute);
-  }, [topInsetPx, rowHeightPx]);
+  }, [topInsetPx, bottomInsetPx, rowHeightPx]);
 
   // 実際に使う行高：ビュー由来の自動計算と指定値のうち大きい方
   const effectiveRowH = Math.max(rowHeightPx, autoRowH);
-
-  // --- Now indicator (updates every 30s) ---
-  const [nowMs, setNowMs] = useState<number>(Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
 
   const [pendingMutations, setPendingMutations] = useState<Record<string, OptimisticPatch>>({});
   // Long-press arming: only an "armed" card can be dragged/resized
@@ -616,11 +645,13 @@ export default function ScheduleView({
   const prevEditSigRef = useRef<Record<string, string>>({});
   // Allowed yellow-dot display window per reservation id
   const editedAllowedUntilRef = useRef<Record<string, number>>({});
+  const editedExpiryTimerRef = useRef<number | null>(null);
+  const [editedPulse, setEditedPulse] = useState(0);
 
   // Update allowed window when an edited item has signature changed
   useEffect(() => {
     const nextSigMap: Record<string, string> = {};
-    const now = nowMs;
+    const now = Date.now();
     for (const it of data) {
       const id = String((it as any).id ?? (it as any)._key ?? '');
       if (!id) continue;
@@ -635,18 +666,47 @@ export default function ScheduleView({
       }
     }
     prevEditSigRef.current = nextSigMap;
-  }, [data, nowMs, buildEditSignature]);
+
+    if (editedExpiryTimerRef.current != null) {
+      window.clearTimeout(editedExpiryTimerRef.current);
+      editedExpiryTimerRef.current = null;
+    }
+    let nextExpiry = Number.POSITIVE_INFINITY;
+    for (const until of Object.values(editedAllowedUntilRef.current)) {
+      const u = Number(until);
+      if (Number.isFinite(u) && u > now) {
+        nextExpiry = Math.min(nextExpiry, u);
+      }
+    }
+    if (Number.isFinite(nextExpiry) && nextExpiry !== Number.POSITIVE_INFINITY) {
+      const delay = Math.max(16, Math.min(120_000, nextExpiry - now + 20));
+      editedExpiryTimerRef.current = window.setTimeout(() => {
+        editedExpiryTimerRef.current = null;
+        setEditedPulse((v) => v + 1);
+      }, delay) as unknown as number;
+    } else {
+      editedExpiryTimerRef.current = null;
+    }
+    // ensure highlight updates promptly when data changes
+    setEditedPulse((v) => v + 1);
+    return () => {
+      if (editedExpiryTimerRef.current != null) {
+        window.clearTimeout(editedExpiryTimerRef.current);
+        editedExpiryTimerRef.current = null;
+      }
+    };
+  }, [data, buildEditSignature]);
 
   // Snapshot of ids that should show the yellow edited dot at this moment
   const editedAllowedIds = useMemo(() => {
     const out = new Set<string>();
-    const now = nowMs;
+    const now = Date.now();
     const m = editedAllowedUntilRef.current;
     for (const [id, until] of Object.entries(m)) {
       if (now <= Number(until)) out.add(id);
     }
     return out;
-  }, [nowMs]);
+  }, [data, editedPulse]);
 
   // 4.5) 同卓 & 時間重複の衝突インデックス（⚠️表示用）
   const conflictSet = useMemo(() => {
@@ -871,7 +931,9 @@ export default function ScheduleView({
     if (didAutoCenterRef.current) return;
     const el = scrollParentRef.current;
     if (!el) return;
-    if (!(nowMs >= anchorStartMs && nowMs <= rangeEndMs)) {
+
+    const now = Date.now();
+    if (!(now >= anchorStartMs && now <= rangeEndMs)) {
       didAutoCenterRef.current = true;
       return;
     }
@@ -883,7 +945,7 @@ export default function ScheduleView({
       return;
     }
 
-    const offsetInTimeline = ((nowMs - anchorStartMs) / SLOT_MS) * colWpx;
+    const offsetInTimeline = ((now - anchorStartMs) / SLOT_MS) * colWpx;
     const desired = leftColW + offsetInTimeline - viewport / 2;
     const maxScroll = Math.max(0, contentWidth - viewport);
     const nextLeft = Math.max(0, Math.min(desired, maxScroll));
@@ -903,7 +965,7 @@ export default function ScheduleView({
       lockOriginRef.current.top = target.scrollTop;
       didAutoCenterRef.current = true;
     });
-  }, [nowMs, anchorStartMs, rangeEndMs, nCols, colWpx, leftColW]);
+  }, [anchorStartMs, rangeEndMs, nCols, colWpx, leftColW]);
 
   // 1時間あたりのカラム数（SLOT_MS=5分なら 12）と、1時間のピクセル幅（ピクセルスナップ済みを使用）
   const colsPerHour = Math.round((60 * 60 * 1000) / SLOT_MS);
@@ -1528,7 +1590,7 @@ const handleDragMove = useCallback((e: any) => {
       top: topInsetPx,
       left: 0,
       right: 0,
-      bottom: `calc(${BOTTOM_TAB_PX}px + env(safe-area-inset-bottom))`,
+      bottom: bottomOffsetPx,
       zIndex: 40,
       backgroundColor: '#ffffff',
       overflow: 'hidden',
@@ -1536,12 +1598,12 @@ const handleDragMove = useCallback((e: any) => {
       flexDirection: 'column',
       width: '100%',
     } satisfies CSSProperties;
-  }, [isTablet, headerOffsetPx, topInsetPx]);
+  }, [isTablet, headerOffsetPx, topInsetPx, bottomOffsetPx]);
 
   const scrollParentStyle = useMemo<CSSProperties>(() => {
     if (isTablet) {
       return {
-        height: `calc(100vh - ${topInsetPx + BOTTOM_TAB_PX}px - env(safe-area-inset-bottom))`,
+        height: `calc(100vh - ${topInsetPx + bottomOffsetPx}px)`,
         overscrollBehavior: 'none',
         overscrollBehaviorX: 'none',
         overscrollBehaviorY: 'none',
@@ -1557,9 +1619,9 @@ const handleDragMove = useCallback((e: any) => {
       overscrollBehaviorY: 'contain',
       touchAction: 'pan-x pan-y',
       WebkitOverflowScrolling: 'touch',
-      paddingBottom: 12,
+      paddingBottom: Math.max(12, Math.round(bottomOffsetPx * 0.2)),
     } satisfies CSSProperties;
-  }, [isTablet, topInsetPx]);
+  }, [isTablet, topInsetPx, bottomOffsetPx]);
 
   const gridHeightPx = rowHeightsPx.reduce((a, b) => a + b, 0);
   return (
@@ -1580,7 +1642,7 @@ const handleDragMove = useCallback((e: any) => {
             height: headerH,
             backgroundColor: '#ffffff',
             boxShadow: '0 1px 0 0 #e5e7eb',
-            visibility: drawerOpen ? 'hidden' : 'visible',
+            visibility: drawerOpen || sidebarOpen ? 'hidden' : 'visible',
           }}
           aria-hidden
         >
@@ -1608,15 +1670,12 @@ const handleDragMove = useCallback((e: any) => {
                     backgroundImage: `repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)`,
                   }}
                 >
-                  {/* Now indicator */}
-                  {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
-                    <div
-                      className="absolute top-0 bottom-0"
-                      style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colWpx}px` }}
-                    >
-                      <div className="h-full border-l-2 border-red-500 opacity-70" />
-                    </div>
-                  )}
+                  <NowMarker
+                    anchorStartMs={anchorStartMs}
+                    rangeEndMs={rangeEndMs}
+                    colW={colWpx}
+                    className="absolute top-0 bottom-0"
+                  />
                   <TimelineHeader
                     nCols={nCols}
                     rangeStartMs={anchorStartMs}
@@ -1656,7 +1715,7 @@ const handleDragMove = useCallback((e: any) => {
         >
           {/* === 上部ヘッダー（左上は常に白／時刻は左余白分だけオフセット）=== */}
           <div
-            className={`sticky z-[1200] bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
+            className={`sticky bg-white border-b overflow-hidden ${scrolled.y ? 'shadow-sm' : ''}`}
             style={{
               top: 0,
               height: headerH,
@@ -1664,7 +1723,8 @@ const handleDragMove = useCallback((e: any) => {
               overflow: 'clip',
               pointerEvents: 'none',
               // smartphone: keep height but hide visual (floating header will render)
-              visibility: isTablet ? 'visible' : 'hidden',
+              visibility: isTablet && !sidebarOpen ? 'visible' : 'hidden',
+              zIndex: sidebarOpen ? 40 : 1200,
             }}
           >
             <div
@@ -1696,15 +1756,13 @@ const handleDragMove = useCallback((e: any) => {
                   zIndex: 2,
                 }}
               >
-                {/* Now indicator in header */}
-                {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
-                  <div
-                    className="absolute top-0 bottom-0 pointer-events-none z-10"
-                    style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colWpx}px`, zIndex: 5 }}
-                  >
-                    <div className="h-full border-l-2 border-red-500 opacity-70" />
-                  </div>
-                )}
+                <NowMarker
+                  anchorStartMs={anchorStartMs}
+                  rangeEndMs={rangeEndMs}
+                  colW={colWpx}
+                  className="absolute top-0 bottom-0 pointer-events-none z-10"
+                  style={{ zIndex: 5 }}
+                />
                 <TimelineHeader
                   nCols={nCols}
                   rangeStartMs={anchorStartMs}
@@ -1809,15 +1867,12 @@ const handleDragMove = useCallback((e: any) => {
                   <DashedQuarterLines nCols={nCols} colW={colWpx} colsPerHour={colsPerHour} />
                 )}
 
-                {/* Now indicator */}
-                {nowMs >= anchorStartMs && nowMs <= rangeEndMs && (
-                  <div
-                    className="absolute top-0 bottom-0 pointer-events-none z-[20]"
-                    style={{ left: `${((nowMs - anchorStartMs) / SLOT_MS) * colWpx}px` }}
-                  >
-                    <div className="h-full border-l-2 border-red-500 opacity-70" />
-                  </div>
-                )}
+                <NowMarker
+                  anchorStartMs={anchorStartMs}
+                  rangeEndMs={rangeEndMs}
+                  colW={colWpx}
+                  className="absolute top-0 bottom-0 pointer-events-none z-[20]"
+                />
 
                 {/* 予約ブロック */}
                 {stacked.map((it) => (
@@ -1828,7 +1883,6 @@ const handleDragMove = useCallback((e: any) => {
                     startCol={it._startCol}
                     spanCols={it._spanCols}
                     onClick={() => onCardTap(it)}
-                    nowMs={nowMs}
                     armedId={armedId}
                     setArmedId={setArmedId}
                     stackCount={rowStackCount[String((it as any)._table ?? (it as any)._row)] ?? 1}
@@ -2000,7 +2054,7 @@ const handleDragMove = useCallback((e: any) => {
                 <div
                   className="fixed left-0 right-0 z-[120] px-2 pt-2 pointer-events-none"
                   style={{
-                    bottom: `calc(${BOTTOM_TAB_PX}px + env(safe-area-inset-bottom))`,
+                    bottom: bottomOffsetPx,
                   }}
                 >
                   <div className="mx-auto max-w-screen-sm flex items-center justify-between gap-2 p-2 rounded-lg bg-white border shadow-lg pointer-events-auto">
@@ -2064,6 +2118,37 @@ const handleDragMove = useCallback((e: any) => {
   );
 }
 
+type NowMarkerProps = {
+  anchorStartMs: number;
+  rangeEndMs: number;
+  colW: number;
+  className?: string;
+  style?: CSSProperties;
+  intervalMs?: number;
+};
+
+function NowMarker({
+  anchorStartMs,
+  rangeEndMs,
+  colW,
+  className,
+  style,
+  intervalMs = 30_000,
+}: NowMarkerProps) {
+  const now = useNowTicker(intervalMs);
+  if (!(now >= anchorStartMs && now <= rangeEndMs)) return null;
+  const offsetPx = ((now - anchorStartMs) / SLOT_MS) * colW;
+  return (
+    <div
+      className={className}
+      style={{ ...(style ?? {}), left: `${offsetPx}px` }}
+      aria-hidden
+    >
+      <div className="h-full border-l-2 border-red-500 opacity-70" />
+    </div>
+  );
+}
+
 // ===== 内部ミニコンポーネント（将来分割しやすいように同ファイル内に定義） =====
 // 15/45分の破線オーバーレイ（タブレットのみ使用）
 function DashedQuarterLines({
@@ -2097,6 +2182,43 @@ function DashedQuarterLines({
       ))}
     </div>
   );
+}
+
+function useNowTicker(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    const id = window.setInterval(tick, Math.max(200, intervalMs));
+    return () => window.clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
+function useUntilFlag(untilMs?: number): boolean {
+  const [active, setActive] = useState(() => {
+    if (!Number.isFinite(untilMs)) return false;
+    return Date.now() <= Number(untilMs);
+  });
+
+  useEffect(() => {
+    if (!Number.isFinite(untilMs)) {
+      setActive((prev) => (prev ? false : prev));
+      return;
+    }
+    const target = Number(untilMs);
+    const now = Date.now();
+    if (now >= target) {
+      setActive((prev) => (prev ? false : prev));
+      return;
+    }
+    setActive((prev) => (prev ? prev : true));
+    const timeout = window.setTimeout(() => {
+      setActive((prev) => (prev ? false : prev));
+    }, Math.max(16, target - now)) as unknown as number;
+    return () => window.clearTimeout(timeout);
+  }, [untilMs]);
+
+  return Boolean(active);
 }
 
 
@@ -2204,14 +2326,13 @@ function ScheduleGrid({ nCols, colW, rowHeights }: { nCols: number; colW: number
 }
 
 function ReservationBlock({
-  item, row, startCol, spanCols, onClick, nowMs, armedId, setArmedId, stackCount, rowHeightPx,
+  item, row, startCol, spanCols, onClick, armedId, setArmedId, stackCount, rowHeightPx,
 }: {
   item: ScheduleItem & { status?: 'normal' | 'warn'; _table?: string; _key?: string; _editedAllowed?: boolean };
   row: number;
   startCol: number;
   spanCols: number;
   onClick?: () => void;
-  nowMs?: number;
   armedId: string | null;
   setArmedId: (id: string | null) => void;
   stackCount: number;
@@ -2347,8 +2468,9 @@ function ReservationBlock({
     }
   }, [onClick, isArmed]);
 
-  const freshUntil = (item as any).freshUntilMs;
-  const isFresh = Number.isFinite(Number(freshUntil)) && (nowMs ?? 0) <= Number(freshUntil);
+  const freshUntilRaw = (item as any).freshUntilMs;
+  const freshUntil = Number.isFinite(Number(freshUntilRaw)) ? Number(freshUntilRaw) : undefined;
+  const isFresh = useUntilFlag(freshUntil);
   const showEdited = Boolean((item as any)._editedAllowed);
 
   return (

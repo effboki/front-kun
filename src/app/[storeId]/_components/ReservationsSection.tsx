@@ -193,6 +193,137 @@ const NumPad = ({
 };
 // ────────────────────────────────────────────────
 
+type NoteEditorState =
+  | {
+      mode: 'existing';
+      reservationId: string;
+      initialValue: string;
+      tableLabel: string;
+      timeLabel: string;
+      name?: string | null;
+    }
+  | {
+      mode: 'new';
+      initialValue: string;
+    };
+
+const NoteEditorModal = ({
+  open,
+  title,
+  subtitle,
+  initialValue,
+  onSave,
+  onCancel,
+}: {
+  open: boolean;
+  title: string;
+  subtitle?: string;
+  initialValue: string;
+  onSave: (value: string) => void;
+  onCancel: () => void;
+}) => {
+  const [value, setValue] = useState<string>(initialValue);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const valueRef = useRef<string>(initialValue);
+
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+
+  useEffect(() => {
+    if (!open) return;
+    setValue(initialValue);
+  }, [open, initialValue]);
+
+  useEffect(() => {
+    if (!open) return;
+    const focusId =
+      typeof window !== 'undefined'
+        ? window.setTimeout(() => {
+            if (textareaRef.current) {
+              textareaRef.current.focus();
+              const len = textareaRef.current.value.length;
+              textareaRef.current.setSelectionRange(len, len);
+            }
+          }, 30)
+        : null;
+
+    const handleKey = (event: KeyboardEvent) => {
+      if (!open) return;
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        onCancel();
+      } else if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault();
+        onSave(valueRef.current);
+      }
+    };
+
+    if (typeof window !== 'undefined') window.addEventListener('keydown', handleKey);
+
+    return () => {
+      if (typeof window !== 'undefined' && focusId != null) window.clearTimeout(focusId);
+      if (typeof window !== 'undefined') window.removeEventListener('keydown', handleKey);
+    };
+  }, [open, onCancel, onSave]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 px-4 py-8"
+      role="dialog"
+      aria-modal="true"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-xl rounded-lg bg-white shadow-2xl border border-gray-200 p-4 sm:p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-sm font-semibold text-gray-700">{title}</div>
+            {subtitle && <div className="mt-1 text-xs text-gray-500 leading-relaxed whitespace-pre-wrap">{subtitle}</div>}
+          </div>
+          <button
+            type="button"
+            className="shrink-0 rounded-full border border-gray-300 px-2 py-0.5 text-sm text-gray-500 hover:bg-gray-100"
+            onClick={onCancel}
+            aria-label="閉じる"
+          >
+            ×
+          </button>
+        </div>
+
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => setValue(e.currentTarget.value)}
+          className="mt-4 w-full min-h-[180px] resize-y rounded border border-gray-300 px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          placeholder="備考を入力してください"
+        />
+
+        <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100"
+          >
+            キャンセル
+          </button>
+          <button
+            type="button"
+            onClick={() => onSave(value)}
+            className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 
 // Reservation objects enriched by useReservationsData: adds timeHHmm for display compatibility
 type ReservationCompat = Reservation & { timeHHmm?: string };
@@ -478,18 +609,30 @@ const ReservationsSection = memo(function ReservationsSection({
   const closeNumPad = () => setLocalNumPadState(null);
   // Optimistic inline edits for select boxes (eat/drink) to avoid flicker before server echo
   const [inlineEdits, setInlineEdits] = useState<Record<string, { eat?: string; drink?: string }>>({});
+  const [noteEditor, setNoteEditor] = useState<NoteEditorState | null>(null);
   // NEW判定（直後ドット用のローカル検知）
   const NEW_THRESHOLD = 15 * 60 * 1000; // 15分
   const initialRenderRef = useRef(true);
   const seenRef = useRef<Set<string>>(new Set());
   const localNewRef = useRef<Map<string, number>>(new Map());
   const prevSnapshotRef = useRef<Map<string, string>>(new Map());
-
-  // ドット表示のための時間進行（30秒ごと再評価）
-  const [nowTick, setNowTick] = useState<number>(Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowTick(Date.now()), 30_000);
-    return () => clearInterval(id);
+  const highlightTimerRef = useRef<number | null>(null);
+  const [highlightNow, setHighlightNow] = useState(() => Date.now());
+  const getCreatedAtMs = useCallback((r: any): number => {
+    if (r?.createdAt?.toMillis) return r.createdAt.toMillis();
+    if (typeof r?.createdAt?.seconds === 'number') {
+      return r.createdAt.seconds * 1000 + (r.createdAt.nanoseconds ? Math.floor(r.createdAt.nanoseconds / 1e6) : 0);
+    }
+    if (typeof r?.createdAt === 'number') return r.createdAt;
+    if (typeof r?.createdAt === 'string') {
+      const ms = Date.parse(r.createdAt);
+      if (!Number.isNaN(ms)) return ms;
+    }
+    if (typeof r?.id === 'string' && /^\d{10,}$/.test(r.id)) {
+      const n = Number(r.id);
+      if (!Number.isNaN(n)) return n;
+    }
+    return 0;
   }, []);
 
   // Reconcile optimistic edits when parent "reservations" updates with the same value
@@ -511,36 +654,11 @@ const ReservationsSection = memo(function ReservationsSection({
     });
   }, [reservations]);
 
-    useEffect(() => {
-      if (initialRenderRef.current) {
-        // 初回レンダでは既存分を「既知」として登録（ドットは付けない）
-        reservations.forEach((r) => {
-          seenRef.current.add(r.id);
-          const snap = JSON.stringify({
-            time: r.time,
-            table: (r.table ?? r.tables?.[0] ?? ''),
-            name: r.name ?? '',
-            course: r.course ?? '',
-            eat: r.eat ?? '',
-            drink: r.drink ?? '',
-            guests: Number(r.guests) || 0,
-            notes: r.notes ?? '',
-          });
-          prevSnapshotRef.current.set(r.id, snap);
-        });
-        initialRenderRef.current = false;
-        return;
-      }
-      // 新しく現れたIDのみローカルで「NEW打刻」
+  useEffect(() => {
+    if (initialRenderRef.current) {
       reservations.forEach((r) => {
-        if (!seenRef.current.has(r.id)) {
-          seenRef.current.add(r.id);
-          localNewRef.current.set(r.id, Date.now());
-        }
-      });
-      // 既存IDの変化を検知して「編集打刻」
-      reservations.forEach((r) => {
-        const curr = JSON.stringify({
+        seenRef.current.add(r.id);
+        const snap = JSON.stringify({
           time: r.time,
           table: (r.table ?? r.tables?.[0] ?? ''),
           name: r.name ?? '',
@@ -550,13 +668,37 @@ const ReservationsSection = memo(function ReservationsSection({
           guests: Number(r.guests) || 0,
           notes: r.notes ?? '',
         });
-        const prev = prevSnapshotRef.current.get(r.id);
-        if (prev && prev !== curr) {
-          setEditedMarks((m) => ({ ...m, [r.id]: Date.now() }));
-        }
-        prevSnapshotRef.current.set(r.id, curr);
+        prevSnapshotRef.current.set(r.id, snap);
       });
-    }, [reservations]);
+      initialRenderRef.current = false;
+      return;
+    }
+
+    reservations.forEach((r) => {
+      if (!seenRef.current.has(r.id)) {
+        seenRef.current.add(r.id);
+        localNewRef.current.set(r.id, Date.now());
+      }
+    });
+
+    reservations.forEach((r) => {
+      const curr = JSON.stringify({
+        time: r.time,
+        table: (r.table ?? r.tables?.[0] ?? ''),
+        name: r.name ?? '',
+        course: r.course ?? '',
+        eat: r.eat ?? '',
+        drink: r.drink ?? '',
+        guests: Number(r.guests) || 0,
+        notes: r.notes ?? '',
+      });
+      const prev = prevSnapshotRef.current.get(r.id);
+      if (prev && prev !== curr) {
+        setEditedMarks((m) => ({ ...m, [r.id]: Date.now() }));
+      }
+      prevSnapshotRef.current.set(r.id, curr);
+    });
+  }, [reservations, setEditedMarks]);
 
   // === 新規追加のデフォ時刻を「前回選んだ時刻」にする ===
   const LAST_TIME_KEY = 'frontkun:lastNewResTime';
@@ -599,24 +741,6 @@ const ReservationsSection = memo(function ReservationsSection({
     }
   }, [reservations.length, timeOptions, newResTime, setNewResTime]);
   // 並び替えヘルパー
-  const getCreatedAtMs = (r: any): number => {
-    // Firestore Timestamp
-    if (r?.createdAt?.toMillis) return r.createdAt.toMillis();
-    // seconds / nanoseconds 形式
-    if (typeof r?.createdAt?.seconds === 'number') return r.createdAt.seconds * 1000 + (r.createdAt.nanoseconds ? Math.floor(r.createdAt.nanoseconds / 1e6) : 0);
-    // number / string 日付
-    if (typeof r?.createdAt === 'number') return r.createdAt;
-    if (typeof r?.createdAt === 'string') {
-      const ms = Date.parse(r.createdAt);
-      if (!Number.isNaN(ms)) return ms;
-    }
-    // id がタイムスタンプ風なら利用（降順安定用の弱いフォールバック）
-    if (typeof r?.id === 'string' && /^\d{10,}$/.test(r.id)) {
-      const n = Number(r.id);
-      if (!Number.isNaN(n)) return n;
-    }
-    return 0;
-  };
   // A案: 予約リストの時刻は live 値基準。ソートは startMs(絶対ms) を最優先し、旧 time 文字列はあくまでフォールバック。
   // 時刻ソート用の安全キー（ms）
   const getStartKeyMs = (r: any): number => {
@@ -659,6 +783,45 @@ const ReservationsSection = memo(function ReservationsSection({
     }
     return arr;
   }, [reservations, resOrder, editTableMode, pendingTables]);
+
+  useEffect(() => {
+    const now = Date.now();
+    setHighlightNow((prev) => (Math.abs(prev - now) < 4 ? prev : now));
+    if (highlightTimerRef.current != null) {
+      window.clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = null;
+    }
+    let nextExpiry = Number.POSITIVE_INFINITY;
+    for (const r of finalReservations) {
+      const created = getCreatedAtMs(r);
+      const localStamp = localNewRef.current.get(r.id) ?? 0;
+      const freshUntil = Number((r as any).freshUntilMs)
+        || (created ? created + NEW_THRESHOLD : 0)
+        || (localStamp ? localStamp + NEW_THRESHOLD : 0);
+      if (Number.isFinite(freshUntil) && freshUntil > now) {
+        nextExpiry = Math.min(nextExpiry, freshUntil);
+      }
+      const editedMs = editedMarks[r.id] ?? 0;
+      const editedUntil = editedMs ? editedMs + NEW_THRESHOLD : 0;
+      if (editedUntil > now) {
+        nextExpiry = Math.min(nextExpiry, editedUntil);
+      }
+    }
+    if (Number.isFinite(nextExpiry) && nextExpiry !== Number.POSITIVE_INFINITY) {
+      const delay = Math.max(32, Math.min(120_000, nextExpiry - now));
+      highlightTimerRef.current = window.setTimeout(() => {
+        highlightTimerRef.current = null;
+        const nextNow = Date.now();
+        setHighlightNow((prev) => (Math.abs(prev - nextNow) < 4 ? prev : nextNow));
+      }, delay) as unknown as number;
+    }
+    return () => {
+      if (highlightTimerRef.current != null) {
+        window.clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = null;
+      }
+    };
+  }, [finalReservations, editedMarks, NEW_THRESHOLD, getCreatedAtMs]);
 
   // 卓番変更モード・食飲説明パネル開閉
   const [openInfo, setOpenInfo] = useState<
@@ -1363,11 +1526,11 @@ const ReservationsSection = memo(function ReservationsSection({
                 const freshUntil = Number((r as any).freshUntilMs)
                   || (getCreatedAtMs(r) ? getCreatedAtMs(r) + NEW_THRESHOLD : 0)
                   || (((localNewRef.current.get(r.id) ?? 0)) + NEW_THRESHOLD);
-                const isFresh = Number.isFinite(freshUntil) && freshUntil > 0 && nowTick <= freshUntil;
+                const isFresh = Number.isFinite(freshUntil) && freshUntil > 0 && highlightNow <= freshUntil;
 
                 // Edited: 直近15分以内の更新をオレンジドットで表示
                 const editedMs = editedMarks[r.id] ?? 0;
-                const isEdited = nowTick - editedMs <= NEW_THRESHOLD;
+                const isEdited = highlightNow - editedMs <= NEW_THRESHOLD;
                 const borderClass =
                   !prev || prevTimeStr !== currTimeStr ? 'border-t-4 border-gray-300' : 'border-b border-gray-300';
                 // Normalized string for table
@@ -1377,6 +1540,11 @@ const ReservationsSection = memo(function ReservationsSection({
                     ? (pendingTables[r.id]?.nextList?.[0] ?? tableStr)
                     : (r.pendingTable ?? tableStr);
                 const displayTableStr = String(displayTable);
+                const notesValue = typeof r.notes === 'string' ? r.notes : '';
+                const trimmedNotes = notesValue.trim();
+                const tableLabel = displayTableStr.trim();
+                const timeLabel = typeof r.time === 'string' ? r.time : '';
+                const nameLabel = typeof r.name === 'string' ? r.name.trim() : '';
                 // Normalized current values for eat/drink (inline edit takes precedence)
                 const eatCurrent = inlineEdits[r.id]?.eat ?? getEatValue(r);
                 const drinkCurrent = inlineEdits[r.id]?.drink ?? getDrinkValue(r);
@@ -1567,10 +1735,37 @@ const ReservationsSection = memo(function ReservationsSection({
                       <td className={`border px-1 ${padY} hidden sm:table-cell`}>
                         <input
                           type="text"
-                          value={r.notes ?? ''}
-                          onChange={(e) => updateReservationField(r.id, 'notes', e.target.value)}
+                          value={notesValue}
+                          readOnly
                           placeholder="備考"
-                          className="border px-1 py-0.5 w-full rounded text-sm text-center"
+                          className="border px-1 py-0.5 w-full rounded text-sm text-center cursor-pointer"
+                          title={trimmedNotes || '備考を入力'}
+                          onClick={() =>
+                            setNoteEditor({
+                              mode: 'existing',
+                              reservationId: r.id,
+                              initialValue: notesValue,
+                              tableLabel: tableLabel || '',
+                              timeLabel: timeLabel || '',
+                              name: nameLabel || null,
+                            })
+                          }
+                          onFocus={(e) => {
+                            const target = e.currentTarget;
+                            setNoteEditor({
+                              mode: 'existing',
+                              reservationId: r.id,
+                              initialValue: notesValue,
+                              tableLabel: tableLabel || '',
+                              timeLabel: timeLabel || '',
+                              name: nameLabel || null,
+                            });
+                            window.setTimeout(() => {
+                              try {
+                                target.blur();
+                              } catch {}
+                            }, 0);
+                          }}
                         />
                       </td>
                     )}
@@ -1762,10 +1957,33 @@ const ReservationsSection = memo(function ReservationsSection({
                     <input
                       form="new-res-form"
                       type="text"
-                      value={newResNotes}
-                      onChange={(e) => setNewResNotes(e.target.value)}
+                      value={typeof newResNotes === 'string' ? newResNotes : ''}
+                      readOnly
                       placeholder="備考"
-                      className="border px-1 py-0.5 w-full rounded text-sm text-center"
+                      className="border px-1 py-0.5 w-full rounded text-sm text-center cursor-pointer"
+                      title={
+                        typeof newResNotes === 'string' && newResNotes.trim()
+                          ? newResNotes.trim()
+                          : '備考を入力'
+                      }
+                      onClick={() =>
+                        setNoteEditor({
+                          mode: 'new',
+                          initialValue: typeof newResNotes === 'string' ? newResNotes : '',
+                        })
+                      }
+                      onFocus={(e) => {
+                        const target = e.currentTarget;
+                        setNoteEditor({
+                          mode: 'new',
+                          initialValue: typeof newResNotes === 'string' ? newResNotes : '',
+                        });
+                        window.setTimeout(() => {
+                          try {
+                            target.blur();
+                          } catch {}
+                        }, 0);
+                      }}
                     />
                   </td>
                 )}
@@ -2043,6 +2261,33 @@ const ReservationsSection = memo(function ReservationsSection({
           )}
         </div>
       </section>
+      {noteEditor && (
+        <NoteEditorModal
+          open
+          title="備考"
+          subtitle={(() => {
+            if (noteEditor.mode === 'existing') {
+              const parts: string[] = [];
+              if (noteEditor.tableLabel) parts.push(`${noteEditor.tableLabel}卓`);
+              if (noteEditor.timeLabel) parts.push(noteEditor.timeLabel);
+              if (noteEditor.name) parts.push(noteEditor.name);
+              return parts.length ? parts.join(' / ') : undefined;
+            }
+            return '新規予約';
+          })()}
+          initialValue={noteEditor.initialValue}
+          onCancel={() => setNoteEditor(null)}
+          onSave={(value) => {
+            if (!noteEditor) return;
+            if (noteEditor.mode === 'existing') {
+              updateReservationField(noteEditor.reservationId, 'notes', value);
+            } else {
+              setNewResNotes(value);
+            }
+            setNoteEditor(null);
+          }}
+        />
+      )}
         {localNumPadState && (
           <NumPad
             open={!!localNumPadState}

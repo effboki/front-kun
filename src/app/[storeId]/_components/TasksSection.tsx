@@ -1,8 +1,9 @@
 'use client';
 
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { Reservation, ViewData, UiState, AreaDef } from '@/types';
+import { formatMinutesToTime } from '@/lib/time';
 // NOTE: For further performance on very large lists,
 // consider replacing the simple .map over reservations with a
 // virtualized horizontal list (e.g., react-window FixedSizeList).
@@ -69,7 +70,7 @@ const TaskPill = memo(function TaskPill({
   return (
     <div
       onClick={handleClick}
-      className={`border px-2 py-1 rounded text-sm ${
+      className={`border border-gray-400 bg-white/80 text-gray-900 px-2 py-1 rounded-md text-sm md:px-2 md:py-1.5 md:text-[0.85rem] lg:text-[0.9rem] shadow-sm ${
         previewDone ? 'opacity-70 text-gray-600 line-through' : ''
       } ${isShiftTarget ? 'ring-2 ring-blue-400' : ''} ${
         isSelectTarget ? 'ring-2 ring-yellow-400' : ''
@@ -79,8 +80,10 @@ const TaskPill = memo(function TaskPill({
     >
       {shiftModeKey === keyForTask && (
         <span
-          className={`inline-block mr-1 h-3 w-3 border rounded-sm text-[10px] leading-3 text-center ${
-            isShiftTarget ? 'bg-blue-600 text-white border-blue-600' : 'bg-white'
+          className={`inline-block mr-1 h-3 w-3 border rounded-sm text-[10px] leading-3 text-center md:h-3.5 md:w-3.5 md:text-[11px] md:leading-[14px] ${
+            isShiftTarget
+              ? 'bg-blue-600 text-white border-blue-600'
+              : 'bg-white/80 border-gray-400 text-gray-700'
           }`}
           aria-hidden
         >
@@ -240,6 +243,101 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
     return () => window.clearTimeout(t);
   }, [completeApplyHint]);
 
+  const [controlsCollapsed, setControlsCollapsed] = useState(true);
+  const toggleControlsCollapsed = useCallback(() => {
+    setControlsCollapsed((prev) => !prev);
+  }, []);
+  const toolbarPaddingClass = controlsCollapsed ? 'px-3 py-2' : 'px-3 pt-3 pb-3';
+  const [stickyTop, setStickyTop] = useState(0);
+  const toolbarWrapperRef = useRef<HTMLDivElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [toolbarMetrics, setToolbarMetrics] = useState<{ left: number; right: number; width: number }>({
+    left: 0,
+    right: 0,
+    width: 0,
+  });
+  const [toolbarHeight, setToolbarHeight] = useState(0);
+
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const computeStickyTop = () => {
+      try {
+        const candidates = Array.from(document.querySelectorAll('.fixed')) as HTMLElement[];
+        let maxBottom = 0;
+        for (const el of candidates) {
+          if (el === toolbarRef.current) continue;
+          if (el.id === 'tasks-toolbar') continue;
+          const style = window.getComputedStyle(el);
+          if (style.position !== 'fixed') continue;
+          if (style.visibility === 'hidden' || style.display === 'none') continue;
+          const top = Number.parseFloat(style.top || '');
+          if (!Number.isFinite(top)) continue; // skip bottom-fixed elements
+          const rect = el.getBoundingClientRect();
+          if (rect.bottom <= 0) continue;
+          // consider only elements anchored near the top of the viewport
+          if (rect.top > 200) continue;
+          maxBottom = Math.max(maxBottom, rect.bottom);
+        }
+        setStickyTop(Math.max(0, Math.round(maxBottom)));
+      } catch {
+        setStickyTop(0);
+      }
+    };
+
+    computeStickyTop();
+    const handleResize = () => computeStickyTop();
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+    // re-run once after mount to pick up late-layout elements
+    const timeoutId = window.setTimeout(computeStickyTop, 50);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+      window.clearTimeout(timeoutId);
+    };
+  }, []);
+
+  const updateToolbarMetrics = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const wrapper = toolbarWrapperRef.current;
+    if (!wrapper) return;
+    const rect = wrapper.getBoundingClientRect();
+    const left = Math.round(rect.left);
+    const right = Math.round(window.innerWidth - rect.right);
+    const width = Math.round(rect.width);
+    setToolbarMetrics({ left, right, width });
+    const toolbarEl = toolbarRef.current;
+    const height = toolbarEl?.getBoundingClientRect().height ?? rect.height;
+    setToolbarHeight(height);
+  }, []);
+
+  useLayoutEffect(() => {
+    updateToolbarMetrics();
+  }, [updateToolbarMetrics]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = () => updateToolbarMetrics();
+    window.addEventListener('resize', handler);
+    window.addEventListener('orientationchange', handler);
+    return () => {
+      window.removeEventListener('resize', handler);
+      window.removeEventListener('orientationchange', handler);
+    };
+  }, [updateToolbarMetrics]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const id = window.requestAnimationFrame(() => updateToolbarMetrics());
+    const timeout = window.setTimeout(() => updateToolbarMetrics(), 180);
+    return () => {
+      window.cancelAnimationFrame(id);
+      window.clearTimeout(timeout);
+    };
+  }, [controlsCollapsed, updateToolbarMetrics]);
+
 
   const handleQuickShift = useCallback(
     (ids: string[], taskLabel: string, deltaMinutes: number) => {
@@ -278,23 +376,27 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
   const timeKeys = sortedTimeKeys ?? fallbackTimeKeys;
 
   // ---- 初回表示時：これからの最初の時間帯へスクロール（なければ最後） ----
+  const didAutoScrollRef = useRef(false);
   useEffect(() => {
+    if (didAutoScrollRef.current) return;
     if (!timeKeys || timeKeys.length === 0) return;
+    if (toolbarHeight <= 0) return;
     const firstUpcoming = timeKeys.find((t) => parseTimeToMinutes(t) >= nowMinutes);
     const targetKey = firstUpcoming ?? timeKeys[timeKeys.length - 1];
     const handle = window.setTimeout(() => {
       const el = document.getElementById(`task-time-${targetKey}`);
       const ctrl = document.getElementById('tasks-toolbar');
-      const stickyOffset = (ctrl?.offsetHeight ?? 64) + 8; // control height + small gap
+      const stickyOffset = stickyTop + (ctrl?.offsetHeight ?? toolbarHeight ?? 64) + 8; // control height + top offset + gap
       if (el) {
         const rect = el.getBoundingClientRect();
         const y = rect.top + window.scrollY - stickyOffset;
         window.scrollTo({ top: y, behavior: 'smooth' });
       }
+      didAutoScrollRef.current = true;
     }, 80);
     return () => window.clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [stickyTop, timeKeys, toolbarHeight]);
 
   // Normalize possibly-stale area filter that could hide all reservations on reload
   const didNormalizeAreaFilterRef = useRef(false);
@@ -343,19 +445,46 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
   return (
     <section id="tasks-root" ref={hostRef} className="w-full pb-2 mb-0">
       {/* ───────── コントロールバー ───────── */}
-      <div
-        id="tasks-toolbar"
-        className="sticky top-0 inset-x-0 z-40 bg-white/95 supports-[backdrop-filter]:bg-white/70 backdrop-blur border-b-2 border-gray-200/80 shadow px-3 pt-3 pb-3"
-      >
-        <div className="max-w-full">
+      <div ref={toolbarWrapperRef} className="relative">
+        <div style={{ height: toolbarHeight }} aria-hidden />
+        <div
+          id="tasks-toolbar"
+          ref={toolbarRef}
+          className={`fixed z-40 bg-white/95 supports-[backdrop-filter]:bg-white/70 backdrop-blur border-b-2 border-gray-200/80 shadow ${toolbarPaddingClass}`}
+          style={{
+            top: stickyTop,
+            left: toolbarMetrics.left,
+            right: toolbarMetrics.right,
+            width: toolbarMetrics.width || undefined,
+          }}
+        >
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] md:text-xs font-semibold text-gray-700">コントロールセンター</span>
+          <button
+            type="button"
+            onClick={toggleControlsCollapsed}
+            className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-[11px] md:text-[0.8rem] text-gray-700 hover:bg-gray-50"
+            aria-expanded={!controlsCollapsed}
+            aria-controls="tasks-toolbar-content"
+          >
+            {controlsCollapsed ? '開く' : '閉じる'}
+          </button>
+        </div>
+        <div
+          id="tasks-toolbar-content"
+          className={`max-w-full transition-[max-height,opacity] duration-200 ease-in-out ${
+            controlsCollapsed ? 'max-h-0 overflow-hidden opacity-0 pointer-events-none' : 'mt-3 max-h-[999px] opacity-100'
+          }`}
+          aria-hidden={controlsCollapsed}
+        >
           {/* 表示：縦配置（コース→同一名まとめ→人数） */}
           <div className="mt-0">
             <div className="grid grid-cols-[auto,1fr] items-start gap-x-2 gap-y-1">
-              <span className="text-xs text-gray-600 shrink-0">表示：</span>
+              <span className="text-xs md:text-xs lg:text-[0.8rem] text-gray-600 shrink-0">表示：</span>
               <div className="flex flex-col gap-1">
                 {/* コースを表示 */}
                 <div className="flex flex-col gap-0.5">
-                  <label className="flex items-center gap-1 text-xs select-none">
+                  <label className="flex items-center gap-1 text-xs md:text-xs lg:text-[0.8rem] select-none">
                     <input
                       type="checkbox"
                       className="accent-blue-600"
@@ -367,7 +496,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                     <button
                       type="button"
                       onClick={() => toggleInfo('course')}
-                      className="ml-1 inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
+                      className="ml-1 inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] md:text-xs leading-4 text-gray-600 hover:bg-gray-50"
                       aria-label="『コースを表示』の説明"
                       aria-expanded={openInfo === 'course'}
                       aria-controls="help-course"
@@ -376,7 +505,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                     </button>
                   </label>
                   {openInfo === 'course' && (
-                    <p id="help-course" className="ml-5 text-[11px] text-gray-600">
+                    <p id="help-course" className="ml-5 text-[11px] md:text-xs text-gray-600">
                       タスク表の各時間帯で、タスクを<strong className="font-semibold">コースごと</strong>にグループ表示します。
                     </p>
                   )}
@@ -385,7 +514,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                 {/* 同一名のタスクはまとめて表示 */}
                 {showCourseAll && (
                   <div className="flex flex-col gap-0.5">
-                    <label className="flex items-center gap-1 text-xs select-none">
+                    <label className="flex items-center gap-1 text-xs md:text-xs lg:text-[0.8rem] select-none">
                       <input
                         type="checkbox"
                         className="accent-blue-600"
@@ -397,7 +526,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                       <button
                         type="button"
                         onClick={() => toggleInfo('merge')}
-                        className="ml-1 inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
+                        className="ml-1 inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] md:text-xs leading-4 text-gray-600 hover:bg-gray-50"
                         aria-label="『同一名のタスクはまとめて表示』の説明"
                         aria-expanded={openInfo === 'merge'}
                         aria-controls="help-merge"
@@ -406,7 +535,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                       </button>
                     </label>
                     {openInfo === 'merge' && (
-                      <p id="help-merge" className="ml-5 text-[11px] text-gray-600">
+                      <p id="help-merge" className="ml-5 text-[11px] md:text-xs text-gray-600">
                         コースが異なっても<strong className="font-semibold">同じ名前のタスク</strong>をひとつにまとめて表示します。
                         <span className="ml-1 text-gray-500">（※「コースを表示」ONのときのみ選択可）</span>
                       </p>
@@ -416,7 +545,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
 
                 {/* 人数表示 */}
                 <div className="flex flex-col gap-0.5">
-                  <label className="flex items-center gap-1 text-xs select-none">
+                  <label className="flex items-center gap-1 text-xs md:text-xs lg:text-[0.8rem] select-none">
                     <input
                       type="checkbox"
                       className="accent-blue-600"
@@ -428,7 +557,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                     <button
                       type="button"
                       onClick={() => toggleInfo('guests')}
-                      className="ml-1 inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
+                      className="ml-1 inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] md:text-xs leading-4 text-gray-600 hover:bg-gray-50"
                       aria-label="『人数表示』の説明"
                       aria-expanded={openInfo === 'guests'}
                       aria-controls="help-guests"
@@ -437,14 +566,14 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                     </button>
                   </label>
                   {openInfo === 'guests' && (
-                    <div id="help-guests" className="ml-5 text-[11px] text-gray-600 space-y-1.5">
+                    <div id="help-guests" className="ml-5 text-[11px] md:text-xs text-gray-600 space-y-1.5">
                       <p>
                         各タスクの小さな「ピル」に<strong className="font-semibold">人数</strong>を括弧で表示します。
                         <span className="ml-1">左が卓番号、括弧内が人数です。</span>
                       </p>
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-gray-500">表示例：</span>
-                        <span className="inline-flex items-center border px-1.5 py-0.5 rounded text-[11px] bg-white">
+                        <span className="text-[10px] md:text-xs text-gray-500">表示例：</span>
+                        <span className="inline-flex items-center border px-1.5 py-0.5 rounded text-[11px] md:text-xs bg-white">
                           3（4）
                         </span>
                       </div>
@@ -458,12 +587,14 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
           {/* 並び替え：左／ コース：右寄せ（同じ行） */}
           <div className="mt-5 flex items-center justify-between gap-2 whitespace-nowrap">
             <div className="flex items-center gap-2 whitespace-nowrap">
-              <span className="text-[11px] text-gray-600 shrink-0">並び替え：</span>
+              <span className="text-[11px] md:text-[0.8rem] text-gray-600 shrink-0">並び替え：</span>
               <div className="inline-flex rounded border overflow-hidden">
                 <button
                   type="button"
                   onClick={() => onChangeTaskSort('table')}
-                  className={`px-2 py-0.5 text-[11px] ${curTaskSort === 'table' ? 'bg-blue-600 text-white' : 'bg-white'}`}
+                  className={`px-2 py-0.5 text-[11px] md:px-2 md:py-0.5 md:text-[0.8rem] ${
+                    curTaskSort === 'table' ? 'bg-blue-600 text-white' : 'bg-white'
+                  }`}
                   aria-pressed={curTaskSort === 'table'}
                 >
                   卓番順
@@ -471,7 +602,9 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                 <button
                   type="button"
                   onClick={() => onChangeTaskSort('guests')}
-                  className={`px-2 py-0.5 text-[11px] border-l ${curTaskSort === 'guests' ? 'bg-blue-600 text-white' : 'bg-white'}`}
+                  className={`px-2 py-0.5 text-[11px] md:px-2 md:py-0.5 md:text-[0.8rem] border-l ${
+                    curTaskSort === 'guests' ? 'bg-blue-600 text-white' : 'bg-white'
+                  }`}
                   aria-pressed={curTaskSort === 'guests'}
                 >
                   人数順
@@ -480,11 +613,11 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
             </div>
 
             <div className="flex items-center gap-2 whitespace-nowrap">
-              <span className="text-[11px] text-gray-600 shrink-0">エリア：</span>
+              <span className="text-[11px] md:text-[0.8rem] text-gray-600 shrink-0">エリア：</span>
               <select
                 value={filterArea && filterArea.length ? filterArea : '全て'}
                 onChange={(e) => setFilterArea(e.target.value)}
-                className="border px-1 py-0.5 rounded text-[10px] w-[6.5rem]"
+                className="border px-1 py-0.5 rounded text-[10px] md:text-xs md:px-1.5 md:py-0.5 w-[6.5rem] md:w-[7.5rem]"
                 aria-label="エリアを絞り込み"
               >
                 <option value="全て">全て</option>
@@ -500,19 +633,34 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
         </div>
         {/* 完了一括ヒント（2.5秒で自動消滅） */}
         {completeApplyHint && (
-          <div className="mt-2 text-[11px] text-blue-700 bg-blue-50 border border-blue-200 rounded px-2 py-1">
+          <div className="mt-2 text-[11px] md:text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-2 py-1">
             {completeApplyHint}
           </div>
         )}
+      </div>
       </div>
       {/* ───────── スペーサー（sticky直後のかぶり防止） ───────── */}
       <div className="h-3" />
 
       {/* ───────── タスク表本体 ───────── */}
-        <section className="space-y-4 text-sm touch-pan-y">
+        <section className="space-y-4 text-sm md:text-[0.85rem] lg:text-[0.9rem] touch-pan-y">
         {timeKeys.map((timeKey, timeIdx) => {
           // この時間帯が「15分以上前」かどうか（表示を薄くするために使用）
           const isPast15 = parseTimeToMinutes(timeKey) <= (nowMinutes - 15);
+          const groupsForSlot = deferredGroupedTasks[timeKey] ?? [];
+          const slotBaseMinutes = parseTimeToMinutes(timeKey);
+          const slotEndMinutes = groupsForSlot.reduce((max, tg) => {
+            if (tg?.endMinutes != null) {
+              return tg.endMinutes > max ? tg.endMinutes : max;
+            }
+            if (tg?.endTimeKey) {
+              const candidate = parseTimeToMinutes(tg.endTimeKey);
+              return candidate > max ? candidate : max;
+            }
+            return max;
+          }, slotBaseMinutes);
+          const slotEndKey =
+            slotEndMinutes > slotBaseMinutes ? formatMinutesToTime(slotEndMinutes) : undefined;
 
           return (
             <div
@@ -520,7 +668,12 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
               id={`task-time-${timeKey}`}
               className="border-b pb-2 last:border-b-0 last:pb-0"
             >
-              <div className="text-gray-900 font-semibold text-lg mb-2">{timeKey}</div>
+              <div className="flex items-baseline gap-2 mb-2">
+                <span className="text-gray-900 font-bold text-lg lg:text-xl">{timeKey}</span>
+                {slotEndKey && (
+                  <span className="text-black font-bold text-sm lg:text-base">ー{slotEndKey}</span>
+                )}
+              </div>
 
             {/* まとめ表示 ON */}
             {mergeSameTasks ? (
@@ -564,9 +717,9 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                       <div className="flex items-center gap-2 mb-1">
                         <span className="font-semibold">{ct.label}</span>
                         {shiftModeKey !== keyForTask && selectionModeTask !== keyForTask && (
-                          <span className="text-xs text-gray-600">
-                            （計{sortedArr.reduce<number>((sum, r) => sum + toGuests(r.guests), 0)}人）
-                          </span>
+                        <span className="text-xs md:text-xs lg:text-[0.8rem] text-black">
+                          （計{sortedArr.reduce<number>((sum, r) => sum + toGuests(r.guests), 0)}人）
+                        </span>
                         )}
                         {/* 時間変更モード（選択モード中は非表示） */}
                         {selectionModeTask !== keyForTask && (
@@ -590,7 +743,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                       setSelectedShiftMinutes(null);
                                     }
                                   }}
-                                  className="px-2 py-0.5 bg-gray-300 rounded text-xs"
+                                  className="px-2 py-0.5 bg-gray-300 rounded text-xs md:px-2 md:py-0.5 md:text-[0.8rem]"
                                   aria-label="時間変更"
                                   aria-expanded={openShiftMenuFor === keyForTask}
                                 >
@@ -600,7 +753,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                   <button
                                     type="button"
                                     onClick={() => setTaskHelp(taskHelp === 'shift' ? null : 'shift')}
-                                    className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
+                                    className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] md:text-xs leading-4 text-gray-600 hover:bg-gray-50"
                                     aria-label="『時間変更』の説明を表示"
                                     aria-expanded={taskHelp === 'shift'}
                                     aria-controls="help-shift"
@@ -613,7 +766,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                             {openShiftMenuFor === keyForTask && (
                               <div className="ml-2 mt-1 p-2 border rounded bg-gray-50 relative">
                                 {/* 1段目：対象／適用／キャンセル */}
-                                <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap w-full text-[11px]">
+                              <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap w-full text-[11px] md:text-[0.8rem]">
                                   <div className="inline-flex items-center gap-1 ml-auto shrink-0">
                                     <button
                                       onClick={() => {
@@ -621,7 +774,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                         if (shiftTargets.length === 0) return;
                                         handleQuickShift(shiftTargets, ct.label, selectedShiftMinutes);
                                       }}
-                                      className={`px-2 py-0.5 rounded text-[11px] text-white ${
+                                    className={`px-2 py-0.5 rounded text-[11px] md:px-2 md:py-0.5 md:text-[0.8rem] text-white ${
                                         selectedShiftMinutes === null || shiftTargets.length === 0
                                           ? 'bg-gray-300 cursor-not-allowed opacity-60'
                                           : 'bg-blue-600 hover:bg-blue-700'
@@ -638,7 +791,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                         setShiftTargets([]);
                                         setSelectedShiftMinutes(null);
                                       }}
-                                      className="px-2 py-0.5 bg-gray-400 text-white rounded text-[11px]"
+                                      className="px-2 py-0.5 bg-gray-400 text-white rounded text-[11px] md:px-2 md:py-0.5 md:text-[0.8rem]"
                                     >
                                       キャンセル
                                     </button>
@@ -646,13 +799,13 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                 </div>
                                 {/* 2段目：分選択（横一文） */}
                                 <div className="mt-2 flex items-center gap-2 whitespace-nowrap overflow-visible">
-                                  <span className="text-xs text-gray-600">タスク時間を</span>
+                                  <span className="text-xs md:text-xs lg:text-[0.8rem] text-gray-600">タスク時間を</span>
                                   <div className="relative inline-block">
                                     <button
                                       onClick={() =>
                                         setMinutePickerOpenFor((prev) => (prev === keyForTask ? null : keyForTask))
                                       }
-                                      className={`px-2 py-0.5 border rounded text-xs whitespace-nowrap ${
+                                      className={`px-2 py-0.5 border rounded text-xs md:px-2 md:py-0.5 md:text-[0.8rem] whitespace-nowrap ${
                                         selectedShiftMinutes === null
                                           ? 'bg-gray-50 border-gray-300 text-gray-700'
                                           : selectedShiftMinutes > 0
@@ -678,7 +831,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                               setSelectedShiftMinutes(m);
                                               setMinutePickerOpenFor(null);
                                             }}
-                                            className={`inline-flex items-center justify-center px-2 py-1 rounded text-xs border text-center whitespace-nowrap min-w-[3.25rem] leading-tight ${
+                                            className={`inline-flex items-center justify-center px-2 py-1 rounded text-xs md:px-2 md:py-0.5 md:text-[0.8rem] border text-center whitespace-nowrap min-w-[3.25rem] leading-tight ${
                                               m > 0
                                                 ? 'bg-green-50 hover:bg-green-100 border-green-300 text-green-700'
                                                 : 'bg-red-50 hover:bg-red-100 border-red-300 text-red-700'
@@ -692,7 +845,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                       </div>
                                     )}
                                   </div>
-                                  <span className="text-xs text-gray-600">ずらす</span>
+                                  <span className="text-xs md:text-xs lg:text-[0.8rem] text-gray-600">ずらす</span>
                                 </div>
                               </div>
                             )}
@@ -725,7 +878,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                     setSelectedForComplete([]);
                                     setCompleteApplyHint('適用しました（取り消す場合は再度タップで選択 → 適用）');
                                   }}
-                                  className={`px-2 py-0.5 rounded text-sm text-white ${
+                                  className={`px-2 py-0.5 rounded text-sm md:px-2.5 md:py-1 md:text-[0.9rem] text-white ${
                                     selectedForComplete.length === 0
                                       ? 'bg-blue-300 cursor-not-allowed'
                                       : 'bg-blue-600 hover:bg-blue-700'
@@ -739,7 +892,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                       prev === keyForTask ? null : keyForTask
                                     )
                                   }
-                                  className="px-2 py-0.5 bg-gray-400 text-white rounded text-xs"
+                                  className="px-2 py-0.5 bg-gray-400 text-white rounded text-xs md:px-2 md:py-0.5 md:text-[0.8rem]"
                                   aria-pressed
                                   aria-label="完了一括選択モードをキャンセル"
                                 >
@@ -754,7 +907,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                       prev === keyForTask ? null : keyForTask
                                     )
                                   }
-                                  className="px-2 py-0.5 bg-yellow-500 text-white rounded text-sm"
+                                  className="px-2 py-0.5 bg-yellow-500 text-white rounded text-sm md:px-2.5 md:py-1 md:text-[0.9rem]"
                                   aria-pressed={false}
                                   aria-label="完了を選ぶモード"
                                 >
@@ -764,7 +917,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                   <button
                                     type="button"
                                     onClick={() => setTaskHelp(taskHelp === 'complete' ? null : 'complete')}
-                                    className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
+                                    className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] md:text-xs leading-4 text-gray-600 hover:bg-gray-50"
                                     aria-label="『完了』の説明を表示"
                                     aria-expanded={taskHelp === 'complete'}
                                     aria-controls="help-complete"
@@ -780,16 +933,16 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
 
                       {/* Help popovers for shift/complete */}
                       {showHelpBadge && taskHelp === 'shift' && (
-                        <div id="help-shift" className="mt-1 text-[11px] text-gray-700 bg-yellow-50 border border-yellow-200 rounded px-2 py-1">
+                        <div id="help-shift" className="mt-1 text-[11px] md:text-xs text-gray-700 bg-yellow-50 border border-yellow-200 rounded px-2 py-1">
                           <p className="font-medium">時間変更の使い方</p>
                           <ol className="list-decimal ml-5 space-y-0.5">
                             <li>
-                              <button className="px-1 py-0.5 bg-gray-300 rounded text-[10px]" disabled>時間変更</button>
+                              <button className="px-1 py-0.5 bg-gray-300 rounded text-[10px] md:text-xs" disabled>時間変更</button>
                               を押します。
                             </li>
                             <li>時間をずらしたい卓番号をタップして選択します。</li>
                             <li>
-  <button className="px-2 py-0.5 border rounded text-xs bg-gray-50 border-gray-300 text-gray-700 whitespace-nowrap" disabled>未選択</button>
+  <button className="px-2 py-0.5 border rounded text-xs md:px-2 md:py-0.5 md:text-[0.8rem] bg-gray-50 border-gray-300 text-gray-700 whitespace-nowrap" disabled>未選択</button>
   をタップし、ずらしたい分数（−5／−10／−15／＋5／＋10／＋15）を選びます。
 </li>
                             <li><span className="font-semibold">適用</span>を押すと変更が反映されます。</li>
@@ -797,11 +950,11 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                         </div>
                       )}
                       {showHelpBadge && taskHelp === 'complete' && (
-                        <div id="help-complete" className="mt-1 text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1">
+                        <div id="help-complete" className="mt-1 text-[11px] md:text-xs text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1">
                           <p className="font-medium">完了の使い方</p>
                           <ol className="list-decimal ml-5 space-y-0.5">
                             <li>
-                              <button className="px-1 py-0.5 bg-yellow-500 text-white rounded text-[10px]" disabled>完了</button>
+                              <button className="px-1 py-0.5 bg-yellow-500 text-white rounded text-[10px] md:text-xs" disabled>完了</button>
                               を押します。
                             </li>
                             <li>完了した（または完了予定の）卓をタップして選択します。</li>
@@ -857,7 +1010,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                     <div className="flex items-center gap-2 mb-1">
                       <span className="font-semibold">{tg.label}</span>
                       {shiftModeKey !== keyForTask && selectionModeTask !== keyForTask && (
-                        <span className="text-xs text-gray-600">
+                        <span className="text-xs md:text-xs lg:text-[0.8rem] text-black">
                           （計{
                             (renderCourseGroups.flatMap((g) => g.reservations) ?? []).reduce<number>(
                               (sum, r) => sum + toGuests((r as any)?.guests),
@@ -888,7 +1041,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                     setSelectedShiftMinutes(null);      // ★毎回リセット
                                   }
                                 }}
-                                className="px-2 py-0.5 bg-gray-300 rounded text-xs"
+                                className="px-2 py-0.5 bg-gray-300 rounded text-xs md:px-2 md:py-0.5 md:text-[0.8rem]"
                                 aria-label="時間変更"
                                 aria-expanded={openShiftMenuFor === keyForTask}
                               >
@@ -898,7 +1051,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                 <button
                                   type="button"
                                   onClick={() => setTaskHelp(taskHelp === 'shift' ? null : 'shift')}
-                                  className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
+                                  className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] md:text-xs leading-4 text-gray-600 hover:bg-gray-50"
                                   aria-label="『時間変更』の説明を表示"
                                   aria-expanded={taskHelp === 'shift'}
                                   aria-controls="help-shift"
@@ -912,7 +1065,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                           {openShiftMenuFor === keyForTask && (
                             <div className="ml-2 mt-1 p-2 border rounded bg-gray-50 relative">
                               {/* 1段目：対象／適用／キャンセル */}
-                              <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap w-full text-[11px]">
+                              <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap w-full text-[11px] md:text-[0.8rem]">
                                 <div className="inline-flex items-center gap-1 ml-auto shrink-0">
                                   <button
                                     onClick={() => {
@@ -920,7 +1073,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                       if (shiftTargets.length === 0) return;
                                       handleQuickShift(shiftTargets, tg.label, selectedShiftMinutes);
                                     }}
-                                    className={`px-2 py-0.5 rounded text-[11px] text-white ${
+                                    className={`px-2 py-0.5 rounded text-[11px] md:px-2 md:py-0.5 md:text-[0.8rem] text-white ${
                                       selectedShiftMinutes === null || shiftTargets.length === 0
                                         ? 'bg-gray-300 cursor-not-allowed opacity-60'
                                         : 'bg-blue-600 hover:bg-blue-700'
@@ -937,7 +1090,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                       setShiftTargets([]);
                                       setSelectedShiftMinutes(null);
                                     }}
-                                    className="px-2 py-0.5 bg-gray-400 text-white rounded text-[11px]"
+                                    className="px-2 py-0.5 bg-gray-400 text-white rounded text-[11px] md:px-2 md:py-0.5 md:text-[0.8rem]"
                                   >
                                     キャンセル
                                   </button>
@@ -945,13 +1098,13 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                               </div>
                               {/* 2段目：分選択（横一文） */}
                               <div className="mt-2 flex items-center gap-2 whitespace-nowrap overflow-visible">
-                                <span className="text-xs text-gray-600">タスク時間を</span>
+                                <span className="text-xs md:text-xs lg:text-[0.8rem] text-gray-600">タスク時間を</span>
                                 <div className="relative inline-block">
                                   <button
                                     onClick={() =>
                                       setMinutePickerOpenFor((prev) => (prev === keyForTask ? null : keyForTask))
                                     }
-                                    className={`px-2 py-0.5 border rounded text-xs whitespace-nowrap ${
+                                    className={`px-2 py-0.5 border rounded text-xs md:px-2 md:py-0.5 md:text-[0.8rem] whitespace-nowrap ${
                                       selectedShiftMinutes === null
                                         ? 'bg-gray-50 border-gray-300 text-gray-700'
                                         : selectedShiftMinutes > 0
@@ -977,7 +1130,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                             setSelectedShiftMinutes(m);
                                             setMinutePickerOpenFor(null);
                                           }}
-                                          className={`inline-flex items-center justify-center px-2 py-1 rounded text-xs border text-center whitespace-nowrap min-w-[3.25rem] leading-tight ${
+                                          className={`inline-flex items-center justify-center px-2 py-1 rounded text-xs md:px-2 md:py-0.5 md:text-[0.8rem] border text-center whitespace-nowrap min-w-[3.25rem] leading-tight ${
                                             m > 0
                                               ? 'bg-green-50 hover:bg-green-100 border-green-300 text-green-700'
                                               : 'bg-red-50 hover:bg-red-100 border-red-300 text-red-700'
@@ -991,7 +1144,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                     </div>
                                   )}
                                 </div>
-                                <span className="text-xs text-gray-600">ずらす</span>
+                                <span className="text-xs md:text-xs lg:text-[0.8rem] text-gray-600">ずらす</span>
                               </div>
                             </div>
                           )}
@@ -1023,7 +1176,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                   setSelectedForComplete([]);
                                   setCompleteApplyHint('適用しました（取り消す場合は再度タップで選択 → 適用）');
                                 }}
-                                className={`px-2 py-0.5 rounded text-sm text-white ${
+                                className={`px-2 py-0.5 rounded text-sm md:px-2.5 md:py-1 md:text-[0.9rem] text-white ${
                                   selectedForComplete.length === 0
                                     ? 'bg-blue-300 cursor-not-allowed'
                                     : 'bg-blue-600 hover:bg-blue-700'
@@ -1037,7 +1190,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                     prev === keyForTask ? null : keyForTask
                                   )
                                 }
-                                className="px-2 py-0.5 bg-gray-400 text-white rounded text-xs"
+                                className="px-2 py-0.5 bg-gray-400 text-white rounded text-xs md:px-2 md:py-0.5 md:text-[0.8rem]"
                                 aria-pressed
                                 aria-label="完了一括選択モードをキャンセル"
                               >
@@ -1052,7 +1205,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                     prev === keyForTask ? null : keyForTask
                                   )
                                 }
-                                className="px-2 py-0.5 bg-yellow-500 text-white rounded text-sm"
+                                className="px-2 py-0.5 bg-yellow-500 text-white rounded text-sm md:px-2.5 md:py-1 md:text-[0.9rem]"
                                 aria-pressed={false}
                                 aria-label="完了を選ぶモード"
                               >
@@ -1062,7 +1215,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                 <button
                                   type="button"
                                   onClick={() => setTaskHelp(taskHelp === 'complete' ? null : 'complete')}
-                                  className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
+                                  className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] md:text-xs leading-4 text-gray-600 hover:bg-gray-50"
                                   aria-label="『完了』の説明を表示"
                                   aria-expanded={taskHelp === 'complete'}
                                   aria-controls="help-complete"
@@ -1078,29 +1231,29 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                     </div>
 
                     {/* Help popovers for shift/complete */}
-                    {showHelpBadge && taskHelp === 'shift' && (
-                      <div id="help-shift" className="mt-1 text-[11px] text-gray-700 bg-yellow-50 border border-yellow-200 rounded px-2 py-1">
+                      {showHelpBadge && taskHelp === 'shift' && (
+                        <div id="help-shift" className="mt-1 text-[11px] md:text-xs text-gray-700 bg-yellow-50 border border-yellow-200 rounded px-2 py-1">
                         <p className="font-medium">時間変更の使い方</p>
                         <ol className="list-decimal ml-5 space-y-0.5">
                           <li>
-                            <button className="px-1 py-0.5 bg-gray-300 rounded text-[10px]" disabled>時間変更</button>
+                              <button className="px-1 py-0.5 bg-gray-300 rounded text-[10px] md:text-xs" disabled>時間変更</button>
                             を押します。
                           </li>
                           <li>時間をずらしたい卓番号をタップして選択します。</li>
                           <li>
-  <button className="px-2 py-0.5 border rounded text-xs bg-gray-50 border-gray-300 text-gray-700 whitespace-nowrap" disabled>未選択</button>
+  <button className="px-2 py-0.5 border rounded text-xs md:px-2 md:py-0.5 md:text-[0.8rem] bg-gray-50 border-gray-300 text-gray-700 whitespace-nowrap" disabled>未選択</button>
   をタップし、ずらしたい分数（−5／−10／−15／＋5／＋10／＋15）を選びます。
 </li>
                           <li><span className="font-semibold">適用</span>を押すと変更が反映されます。</li>
                         </ol>
                       </div>
                     )}
-                    {showHelpBadge && taskHelp === 'complete' && (
-                      <div id="help-complete" className="mt-1 text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1">
+                      {showHelpBadge && taskHelp === 'complete' && (
+                        <div id="help-complete" className="mt-1 text-[11px] md:text-xs text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1">
                         <p className="font-medium">完了の使い方</p>
                         <ol className="list-decimal ml-5 space-y-0.5">
                           <li>
-                            <button className="px-1 py-0.5 bg-yellow-500 text-white rounded text-[10px]" disabled>完了</button>
+                            <button className="px-1 py-0.5 bg-yellow-500 text-white rounded text-[10px] md:text-xs" disabled>完了</button>
                             を押します。
                           </li>
                           <li>完了した（または完了予定の）卓をタップして選択します。</li>
@@ -1125,7 +1278,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                               <span className="text-[13px] font-medium text-gray-800">
                                 {cg.courseName}
                               </span>
-                              <span className="text-[12px] text-gray-500">
+                              <span className="text-[12px] text-black">
                                 （計{cg.reservations.reduce<number>((sum, r) => sum + toGuests(r?.guests as any), 0)}人）
                               </span>
                             </div>

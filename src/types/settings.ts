@@ -4,6 +4,7 @@
 // ========== 共通型（コース & タスク） ==========
 export type CourseTask = {
   timeOffset: number; // 分（開始からの相対）
+  timeOffsetEnd?: number; // 分（終了。省略時は timeOffset と同じ）
   label: string;
   bgColor: string;
 };
@@ -30,6 +31,11 @@ type UnknownRecord = Record<string, unknown>;
 export type ScheduleConfig = {
   dayStartHour: number; // 0-47 を想定（跨ぎ運用も許容）
   dayEndHour: number;   // 0-47 を想定（跨ぎ運用も許容）
+};
+
+export type SeatOptimizerConfig = {
+  basePrompt: string;
+  tags: string[];
 };
 
 // ========== MiniTasks / Wave (新規) ==========
@@ -65,6 +71,7 @@ export type StoreSettings = {
   miniTasksByPosition?: unknown;
   wave?: unknown;
   schedule?: unknown;
+  seatOptimizer?: unknown;
   updatedAt?: number | null;
 };
 
@@ -85,6 +92,7 @@ export type StoreSettingsValue = {
   miniTasksByPosition?: Record<string, MiniTaskTemplate[]>;
   wave?: WaveConfig;
   schedule?: ScheduleConfig;
+  seatOptimizer?: SeatOptimizerConfig;
 };
 
 // ========== 変換ユーティリティ ==========
@@ -123,8 +131,14 @@ export const sanitizeCourses = (arr: unknown): CourseDef[] => {
         if (!label) return null;
         const timeOffsetNum = Number(taskObj.timeOffset);
         const timeOffset = Number.isFinite(timeOffsetNum) ? timeOffsetNum : 0;
-        const bgColor = typeof taskObj.bgColor === 'string' ? taskObj.bgColor : 'bg-gray-100/80';
-        return { timeOffset, label, bgColor };
+        const timeOffsetEndNum = Number(taskObj.timeOffsetEnd);
+        const hasEnd = Number.isFinite(timeOffsetEndNum);
+        const normalizedEnd = hasEnd ? Math.max(timeOffset, timeOffsetEndNum) : undefined;
+        const rawColor = typeof taskObj.bgColor === 'string' ? taskObj.bgColor.trim() : '';
+        const bgColor = rawColor && rawColor !== 'default' ? rawColor : 'bg-gray-100/80';
+        const task: CourseTask = { timeOffset, label, bgColor };
+        if (normalizedEnd !== undefined) task.timeOffsetEnd = normalizedEnd;
+        return task;
       })
       .filter((task): task is CourseTask => task !== null)
       .sort((a, b) => a.timeOffset - b.timeOffset);
@@ -266,6 +280,35 @@ const sanitizeMiniTasksByPosition = (
   return Object.keys(out).length > 0 ? out : undefined;
 };
 
+const toUniqueStringList = (value: unknown): string[] => {
+  const seen = new Set<string>();
+  const push = (raw: unknown) => {
+    if (typeof raw !== 'string') return;
+    const trimmed = raw.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+  };
+
+  if (Array.isArray(value)) {
+    (value as unknown[]).forEach(push);
+  } else if (typeof value === 'string') {
+    value
+      .split(/[,\s\n]+/)
+      .forEach(push);
+  }
+
+  return Array.from(seen);
+};
+
+export const sanitizeSeatOptimizer = (obj: unknown): SeatOptimizerConfig | undefined => {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const record = obj as UnknownRecord;
+  const basePrompt = typeof record.basePrompt === 'string' ? record.basePrompt : '';
+  const tags = toUniqueStringList(record.tags);
+  if (!basePrompt && tags.length === 0) return undefined;
+  return { basePrompt, tags };
+};
+
 /** wave を安全に正規化（unknown -> WaveConfig | undefined） */
 const sanitizeWave = (obj: unknown): WaveConfig | undefined => {
   if (!obj || typeof obj !== 'object') return undefined;
@@ -355,6 +398,7 @@ export const toUISettings = (fs: StoreSettings): StoreSettingsValue => {
     sanitizeMiniTasksByPosition(fs?.miniTasksByPosition) ?? {};
   const waveCfg = sanitizeWave(fs?.wave);
   const schedule = sanitizeSchedule(fs?.schedule);
+  const seatOptimizer = sanitizeSeatOptimizer(fs?.seatOptimizer);
 
   return {
     courses,
@@ -369,6 +413,7 @@ export const toUISettings = (fs: StoreSettings): StoreSettingsValue => {
     miniTasksByPosition,
     wave: waveCfg,
     schedule,
+    seatOptimizer,
   };
 };
 
@@ -393,6 +438,7 @@ export const toFirestorePayload = (ui: StoreSettingsValue): StoreSettings => {
   const miniTasksByPosition = sanitizeMiniTasksByPosition(ui.miniTasksByPosition);
   const wave = sanitizeWave(ui.wave);
   const schedule = sanitizeSchedule(ui.schedule);
+  const seatOptimizer = sanitizeSeatOptimizer(ui.seatOptimizer);
 
   const payload: StoreSettings = {
     courses,
@@ -410,6 +456,7 @@ export const toFirestorePayload = (ui: StoreSettingsValue): StoreSettings => {
   if (miniTasksByPosition) payload.miniTasksByPosition = miniTasksByPosition;
   if (wave) payload.wave = wave;
   if (schedule) payload.schedule = schedule;
+  if (seatOptimizer) payload.seatOptimizer = seatOptimizer;
 
   return pruneUndefined(payload);
 };

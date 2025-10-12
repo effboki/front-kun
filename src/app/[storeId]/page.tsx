@@ -55,6 +55,18 @@ import PreopenSettingsContent from "./_components/preopen/PreopenSettingsContent
 import type { AreaDef } from '@/types';
 import { useReservationMutations } from '@/hooks/useReservationMutations';
 type BottomTab = 'reservations' | 'schedule' | 'tasks' | 'courseStart';
+const TASK_OFFSET_MIN = -180;
+const TASK_OFFSET_MAX = 180;
+const clampTaskOffset = (offset: number) =>
+  Math.max(TASK_OFFSET_MIN, Math.min(TASK_OFFSET_MAX, Math.round(offset)));
+const clampTaskRange = (start: number, end?: number) => {
+  const clampedStart = clampTaskOffset(start);
+  if (typeof end === 'number' && Number.isFinite(end)) {
+    const clampedEnd = clampTaskOffset(end);
+    return { start: clampedStart, end: Math.max(clampedStart, clampedEnd) };
+  }
+  return { start: clampedStart, end: clampedStart };
+};
 
 type NamespaceHelpers = {
   key: (suffix: string) => string;
@@ -561,6 +573,15 @@ const {
   const RES_KEY = `${ns}-reservations`;
   const CACHE_KEY = `${ns}-reservations_cache`;
 
+  // 店舗設定：事前に登録する卓番号リスト（ソート済み配列はプレビューで共有）
+  const [presetTables, setPresetTables] = useState<string[]>(() =>
+    nsGetJSON<string[]>('presetTables', [])
+  );
+  const presetTablesView: string[] = useMemo(() => {
+    const src = Array.isArray(presetTables) ? presetTables : [];
+    return src.map(String).sort((a, b) => Number(a) - Number(b));
+  }, [presetTables]);
+
   // --- (optional) one-time migration from old localStorage keys -------------
   const migrateLegacyKeys = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -650,16 +671,26 @@ const {
     if (!Array.isArray(normalized)) return [];
 
     return normalized.map((course) => {
-      const tasks: TaskDef[] = Array.isArray(course?.tasks)
-        ? (course.tasks as any[])
-            .map((t) => ({
-              timeOffset: Number.isFinite(Number(t?.timeOffset)) ? Number(t.timeOffset) : 0,
-              label: typeof t?.label === 'string' ? t.label : '',
-              bgColor: typeof t?.bgColor === 'string' ? t.bgColor : 'bg-gray-100/80',
-            }))
-            .filter((task: TaskDef) => task.label !== '')
-            .sort((a, b) => a.timeOffset - b.timeOffset)
-        : [];
+      const rawTasks = Array.isArray(course?.tasks) ? (course.tasks as unknown[]) : [];
+      const tasks = rawTasks
+        .reduce<TaskDef[]>((acc, candidate) => {
+          if (!candidate || typeof candidate !== 'object') return acc;
+          const record = candidate as Record<string, unknown>;
+          const rawLabel = typeof record.label === 'string' ? record.label.trim() : '';
+          if (!rawLabel) return acc;
+          const rawStart = Number(record.timeOffset);
+          const rawEnd = Number(record.timeOffsetEnd);
+          const { start, end } = clampTaskRange(
+            Number.isFinite(rawStart) ? rawStart : 0,
+            Number.isFinite(rawEnd) ? rawEnd : undefined
+          );
+          const bgColor = typeof record.bgColor === 'string' ? record.bgColor : 'bg-gray-100/80';
+          const nextTask: TaskDef = { timeOffset: start, label: rawLabel, bgColor };
+          if (end !== start) nextTask.timeOffsetEnd = end;
+          acc.push(nextTask);
+          return acc;
+        }, [])
+        .sort((a, b) => a.timeOffset - b.timeOffset);
 
       const stayMinutesRaw = Number((course as any)?.stayMinutes);
       const stayMinutes = Number.isFinite(stayMinutesRaw) && stayMinutesRaw > 0 ? Math.trunc(stayMinutesRaw) : undefined;
@@ -673,8 +704,8 @@ const {
   }, []);
 
 // --- defensive accessor: always return an array for c.tasks ---
-const getTasks = (c: { tasks?: any }): { timeOffset:number; label:string; bgColor:string }[] =>
-  (Array.isArray(c?.tasks) ? (c.tasks as { timeOffset:number; label:string; bgColor:string }[]) : []);
+const getTasks = (c: { tasks?: any }): TaskDef[] =>
+  (Array.isArray(c?.tasks) ? (c.tasks as TaskDef[]) : []);
   
   // Reservation storage helpers (namespace-scoped)
   const persistReservations = useCallback((arr: Reservation[]) => {
@@ -1650,14 +1681,6 @@ useEffect(() => {
   //
 
   // “事前に設定する卓番号リスト” を管理
-  const [presetTables, setPresetTables] = useState<string[]>(() =>
-  nsGetJSON<string[]>('presetTables', [])
-);
-  // 表示・子渡し用に、卓番号を string 化 + 数字として昇順ソート
-  const presetTablesView: string[] = useMemo(() => {
-    const src = Array.isArray(presetTables) ? presetTables : [];
-    return src.map(String).sort((a, b) => Number(a) - Number(b));
-  }, [presetTables]);
   // 新規テーブル入力用 (numeric pad)
   const [newTableTemp, setNewTableTemp] = useState<string>('');
   // 卓設定セクション開閉
@@ -2038,14 +2061,15 @@ const handleStoreSave = useCallback(async () => {
 
   // 位置リストが変わって、保存値が存在しない/不正になったら先頭へフォールバック
   useEffect(() => {
-    if (!selectedDisplayPosition || !positions.includes(selectedDisplayPosition)) {
-      const fallback = positions[0] || '';
+    const isOther = selectedDisplayPosition === 'その他';
+    if (!selectedDisplayPosition || (!isOther && !positions.includes(selectedDisplayPosition))) {
+      const fallback = positions[0] || 'その他';
       setSelectedDisplayPosition(fallback);
       if (typeof window !== 'undefined') {
         nsSetStr('selectedDisplayPosition', fallback);
       }
     }
-  }, [positions]);
+  }, [positions, selectedDisplayPosition]);
 
   // --- メモ化: コース別の許可ラベル集合（正規化済み） ---
   const allowedLabelSetByCourse = useMemo<Record<string, Set<string>>>(() => {
@@ -2158,7 +2182,7 @@ const handleStoreSave = useCallback(async () => {
   };
 
   // 既存タスク時間を ±5 分ずらす（防御的に配列化）
-  const shiftTaskOffset = (offset: number, label: string, delta: number) => {
+  const shiftTaskOffset = (offset: number, label: string, delta: number, target: 'start' | 'end' = 'start') => {
     setCourses((prev) => {
       const next = prev.map((c) => {
         if (c.name !== selectedCourse) return c;
@@ -2166,8 +2190,14 @@ const handleStoreSave = useCallback(async () => {
         const tasks = base
           .map((t) => {
             if (t.timeOffset !== offset || !normEq(t.label, label)) return t;
-            const newOffset = Math.max(0, Math.min(180, t.timeOffset + delta));
-            return { ...t, timeOffset: newOffset };
+            const currentEnd = typeof t.timeOffsetEnd === 'number' ? t.timeOffsetEnd : t.timeOffset;
+            if (target === 'start') {
+              const newStart = clampTaskOffset(t.timeOffset + delta);
+              const newEnd = Math.max(currentEnd, newStart);
+              return { ...t, timeOffset: newStart, timeOffsetEnd: newEnd };
+            }
+            const newEnd = Math.max(clampTaskOffset(currentEnd + delta), t.timeOffset);
+            return { ...t, timeOffsetEnd: newEnd };
           })
           .sort((a, b) => a.timeOffset - b.timeOffset);
         return { ...c, tasks };
@@ -2175,8 +2205,13 @@ const handleStoreSave = useCallback(async () => {
       nsSetJSON('courses', next);
       return next;
     });
-    if (editingTask && editingTask.offset === offset && normEq(editingTask.label, label)) {
-      setEditingTask({ offset: Math.max(0, Math.min(180, offset + delta)), label });
+    if (
+      target === 'start' &&
+      editingTask &&
+      editingTask.offset === offset &&
+      normEq(editingTask.label, label)
+    ) {
+      setEditingTask({ offset: clampTaskOffset(offset + delta), label });
     }
   };
 
@@ -2394,13 +2429,14 @@ const handleStoreSave = useCallback(async () => {
     }
   }, [courses, selectedDisplayPosition, tasksByPosition, checkedTasks]);
   // 新規タスクをコースに追加
-  const addTaskToCourse = (label: string, offset: number) => {
+  const addTaskToCourse = (label: string, offsetStart: number, offsetEnd?: number) => {
     setCourses((prev) => {
       const next = prev.map((c) => {
         if (c.name !== selectedCourse) return c;
         const tasks = [...getTasks(c)];
+        const { start, end } = clampTaskRange(offsetStart, offsetEnd);
         // 重複ガード（同offset・同ラベル）
-        if (tasks.some((t) => t.timeOffset === offset && t.label === label)) {
+        if (tasks.some((t) => t.timeOffset === start && t.label === label)) {
           return c;
         }
         const bgColorMap: Record<string, string> = {
@@ -2414,7 +2450,7 @@ const handleStoreSave = useCallback(async () => {
         const color = bgColorMap[label] || 'bg-gray-100/80';
         const updatedTasks = [
           ...tasks,
-          { timeOffset: offset, label, bgColor: color },
+          { timeOffset: start, timeOffsetEnd: end, label, bgColor: color },
         ].sort((a, b) => a.timeOffset - b.timeOffset);
         return { ...c, tasks: updatedTasks };
       });
@@ -2912,6 +2948,8 @@ const deleteCourse = async () => {
     timeKey: string;
     label: string;
     bgColor: string;
+    endMinutes?: number;
+    endTimeKey?: string;
     courseGroups: {
       courseName: string;
       reservations: Reservation[];
@@ -2941,12 +2979,31 @@ const deleteCourse = async () => {
 
         const slot = calcTaskAbsMin(res.time, t.timeOffset, t.label, res.timeShift);
         const timeKey = formatMinutesToTime(slot);
+        const endOffset = typeof t.timeOffsetEnd === 'number' ? t.timeOffsetEnd : t.timeOffset;
+        const endMinutes = calcTaskAbsMin(res.time, endOffset, t.label, res.timeShift);
+        const hasRange = endMinutes > slot;
+        const endTimeKey = hasRange ? formatMinutesToTime(endMinutes) : undefined;
         if (!grouped[timeKey]) grouped[timeKey] = [];
 
         let taskGroup = grouped[timeKey].find((g) => g.label === t.label);
         if (!taskGroup) {
-          taskGroup = { timeKey, label: t.label, bgColor: t.bgColor, courseGroups: [] };
+          taskGroup = {
+            timeKey,
+            label: t.label,
+            bgColor: t.bgColor,
+            endMinutes: hasRange ? endMinutes : undefined,
+            endTimeKey,
+            courseGroups: [],
+          };
           grouped[timeKey].push(taskGroup);
+        } else if (hasRange) {
+          const currentEnd = typeof taskGroup.endMinutes === 'number' ? taskGroup.endMinutes : slot;
+          if (endMinutes > currentEnd) {
+            taskGroup.endMinutes = endMinutes;
+            taskGroup.endTimeKey = endTimeKey;
+          } else if (!taskGroup.endTimeKey) {
+            taskGroup.endTimeKey = endTimeKey;
+          }
         }
         let courseGroup = taskGroup.courseGroups.find((cg) => cg.courseName === res.course);
         if (!courseGroup) {
@@ -3513,7 +3570,14 @@ const onNumPadConfirm = () => {
           />
         </div>
       )}
-      <main className="pt-12 p-4 space-y-6 pb-24">
+      <main
+        className="pt-12 p-4 space-y-6 pb-24"
+        style={
+          !isSettings && bottomTab === 'schedule'
+            ? { paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.25rem)' }
+            : undefined
+        }
+      >
         
       
       {/* ─────────────── 店舗設定セクション ─────────────── */}
@@ -3655,6 +3719,7 @@ scheduleEndHour={scheduleEndHour}
       onToggleArrival={toggleArrivalChecked}
       onTogglePayment={togglePaymentChecked}
       onToggleDeparture={toggleDepartureChecked}
+      sidebarOpen={sidebarOpen}
     />
   </div>
 )}
@@ -3741,7 +3806,10 @@ scheduleEndHour={scheduleEndHour}
 {/* ─────────────── テーブル管理セクション ─────────────── */}
 
  {/* ─ BottomTab: 予約リスト / タスク表 / コース開始時間表 ─ */}
-<footer className="fixed bottom-0 inset-x-0 z-50 bg-white border-t">
+<footer
+  className="fixed bottom-0 inset-x-0 z-50 bg-white border-t"
+  data-app-bottom-bar
+>
   <div className="max-w-6xl mx-auto grid grid-cols-4">
     <button
       type="button"

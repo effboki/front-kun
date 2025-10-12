@@ -53,6 +53,8 @@ export type PendingTables = Record<string, { old: string; nextList: string[] }>;
 export interface TaskDef {
   /** 来店から何分後か */
   timeOffset: number;
+  /** 来店から何分後までか（未設定時は timeOffset と同じ） */
+  timeOffsetEnd?: number;
   /** タスク名 */
   label: string;
   /** テーブル管理画面での背景色 Tailwind クラス */
@@ -106,6 +108,9 @@ export type TaskGroup = {
   label: string;
   /** 見出し背景の Tailwind クラス（例：bg-blue-50） */
   bgColor: string;
+  /** 同じ開始時刻のタスクに対する終了時刻（任意） */
+  endMinutes?: number;
+  endTimeKey?: string;
   /** コースごとの予約配列 */
   courseGroups: TaskCourseGroup[];
 };

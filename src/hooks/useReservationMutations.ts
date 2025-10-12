@@ -1,14 +1,9 @@
 'use client';
 
-import { useMemo } from 'react';
-import {
-  createReservation as createDoc,
-  patchReservation as patchDoc,
-  deleteReservation as deleteDoc,
-  type ReservationDoc,
-} from '@/lib/firestoreReservations';
+import type { ReservationDoc } from '@/lib/firestoreReservations';
 import { parseTimeToMinutes, startOfDayMs, msToHHmmFromDay } from '@/lib/time';
 import { deleteField } from 'firebase/firestore';
+import { addReservationFS, updateReservationFS, deleteReservationFS } from '@/lib/reservations';
 
 export type ReservationCreateInput = {
   startMs: number; // 予約開始（エポックms）
@@ -44,8 +39,16 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
   const toNum = (v: unknown) => (typeof v === 'number' ? v : Number(v));
   const toBool = (v: unknown) => !!v;
   const toTables = (v: any) => (Array.isArray(v) ? v : v ? [v] : []).map((s) => String(s)).filter(Boolean);
+  const storeSlug = (storeId ?? '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 12) || 'res';
 
   // ---- create ----
+  const generateReservationId = (): string => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `${storeSlug}-${crypto.randomUUID()}`;
+    }
+    return `${storeSlug}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  };
+
   async function createReservation(input: ReservationCreateInput): Promise<string> {
     // startMs: 既に number 指定があれば尊重。無ければ dayStartMs + HH:mm
     let startMs: number | undefined;
@@ -112,8 +115,12 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
 
     // client-side mirror (serverTimestamp is appended in adapter)
     (payload as any).createdAtMs = Date.now();
+    (payload as any).updatedAtMs = Date.now();
 
-    const id = await createDoc(storeId, payload);
+    const id = (input as any)?.id ? String((input as any).id) : generateReservationId();
+    (payload as any).id = id;
+
+    await addReservationFS(payload as any);
     return id;
   }
 
@@ -194,7 +201,7 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
     // client-side mirror (serverTimestamp is appended in adapter)
     (p as any).updatedAtMs = Date.now();
 
-    await patchDoc(storeId, id, p as Partial<ReservationDoc>);
+    await updateReservationFS(id, p as Partial<ReservationDoc>);
   }
 
   // ---- set (upsert) ----
@@ -242,17 +249,18 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
       time: trimOrEmpty((input as any).time) || undefined,
       notes: trimOrEmpty((input as any).notes ?? (input as any).memo),
       createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
     };
     if (input.durationMin != null) {
       const n = toNum(input.durationMin);
       if (Number.isFinite(n)) data.durationMin = Math.trunc(n);
     }
-    await createDoc(storeId, data as any);
+    await addReservationFS(data as any);
   }
 
   // ---- delete ----
   async function deleteReservation(id: string): Promise<void> {
-    await deleteDoc(storeId, id);
+    await deleteReservationFS(id);
   }
 
   return {
