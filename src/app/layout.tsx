@@ -30,6 +30,39 @@ export default function RootLayout({
     }
   }, []);
 
+  useEffect(() => {
+    const preventGesture = (event: Event) => {
+      event.preventDefault();
+    };
+    const preventMultiTouch = (event: TouchEvent) => {
+      if (event.touches && event.touches.length > 1) {
+        event.preventDefault();
+      }
+    };
+    let lastTouchEnd = 0;
+    const preventDoubleTap = (event: TouchEvent) => {
+      const now = Date.now();
+      if (now - lastTouchEnd <= 350) {
+        event.preventDefault();
+      }
+      lastTouchEnd = now;
+    };
+
+    document.addEventListener("gesturestart", preventGesture);
+    document.addEventListener("gesturechange", preventGesture);
+    document.addEventListener("gestureend", preventGesture);
+    document.addEventListener("touchmove", preventMultiTouch, { passive: false });
+    document.addEventListener("touchend", preventDoubleTap, { passive: false });
+
+    return () => {
+      document.removeEventListener("gesturestart", preventGesture);
+      document.removeEventListener("gesturechange", preventGesture);
+      document.removeEventListener("gestureend", preventGesture);
+      document.removeEventListener("touchmove", preventMultiTouch);
+      document.removeEventListener("touchend", preventDoubleTap);
+    };
+  }, []);
+
   return (
     <html lang="ja">
       <head>

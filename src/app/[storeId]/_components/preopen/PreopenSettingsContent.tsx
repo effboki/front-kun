@@ -1,6 +1,7 @@
 import React from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { AreaDef, CourseDef, TaskDef } from '@/types';
+import { ALL_POSITIONS_KEY } from '@/constants/positions';
 
 const formatTaskOffset = (offset: number) => {
   if (offset > 0) return `${offset}分後`;
@@ -274,6 +275,21 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
     });
   }, [handleSelectPosition]);
 
+  const isOtherPositionSelected = selectedDisplayPosition === 'その他';
+  const isAllPositionsSelected =
+    !isOtherPositionSelected &&
+    (selectedDisplayPosition === ALL_POSITIONS_KEY || selectedDisplayPosition === '');
+  const displayPositionLabel = isOtherPositionSelected
+    ? 'その他'
+    : isAllPositionsSelected
+      ? '全ポジション'
+      : selectedDisplayPosition;
+  const displayPositionDescription = isOtherPositionSelected
+    ? '個人カスタム：当日の自分用'
+    : isAllPositionsSelected
+      ? '全ポジションの店舗設定タスクを表示'
+      : '以下は店舗設定で設定したタスクを表示';
+
   // ===== Render =====
   if (section === 'tables') {
     return (
@@ -527,11 +543,9 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
                 <div className="rounded-lg border bg-white shadow-lg relative">
                   <div className="px-4 pt-3 pb-2 border-b bg-gray-50 rounded-t-lg">
                     <div className="text-sm font-semibold">
-                      {selectedDisplayPosition === 'その他' ? 'その他' : selectedDisplayPosition}
+                      {displayPositionLabel}
                       <span className="ml-2 text-xs text-gray-500">
-                        {selectedDisplayPosition === 'その他'
-                          ? '個人カスタム：当日の自分用'
-                          : '以下は店舗設定で設定したタスクを表示'}
+                        {displayPositionDescription}
                       </span>
                     </div>
                   </div>

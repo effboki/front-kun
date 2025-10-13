@@ -68,8 +68,8 @@ export default function SeatOptimizerModal({
   const hasPreview = previewRows.length > 0;
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 px-4 py-6">
-      <div className="relative flex w-full max-w-5xl flex-col gap-6 rounded-xl bg-white p-6 shadow-2xl">
+    <div className="fixed inset-0 z-[2000] flex items-start justify-center bg-black/40 px-2 py-4 sm:px-4 sm:py-6 overflow-y-auto">
+      <div className="relative flex w-full max-w-5xl flex-col gap-6 rounded-xl bg-white p-4 sm:p-6 shadow-2xl max-h-[calc(100vh-3rem)] overflow-y-auto">
         <header className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">席効率化プレビュー</h2>
@@ -226,4 +226,3 @@ export default function SeatOptimizerModal({
     </div>
   );
 }
-

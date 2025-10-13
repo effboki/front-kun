@@ -709,13 +709,16 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                       : ct.allReservations
                           .slice()
                           .sort((a, b) => Number(a.table) - Number(b.table));
+                  const defaultShiftTargetIds = Array.from(
+                    new Set(sortedArr.map((r) => r.id))
+                  );
 
                   // isPast15: 15分以上前の時間帯
                   // const isPast15 = parseTimeToMinutes(timeKey) <= (nowMinutes - 15); // removed duplicate
                   return (
                     <div key={ct.label} className={`p-2 rounded mb-2 ${ct.bgColor} ${isPast15 ? 'opacity-70' : ''}`}>
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="font-semibold">{ct.label}</span>
+                        <span className="font-semibold text-[0.96rem] md:text-[1.02rem]">{ct.label}</span>
                         {shiftModeKey !== keyForTask && selectionModeTask !== keyForTask && (
                         <span className="text-xs md:text-xs lg:text-[0.8rem] text-black">
                           （計{sortedArr.reduce<number>((sum, r) => sum + toGuests(r.guests), 0)}人）
@@ -739,7 +742,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                       setOpenShiftMenuFor(keyForTask);
                                       setMinutePickerOpenFor(null); // デフォルトは閉じた状態（分選択は開かない）
                                       setShiftModeKey(keyForTask);
-                                      setShiftTargets([]);
+                                      setShiftTargets(defaultShiftTargetIds);
                                       setSelectedShiftMinutes(null);
                                     }
                                   }}
@@ -1002,13 +1005,20 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                         reservations: tg.courseGroups.flatMap((cg) => cg.reservations),
                       },
                     ];
+                const defaultShiftTargetIds = Array.from(
+                  new Set(
+                    renderCourseGroups.flatMap((g) =>
+                      (g.reservations ?? []).map((r) => r.id)
+                    )
+                  )
+                );
 
                 // isPast15: 15分以上前の時間帯
                 // const isPast15 = parseTimeToMinutes(timeKey) <= (nowMinutes - 15); // removed duplicate
                 return (
                   <div key={tg.label} className={`p-2 rounded mb-2 ${tg.bgColor} ${isPast15 ? 'opacity-70' : ''}`}>
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="font-semibold">{tg.label}</span>
+                      <span className="font-semibold text-[0.96rem] md:text-[1.02rem]">{tg.label}</span>
                       {shiftModeKey !== keyForTask && selectionModeTask !== keyForTask && (
                         <span className="text-xs md:text-xs lg:text-[0.8rem] text-black">
                           （計{
@@ -1037,7 +1047,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                     setOpenShiftMenuFor(keyForTask);
                                     setMinutePickerOpenFor(null); // デフォルトは閉じた状態（分選択は開かない）
                                     setShiftModeKey(keyForTask);
-                                    setShiftTargets([]);                // 対象は毎回リセット（必要に応じて外してOK）
+                                    setShiftTargets(defaultShiftTargetIds); // 対象はデフォルトで全卓を選択
                                     setSelectedShiftMinutes(null);      // ★毎回リセット
                                   }
                                 }}

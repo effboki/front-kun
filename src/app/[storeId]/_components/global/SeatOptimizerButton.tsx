@@ -35,13 +35,17 @@ export default function SeatOptimizerButton() {
     window.dispatchEvent(new CustomEvent(OPEN_EVENT));
   };
 
+  if (!visible) {
+    return null;
+  }
+
   return (
     <button
       type="button"
       onClick={handleClick}
-      disabled={!visible || busy}
-      className={`absolute right-28 top-1/2 -translate-y-1/2 inline-flex items-center gap-2 rounded-full border border-white/30 bg-indigo-500/90 px-4 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-500 whitespace-nowrap [writing-mode:horizontal-tb] enabled:active:translate-y-[1px] disabled:cursor-not-allowed disabled:opacity-60 ${visible ? '' : 'pointer-events-none opacity-0'}`}
-      aria-hidden={visible ? 'false' : 'true'}
+      disabled={busy}
+      className="absolute right-28 top-1/2 -translate-y-1/2 inline-flex items-center gap-2 rounded-full border border-white/20 bg-indigo-500 px-4 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-600 whitespace-nowrap [writing-mode:horizontal-tb] enabled:active:translate-y-[1px] disabled:cursor-not-allowed disabled:opacity-70"
+      aria-hidden="false"
     >
       <svg
         className="h-4 w-4"

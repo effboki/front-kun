@@ -51,6 +51,7 @@ import ScheduleView from './_components/schedule/ScheduleView'; // NOTE: render 
 import { parseTimeToMinutes, formatMinutesToTime, startOfDayMs } from '@/lib/time';
 import StoreSettingsContent from "./_components/settings/StoreSettingsContent";
 import PreopenSettingsContent from "./_components/preopen/PreopenSettingsContent";
+import { ALL_POSITIONS_KEY } from '@/constants/positions';
 
 import type { AreaDef } from '@/types';
 import { useReservationMutations } from '@/hooks/useReservationMutations';
@@ -454,15 +455,6 @@ const [bottomTab, setBottomTab] = useState<BottomTab>('reservations');
     clearScheduleTab();
   };
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const visible = !isSettings && bottomTab === 'schedule';
-    window.dispatchEvent(new CustomEvent(SEAT_OPTIMIZER_TOGGLE_EVENT, { detail: { visible } }));
-    return () => {
-      window.dispatchEvent(new CustomEvent(SEAT_OPTIMIZER_TOGGLE_EVENT, { detail: { visible: false } }));
-    };
-  }, [isSettings, bottomTab]);
-
   // ── 店舗設定（分割UI）用のドラフト状態（子コンポーネントに丸ごと渡す）
   const [settingsDraft, setSettingsDraft] = useState<StoreSettingsValue>({
     courses: [],
@@ -740,6 +732,15 @@ const getTasks = (c: { tasks?: any }): TaskDef[] =>
   // -------------------------------------------------------------------------
   // Sidebar open state
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const visible = !isSettings && bottomTab === 'schedule' && !sidebarOpen;
+    window.dispatchEvent(new CustomEvent(SEAT_OPTIMIZER_TOGGLE_EVENT, { detail: { visible } }));
+    return () => {
+      window.dispatchEvent(new CustomEvent(SEAT_OPTIMIZER_TOGGLE_EVENT, { detail: { visible: false } }));
+    };
+  }, [isSettings, bottomTab, sidebarOpen]);
 
   // 卓番変更モード用のステートを追加
   const [editTableMode, setEditTableMode] = useState<boolean>(false);
@@ -2063,9 +2064,11 @@ const handleStoreSave = useCallback(async () => {
   const [displayTablesOpen1, setDisplayTablesOpen1] = useState<boolean>(false);
   const [displayTablesOpen2, setDisplayTablesOpen2] = useState<boolean>(false);
   // ─── 営業前設定：表示タスク用選択中ポジション ───
-  const [selectedDisplayPosition, setSelectedDisplayPosition] = useState<string>(() =>
-  nsGetStr('selectedDisplayPosition', positions[0] || '')
-);
+  const [selectedDisplayPosition, setSelectedDisplayPosition] = useState<string>(() => {
+    const stored = nsGetStr('selectedDisplayPosition', ALL_POSITIONS_KEY);
+    if (!stored) return ALL_POSITIONS_KEY;
+    return stored;
+  });
 
   // 永続化: 選択中ポジションが変わったら保存
   useEffect(() => {
@@ -2076,8 +2079,11 @@ const handleStoreSave = useCallback(async () => {
   // 位置リストが変わって、保存値が存在しない/不正になったら先頭へフォールバック
   useEffect(() => {
     const isOther = selectedDisplayPosition === 'その他';
-    if (!selectedDisplayPosition || (!isOther && !positions.includes(selectedDisplayPosition))) {
-      const fallback = positions[0] || 'その他';
+    const isAll = selectedDisplayPosition === ALL_POSITIONS_KEY;
+    const isKnown =
+      isAll || isOther || (selectedDisplayPosition && positions.includes(selectedDisplayPosition));
+    if (!isKnown) {
+      const fallback = ALL_POSITIONS_KEY;
       setSelectedDisplayPosition(fallback);
       if (typeof window !== 'undefined') {
         nsSetStr('selectedDisplayPosition', fallback);
@@ -2092,13 +2098,21 @@ const handleStoreSave = useCallback(async () => {
     const result: Record<string, Set<string>> = {};
 
     const listCourses = Array.isArray(courses) ? courses : [];
+    const positionMaps =
+      selectedDisplayPosition === ALL_POSITIONS_KEY
+        ? Object.values(tasksByPosition || {})
+        : selectedDisplayPosition && selectedDisplayPosition !== 'その他'
+          ? [tasksByPosition[selectedDisplayPosition] || {}]
+          : [];
+
     listCourses.forEach((c) => {
       const s = new Set<string>(base);
-      if (selectedDisplayPosition !== 'その他') {
-        const posObj = tasksByPosition[selectedDisplayPosition] || {};
-        const labels = Array.isArray((posObj as any)[c.name]) ? (posObj as any)[c.name] : [];
+      positionMaps.forEach((posMap) => {
+        const labels = Array.isArray((posMap as any)?.[c.name])
+          ? ((posMap as Record<string, string[]>)[c.name] ?? [])
+          : [];
         labels.forEach((l: string) => s.add(normalizeLabel(l)));
-      }
+      });
       result[c.name] = s; // 空集合は「制約なし」を表す
     });
     return result;
@@ -2415,9 +2429,14 @@ const handleStoreSave = useCallback(async () => {
       const combinedNorm = new Set<string>();
       (checkedTasks || []).forEach(l => combinedNorm.add(normalizeLabel(l)));
       if (selectedDisplayPosition !== 'その他') {
-        const posObj = tasksByPosition[selectedDisplayPosition] || {};
-        Object.values(posObj || {}).forEach((labels) => {
-          (labels || []).forEach((l) => combinedNorm.add(normalizeLabel(l)));
+        const positionMaps =
+          selectedDisplayPosition === ALL_POSITIONS_KEY
+            ? Object.values(tasksByPosition || {})
+            : [tasksByPosition[selectedDisplayPosition] || {}];
+        positionMaps.forEach((posMap) => {
+          Object.values(posMap || {}).forEach((labels) => {
+            (labels || []).forEach((l) => combinedNorm.add(normalizeLabel(l)));
+          });
         });
       }
 
@@ -2430,7 +2449,7 @@ const handleStoreSave = useCallback(async () => {
   setCheckedTasks([]);
   try { nsSetJSON('checkedTasks', []); } catch {}
 
-  if (selectedDisplayPosition !== 'その他') {
+  if (selectedDisplayPosition !== 'その他' && selectedDisplayPosition !== ALL_POSITIONS_KEY) {
     setTasksByPosition(prev => {
       const next = { ...prev, [selectedDisplayPosition]: {} };
       try { nsSetJSON('tasksByPosition', next); } catch {}
