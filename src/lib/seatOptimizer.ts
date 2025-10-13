@@ -129,10 +129,30 @@ export const buildSeatOptimizerRequest = (input: SeatOptimizerRequestInput): str
 
 const normalizeHeader = (value: string) => value.trim().toLowerCase();
 
+const splitMarkdownRow = (line: string): string[] => {
+  const raw = line.split('|').map((part) => part.trim());
+  const cells = raw.filter((_, idx) => !(idx === 0 && raw[idx] === '') && !(idx === raw.length - 1 && raw[idx] === ''));
+  if (cells.every((cell) => /^:?-{2,}:?$/.test(cell))) return [];
+  return cells;
+};
+
 const parseBlock = (lines: string[]): string[][] => {
-  const cleaned = lines.filter((line) => line.trim() !== '');
+  const cleaned = lines
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
   if (cleaned.length === 0) return [];
-  return cleaned.map((line) => line.split('\t'));
+  return cleaned
+    .map((line) => {
+      if (line.includes('\t')) {
+        return line.split('\t').map((cell) => cell.trim());
+      }
+      if (line.includes('|')) {
+        const cells = splitMarkdownRow(line);
+        if (cells.length > 0) return cells;
+      }
+      return [line];
+    })
+    .filter((row) => row.length > 0);
 };
 
 const toObjects = (rows: string[][]) => {
@@ -172,27 +192,34 @@ export const parseSeatOptimizerResponse = (raw: string): SeatOptimizerParsed => 
 
   const assignmentRows = parseBlock(blocks.ASSIGNMENTS ?? []);
   const noteRows = parseBlock(blocks.NOTES ?? []);
-  const assignments: SeatOptimizerAssignment[] = toObjects(assignmentRows)
-    .map((row) => {
-      const id = row['reservation_id'];
+  const assignments = toObjects(assignmentRows)
+    .map((row): SeatOptimizerAssignment | null => {
+      const id = typeof row['reservation_id'] === 'string' ? row['reservation_id'].trim() : '';
       if (!id) return null;
+
       const actionRaw = row['action'] || 'keep';
       const normalizedAction = actionRaw.toLowerCase();
       const action: SeatOptimizerAssignment['action'] =
-        normalizedAction === 'move'
+        normalizedAction === 'move' || normalizedAction === 'assign' || normalizedAction === 'reassign'
           ? 'move'
           : normalizedAction === 'split'
             ? 'split'
             : normalizedAction === 'cancel'
               ? 'cancel'
               : 'keep';
+
       const tables = (row['new_tables'] || '')
         .split('|')
         .map((t) => t.trim())
         .filter(Boolean);
-      const reason = row['reason']?.trim() || undefined;
+
+      let reason = row['reason']?.trim() || undefined;
+      if (reason && /^[\d|,\s、／\\-]+$/.test(reason)) {
+        reason = undefined;
+      }
       const confidenceRaw = parseFloat(row['confidence'] ?? '');
       const confidence = Number.isFinite(confidenceRaw) ? confidenceRaw : undefined;
+
       return { reservationId: id, action, newTables: tables, reason, confidence };
     })
     .filter((item): item is SeatOptimizerAssignment => item !== null);
@@ -236,4 +263,3 @@ export const mergeSeatOptimizerPrompts = (
   basePrompt: config?.basePrompt ?? '',
   sessionPrompt: sessionPrompt?.trim() ? sessionPrompt.trim() : undefined,
 });
-

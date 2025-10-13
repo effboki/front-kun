@@ -44,6 +44,20 @@ export interface Reservation {
   drinkLabel?: string;
   foodAllYouCan?: boolean;
   drinkAllYouCan?: boolean;
+  /** 当日の絶対開始時刻(ms) */
+  startMs?: number;
+  /** 終了時刻(ms) */
+  endMs?: number;
+  /** 手動指定の滞在分 */
+  durationMin?: number;
+  /** 表示・計算に使う実効滞在分 */
+  effectiveDurationMin?: number;
+  /** 'HH:mm' フォーマット済みの時間（startMs由来） */
+  timeHHmm?: string;
+  /** 新規作成後のハイライト終了時刻(ms) */
+  freshUntilMs?: number;
+  /** 編集後のハイライト終了時刻(ms) */
+  editedUntilMs?: number;
 }
 
 // 卓番変更プレビュー用マップ

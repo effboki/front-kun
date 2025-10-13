@@ -54,6 +54,8 @@ import PreopenSettingsContent from "./_components/preopen/PreopenSettingsContent
 
 import type { AreaDef } from '@/types';
 import { useReservationMutations } from '@/hooks/useReservationMutations';
+import dynamic from 'next/dynamic';
+import { TOGGLE_EVENT as SEAT_OPTIMIZER_TOGGLE_EVENT } from './_components/global/SeatOptimizerButton';
 type BottomTab = 'reservations' | 'schedule' | 'tasks' | 'courseStart';
 const TASK_OFFSET_MIN = -180;
 const TASK_OFFSET_MAX = 180;
@@ -67,6 +69,11 @@ const clampTaskRange = (start: number, end?: number) => {
   }
   return { start: clampedStart, end: clampedStart };
 };
+
+const SeatOptimizerController = dynamic(
+  () => import('./_components/schedule/SeatOptimizerController'),
+  { ssr: false },
+);
 
 type NamespaceHelpers = {
   key: (suffix: string) => string;
@@ -447,6 +454,15 @@ const [bottomTab, setBottomTab] = useState<BottomTab>('reservations');
     clearScheduleTab();
   };
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const visible = !isSettings && bottomTab === 'schedule';
+    window.dispatchEvent(new CustomEvent(SEAT_OPTIMIZER_TOGGLE_EVENT, { detail: { visible } }));
+    return () => {
+      window.dispatchEvent(new CustomEvent(SEAT_OPTIMIZER_TOGGLE_EVENT, { detail: { visible: false } }));
+    };
+  }, [isSettings, bottomTab]);
+
   // ── 店舗設定（分割UI）用のドラフト状態（子コンポーネントに丸ごと渡す）
   const [settingsDraft, setSettingsDraft] = useState<StoreSettingsValue>({
     courses: [],
@@ -805,8 +821,6 @@ useEffect(() => {
   // 予約ID → { old, next } を保持（卓番変更プレビュー用）
 const [pendingTables, setPendingTables] = useState<PendingTables>({});
 
-
-
   // ─── (先読み) localStorage の settings キャッシュをロード ─────────────
   useEffect(() => {
     if (!settingsLoading) return; // Firestore 読み込み完了後は不要
@@ -1072,7 +1086,7 @@ const toggleTableForMove = useCallback((id: string) => {
   );
 }, []);
 
-　/* ──────────────────────────────── */
+/* ──────────────────────────────── */
   // 店舗設定タブを初めて開いたときのみ Firestore を 1 read（※統合フックに置換のため停止）
   useEffect(() => {
     if (selectedMenu === '店舗設定画面' && !hasLoadedStore.current) {
@@ -3692,7 +3706,16 @@ const onNumPadConfirm = () => {
 )}
 {/* ───────────── スケジュール（外部コンポーネント） start ─────────────  */}
 {!isSettings && bottomTab === 'schedule' && (
-  <div className="-mx-4">
+  <div className="relative -mx-4">
+      <SeatOptimizerController
+        storeId={id}
+        dayStartMs={dayStartMs}
+        settings={settingsDraft}
+        presetTables={presetTablesView}
+        reservations={reservations}
+        reservationsInitialized={reservationsInitialized}
+        commitTableMoves={commitTableMoves}
+      />
       <ScheduleView
     scheduleStartHour={scheduleStartHour}
 scheduleEndHour={scheduleEndHour}
@@ -3739,6 +3762,7 @@ scheduleEndHour={scheduleEndHour}
 />
   </div>
 )}
+
       {/* ─────────────── 5. 数値パッドモーダル ─────────────── */}
       {numPadState && (
       <RootNumPad

@@ -9,6 +9,7 @@ import type { StoreSettingsValue } from '@/types/settings';
 import MiniTasksSettings from './MiniTasksSettings';
 import WaveSettings from './WaveSettings';
 import ScheduleSettings from './ScheduleSettings';
+import SeatOptimizerSettings from './SeatOptimizerSettings';
 
 // --- UI labels for *Store Settings* only (do NOT change from other screens) ---
 const STORE_LABEL_POSITIONS = 'ポジション設定';
@@ -153,7 +154,18 @@ export type StoreSettingsContentProps = {
 // ============== component ==============
 export default function StoreSettingsContent({ value, onChange, onSave, isSaving, baseline }: StoreSettingsContentProps) {
   // navigation (drill-in style)
-  type View = 'root' | 'courses' | 'positions' | 'tables' | 'tablesTables' | 'tablesAreas' | 'eatdrink' | 'minitasks' | 'wavesettings' | 'schedule';
+  type View =
+    | 'root'
+    | 'courses'
+    | 'positions'
+    | 'tables'
+    | 'tablesTables'
+    | 'tablesAreas'
+    | 'eatdrink'
+    | 'minitasks'
+    | 'wavesettings'
+    | 'seatOptimizer'
+    | 'schedule';
   const [view, setView] = useState<View>('root');
 
   // derived arrays
@@ -1130,6 +1142,10 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
           </div>
         )}
         <ListItem
+          label={<span>席効率化プロンプト</span>}
+          onClick={() => setView('seatOptimizer')}
+        />
+        <ListItem
           label={
             <>
               <span>スケジュール設定</span>
@@ -1203,6 +1219,33 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
       <SubPageShell title="波設定">
         <div className="text-sm text-gray-600">
           <WaveSettings value={value} onChange={patchRoot} />
+        </div>
+      </SubPageShell>
+    );
+  }
+
+  if (view === 'seatOptimizer') {
+    const seatValue = value.seatOptimizer ?? { basePrompt: '', tags: [] };
+    return (
+      <SubPageShell title="席効率化プロンプト">
+        <div className="text-sm text-gray-600">
+          <SeatOptimizerSettings
+            value={seatValue}
+            onUpdate={(next) => {
+              const basePrompt = (next.basePrompt ?? '').replace(/\r/g, '');
+              const rawTags = Array.isArray(next.tags)
+                ? next.tags
+                : Array.isArray(value.seatOptimizer?.tags)
+                  ? value.seatOptimizer!.tags!
+                  : [];
+              const tags = rawTags.map((tag) => tag.trim()).filter((tag, idx, arr) => tag.length > 0 && arr.indexOf(tag) === idx);
+              if (basePrompt.trim().length === 0 && tags.length === 0) {
+                patchRoot({ seatOptimizer: undefined });
+              } else {
+                patchRoot({ seatOptimizer: { basePrompt, tags } });
+              }
+            }}
+          />
         </div>
       </SubPageShell>
     );
