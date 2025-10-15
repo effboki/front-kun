@@ -49,5 +49,16 @@ const STYLE_MAP: Record<CourseColorKey, CourseColorStyle> = COURSE_COLOR_OPTIONS
 export const getCourseColorStyle = (key?: CourseColorKey | null): CourseColorStyle =>
   (key && STYLE_MAP[key]) ? STYLE_MAP[key] : DEFAULT_STYLE;
 
-export const COURSE_COLOR_NONE_OPTION = { key: null as const, label: 'なし', hex: DEFAULT_STYLE.background, textHex: DEFAULT_STYLE.text };
+export type CourseColorNoneOption = {
+  key: null;
+  label: string;
+  hex: string;
+  textHex: string;
+};
 
+export const COURSE_COLOR_NONE_OPTION: CourseColorNoneOption = {
+  key: null,
+  label: 'なし',
+  hex: DEFAULT_STYLE.background,
+  textHex: DEFAULT_STYLE.text,
+};

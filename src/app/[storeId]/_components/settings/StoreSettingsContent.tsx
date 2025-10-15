@@ -6,7 +6,15 @@ import type { CourseDef, TaskDef } from '@/types';
 import type { AreaDef } from '@/types';
 import { sanitizeTableCapacities } from '@/types/settings';
 import type { StoreSettingsValue } from '@/types/settings';
-import { COURSE_COLOR_NONE_OPTION, COURSE_COLOR_OPTIONS, getCourseColorStyle, normalizeCourseColor, type CourseColorKey } from '@/lib/courseColors';
+import {
+  COURSE_COLOR_NONE_OPTION,
+  COURSE_COLOR_OPTIONS,
+  getCourseColorStyle,
+  normalizeCourseColor,
+  type CourseColorKey,
+  type CourseColorNoneOption,
+  type CourseColorOption,
+} from '@/lib/courseColors';
 import MiniTasksSettings from './MiniTasksSettings';
 import WaveSettings from './WaveSettings';
 import ScheduleSettings from './ScheduleSettings';
@@ -36,7 +44,10 @@ const formatTaskOffset = (offset: number) => {
   if (offset < 0) return `${Math.abs(offset)}分前`;
   return '0分後';
 };
-const COURSE_COLOR_MENU_OPTIONS = [COURSE_COLOR_NONE_OPTION, ...COURSE_COLOR_OPTIONS] as const;
+const COURSE_COLOR_MENU_OPTIONS: (CourseColorNoneOption | CourseColorOption)[] = [
+  COURSE_COLOR_NONE_OPTION,
+  ...COURSE_COLOR_OPTIONS,
+];
 const clampTaskRange = (start: number, end?: number) => {
   const clampedStart = clampTaskOffset(start);
   if (typeof end === 'number' && Number.isFinite(end)) {
