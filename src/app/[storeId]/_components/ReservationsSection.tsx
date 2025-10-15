@@ -527,6 +527,13 @@ const ReservationsSection = memo(function ReservationsSection({
     map.set('未選択', defaultCourseStyle);
     return map;
   }, [courses, defaultCourseStyle]);
+  const newResTableTextClass = /\d{3}/.test(newResTable ?? '')
+    ? 'text-[11px] sm:text-xs'
+    : 'text-[13px] sm:text-sm';
+  const newResGuestsStr = String(newResGuests ?? '');
+  const newResGuestsTextClass = /\d{3}/.test(newResGuestsStr)
+    ? 'text-[11px] sm:text-xs'
+    : 'text-[13px] sm:text-sm';
 
   const handleImportApply = useCallback(
     async (rows: ImportedReservation[]) => {
@@ -1556,6 +1563,11 @@ const ReservationsSection = memo(function ReservationsSection({
                 const tableLabel = displayTableStr.trim();
                 const timeLabel = typeof r.time === 'string' ? r.time : '';
                 const nameLabel = typeof r.name === 'string' ? r.name.trim() : '';
+                const guestsStr = String(r.guests ?? '');
+                const isTableThreeDigits = /\d{3}/.test(displayTableStr);
+                const isGuestsThreeDigits = /\d{3}/.test(guestsStr);
+                const tableTextClass = isTableThreeDigits ? 'text-[11px] sm:text-xs' : 'text-[13px] sm:text-sm';
+                const guestsTextClass = isGuestsThreeDigits ? 'text-[11px] sm:text-xs' : 'text-[13px] sm:text-sm';
                 // Normalized current values for eat/drink (inline edit takes precedence)
                 const eatCurrent = inlineEdits[r.id]?.eat ?? getEatValue(r);
                 const drinkCurrent = inlineEdits[r.id]?.drink ?? getDrinkValue(r);
@@ -1627,7 +1639,7 @@ const ReservationsSection = memo(function ReservationsSection({
                                   openNumPad({ id: r.id, field: 'table', value: '' });
                                 }
                               }}
-                              className={`border px-1 py-0.5 rounded text-[13px] sm:text-sm w-full !text-center tabular-nums cursor-pointer ${
+                              className={`border px-1 py-0.5 rounded ${tableTextClass} w-full !text-center tabular-nums cursor-pointer ${
                                 editTableMode && tablesForMove.includes(r.id) ? 'border-4 border-amber-500' : ''
                               }`}
                             />
@@ -1740,10 +1752,10 @@ const ReservationsSection = memo(function ReservationsSection({
                     <td className={`border px-1 ${padY}`}>
                       <input
                         type="text"
-                        value={String(r.guests ?? '')}
+                        value={guestsStr}
                         readOnly
                         onClick={() => openNumPad({ id: r.id, field: 'guests', value: '' })}
-                        className="border px-1 py-0.5 w-8 rounded text-[13px] sm:text-sm !text-center cursor-pointer"
+                        className={`border px-1 py-0.5 w-8 rounded ${guestsTextClass} !text-center cursor-pointer`}
                       />
                     </td>
 
@@ -1877,7 +1889,7 @@ const ReservationsSection = memo(function ReservationsSection({
                     onClick={() => setNumPadState({ id: '-1', field: 'table', value: '' })}
                     placeholder="例:101"
                     maxLength={3}
-                    className="border px-1 py-0.5 w-8 rounded text-[13px] sm:text-sm !text-center cursor-pointer"
+                    className={`border px-1 py-0.5 w-8 rounded ${newResTableTextClass} !text-center cursor-pointer`}
                     required
                   />
                 </td>
@@ -1968,12 +1980,12 @@ const ReservationsSection = memo(function ReservationsSection({
                     <input
                       form="new-res-form"
                       type="text"
-                      value={String(newResGuests ?? '')}
+                      value={newResGuestsStr}
                       readOnly
                       onClick={() => setNumPadState({ id: '-1', field: 'guests', value: '' })}
                       placeholder="人数"
                       maxLength={3}
-                      className="border px-1 py-0.5 w-8 rounded text-[13px] sm:text-sm !text-center cursor-pointer"
+                      className={`border px-1 py-0.5 w-8 rounded ${newResGuestsTextClass} !text-center cursor-pointer`}
                       required
                     />
                   </td>
