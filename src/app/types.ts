@@ -47,11 +47,15 @@ export interface TaskDef {
 }
 
 /** コース定義の型 */
+import type { CourseColorKey } from '@/lib/courseColors';
+
 export interface CourseDef {
   /** コース名 */
   name: string;
   /** そのコースで行うタスク一覧 */
   tasks: TaskDef[];
+  /** コースの表示色 */
+  color?: CourseColorKey;
 }
 
 /** エリア定義 */

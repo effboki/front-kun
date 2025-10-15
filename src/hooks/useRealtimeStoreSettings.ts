@@ -96,12 +96,6 @@ export const useRealtimeStoreSettings = (storeId?: string) => {
           return;
         }
         const server = normalizeRead(snap.data());
-        console.info(
-          '[useRealtimeStoreSettings.svcp] path:',
-          `stores/${storeId}/settings/config`,
-          'keys:',
-          Object.keys((snap.data() || {}))
-        );
         lastServerValueRef.current = server;
         // サーバから来た差分をドラフトにマージ（編集中でも新規キーは取り込む）
         setValue((prev) => ({ ...(prev as StoreSettings), ...(server as StoreSettings) }));
@@ -154,13 +148,6 @@ export const useRealtimeStoreSettings = (storeId?: string) => {
     try {
       const ref = doc(db, 'stores', storeId as string, 'settings', 'config');
       const payload = (override ?? value ?? {}) as StoreSettings;
-
-      console.info(
-        '[useRealtimeStoreSettings.save] path:',
-        `stores/${storeId}/settings/config`,
-        'keys:',
-        Object.keys(payload || {})
-      );
 
       await setDoc(ref, { ...payload, updatedAt: serverTimestamp() }, { merge: true });
     } finally {

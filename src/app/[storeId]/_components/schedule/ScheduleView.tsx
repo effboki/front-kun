@@ -7,6 +7,7 @@ import type { StoreSettingsValue } from '@/types/settings';
 import type { Reservation } from '@/types/reservation';
 import { SLOT_MS, snap5m } from '@/lib/schedule';
 import { startOfDayMs } from '@/lib/time';
+import { getCourseColorStyle, normalizeCourseColor, type CourseColorStyle } from '@/lib/courseColors';
 import ReservationEditorDrawer, { type ReservationInput, type CourseOption } from '../reservations/ReservationEditorDrawer';
 import { DndContext, useDraggable, type DragEndEvent, PointerSensor, TouchSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { restrictToParentElement } from '@dnd-kit/modifiers';
@@ -584,6 +585,18 @@ export default function ScheduleView({
     }
     return out;
   }, [coursesOptions, storeSettings]);
+
+  const courseColorMap = useMemo(() => {
+    const map = new Map<string, CourseColorStyle>();
+    (courseDefs ?? []).forEach((def: any) => {
+      const rawName = String((def?.value ?? def?.name ?? def?.label ?? def?.title ?? '') || '').trim();
+      if (!rawName) return;
+      const colorKey = normalizeCourseColor(def?.color ?? def?.courseColor);
+      map.set(rawName, getCourseColorStyle(colorKey));
+    });
+    map.set('未選択', getCourseColorStyle(null));
+    return map;
+  }, [courseDefs]);
   // === コース規定の滞在時間 → 分（fallback 120） ===
   const getCourseStayMin = useCallback((course?: string | null) => {
     if (!course) return 120;
@@ -1887,6 +1900,7 @@ const handleDragMove = useCallback((e: any) => {
                     setArmedId={setArmedId}
                     stackCount={rowStackCount[String((it as any)._table ?? (it as any)._row)] ?? 1}
                     rowHeightPx={rowHeightsPx[(it as any)._row - 1] ?? effectiveRowH}
+                    courseColorMap={courseColorMap}
                   />
                 ))}
                 {/* --- ポップオーバーアクションメニュー --- */}
@@ -2326,7 +2340,16 @@ function ScheduleGrid({ nCols, colW, rowHeights }: { nCols: number; colW: number
 }
 
 function ReservationBlock({
-  item, row, startCol, spanCols, onClick, armedId, setArmedId, stackCount, rowHeightPx,
+  item,
+  row,
+  startCol,
+  spanCols,
+  onClick,
+  armedId,
+  setArmedId,
+  stackCount,
+  rowHeightPx,
+  courseColorMap,
 }: {
   item: ScheduleItem & { status?: 'normal' | 'warn'; _table?: string; _key?: string; _editedAllowed?: boolean };
   row: number;
@@ -2337,6 +2360,7 @@ function ReservationBlock({
   setArmedId: (id: string | null) => void;
   stackCount: number;
   rowHeightPx: number;
+  courseColorMap: Map<string, CourseColorStyle>;
 }) {
   const warn = item.status === 'warn';
   const baseId = String(item.id ?? item._key ?? `tmp_${row}_${startCol}`);
@@ -2401,6 +2425,12 @@ function ReservationBlock({
   const nameRaw = ((item as any).name ?? '').toString().trim();
   const name = nameRaw.length > 0 ? `${nameRaw}様` : '';
   const course = ((item as any).course ?? '').toString().trim();
+  const defaultCourseColorStyle = courseColorMap.get('未選択') ?? getCourseColorStyle(null);
+  const courseColorStyle = course ? courseColorMap.get(course) ?? defaultCourseColorStyle : defaultCourseColorStyle;
+  const courseTextStyle: CSSProperties = {
+    color: courseColorStyle.text,
+    opacity: state === 'departed' ? 0.7 : 1,
+  };
   const startLabel = fmtTime(item.startMs);
 
   const extractLabel = (value: any): string => {
@@ -2561,7 +2591,12 @@ function ReservationBlock({
           <div className={`flex items-center overflow-hidden text-[11px] ${secondaryTextClass} min-w-0`} />
           <div className={`flex items-end justify-between text-[11px] ${secondaryTextClass} min-w-0`}>
             <span className="font-medium truncate max-w-[60%]" aria-label="氏名">{name}</span>
-            <span className={`truncate text-right text-[11px] ${secondaryTextClass}`}>{course}</span>
+            <span
+              className={`truncate text-right text-[11px] ${secondaryTextClass}`}
+              style={courseTextStyle}
+            >
+              {course}
+            </span>
           </div>
         </div>
 

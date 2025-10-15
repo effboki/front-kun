@@ -31,6 +31,7 @@ import { useRealtimeStoreSettings } from '@/hooks/useRealtimeStoreSettings';
 import { toast } from 'react-hot-toast';
 
 import { addReservationFS, updateReservationFS, deleteReservationFS, deleteAllReservationsFS } from '@/lib/reservations';
+import { normalizeCourseColor } from '@/lib/courseColors';
 
 import LoadingSpinner from './_components/LoadingSpinner';
 import ReservationsSection from './_components/ReservationsSection';
@@ -550,9 +551,12 @@ const [baselineSettings, setBaselineSettings] =
         ? settingsDraft.schedule.dayStartHour
         : 15;
     const now = new Date();
-    const d0 = new Date(now);
-    d0.setHours(startHour, 0, 0, 0);
-    return d0.getTime();
+    const start = new Date(now);
+    start.setHours(startHour, 0, 0, 0);
+    if (start.getTime() > now.getTime()) {
+      start.setDate(start.getDate() - 1);
+    }
+    return start.getTime();
   }, [settingsDraft]);
 
   // Display window for Schedule (parent decides; child does not hardcode)
@@ -702,11 +706,13 @@ const {
 
       const stayMinutesRaw = Number((course as any)?.stayMinutes);
       const stayMinutes = Number.isFinite(stayMinutesRaw) && stayMinutesRaw > 0 ? Math.trunc(stayMinutesRaw) : undefined;
+      const color = normalizeCourseColor((course as any)?.color);
 
       return {
         name: course.name,
         stayMinutes,
         tasks,
+        color,
       } satisfies CourseDef;
     });
   }, []);

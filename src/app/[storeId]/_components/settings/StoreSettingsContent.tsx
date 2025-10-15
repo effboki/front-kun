@@ -6,6 +6,7 @@ import type { CourseDef, TaskDef } from '@/types';
 import type { AreaDef } from '@/types';
 import { sanitizeTableCapacities } from '@/types/settings';
 import type { StoreSettingsValue } from '@/types/settings';
+import { COURSE_COLOR_NONE_OPTION, COURSE_COLOR_OPTIONS, getCourseColorStyle, normalizeCourseColor, type CourseColorKey } from '@/lib/courseColors';
 import MiniTasksSettings from './MiniTasksSettings';
 import WaveSettings from './WaveSettings';
 import ScheduleSettings from './ScheduleSettings';
@@ -35,6 +36,7 @@ const formatTaskOffset = (offset: number) => {
   if (offset < 0) return `${Math.abs(offset)}分前`;
   return '0分後';
 };
+const COURSE_COLOR_MENU_OPTIONS = [COURSE_COLOR_NONE_OPTION, ...COURSE_COLOR_OPTIONS] as const;
 const clampTaskRange = (start: number, end?: number) => {
   const clampedStart = clampTaskOffset(start);
   if (typeof end === 'number' && Number.isFinite(end)) {
@@ -582,6 +584,20 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
       setCourses(base);
     },
     [courses, selectedCourse, setCourses]
+  );
+
+  const updateCourseColor = useCallback(
+    (courseName: string, colorKey: CourseColorKey | null) => {
+      const normalized = colorKey ? normalizeCourseColor(colorKey) : undefined;
+      const base = courses.map((c) => ({ ...c, tasks: getTasks(c).map((t) => ({ ...t })) }));
+      const idx = base.findIndex((c) => c.name === courseName);
+      if (idx < 0) return;
+      const current = normalizeCourseColor(base[idx].color);
+      if (current === normalized) return;
+      base[idx].color = normalized;
+      setCourses(base);
+    },
+    [courses, setCourses]
   );
 
   // ===== time step helpers for editing UI =====
@@ -1297,6 +1313,8 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
               {courses.map((c) => {
                 const name = c.name;
                 const isOpen = openCourse === name;
+                const courseColor = normalizeCourseColor(c.color);
+                const colorStyle = getCourseColorStyle(courseColor);
 
                 return (
                   <div key={name} className="rounded-lg border bg-white shadow-sm overflow-visible">
@@ -1317,6 +1335,14 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                     >
                       {/* 左：コース名 */}
                       <div className="flex items-center gap-2 text-sm font-medium text-gray-900 min-w-0">
+                        <span
+                          aria-hidden="true"
+                          className="inline-flex h-3 w-3 rounded-full border border-white/80 shadow-sm"
+                          style={{
+                            backgroundColor: colorStyle.background,
+                            boxShadow: `inset 0 0 0 1px ${colorStyle.border}`,
+                          }}
+                        />
                         <span className="truncate">{name}</span>
                       </div>
 
@@ -1361,21 +1387,53 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                             </svg>
                           </button>
                           {courseMenuFor === name && (
-                            <div role="menu" className="absolute right-0 mt-2 w-44 rounded-md border bg-white shadow-lg py-1 text-sm z-20">
-                              <button
-                                type="button"
-                                onClick={() => { setCourseMenuFor(null); setSelectedCourse(name); renameCourse(); }}
-                                className="w-full text-left px-3 py-2 hover:bg-gray-50"
-                              >
-                                ✎ コース名変更
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => { setCourseMenuFor(null); setSelectedCourse(name); deleteCourse(); }}
-                                className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50"
-                              >
-                                🗑 コース削除
-                              </button>
+                            <div role="menu" className="absolute right-0 mt-2 w-48 rounded-md border bg-white shadow-lg pb-1 text-sm z-20">
+                              <div className="px-3 pt-2 pb-1 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+                                コースの色
+                              </div>
+                              <div className="px-3 pb-2 grid grid-cols-2 gap-2">
+                                {COURSE_COLOR_MENU_OPTIONS.map((opt) => {
+                                  const optionKey = opt.key;
+                                  const isActive = optionKey === null ? !courseColor : courseColor === optionKey;
+                                  return (
+                                    <button
+                                      key={`course-color-${name}-${optionKey ?? 'none'}`}
+                                      type="button"
+                                      data-keepedit="1"
+                                      onClick={() => updateCourseColor(name, optionKey)}
+                                      className={`flex items-center gap-2 rounded-md border px-2 py-1 text-xs transition ${
+                                        isActive ? 'border-sky-500 bg-sky-50 text-sky-700' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                                      }`}
+                                    >
+                                      <span
+                                        aria-hidden="true"
+                                        className="inline-flex h-4 w-4 rounded-full border border-white/70 shadow-sm"
+                                        style={{
+                                          backgroundColor: opt.hex,
+                                          boxShadow: `inset 0 0 0 1px ${opt.textHex}`,
+                                        }}
+                                      />
+                                      <span className="truncate">{opt.label}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <div className="border-t border-gray-100 pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => { setCourseMenuFor(null); setSelectedCourse(name); renameCourse(); }}
+                                  className="w-full text-left px-3 py-2 hover:bg-gray-50"
+                                >
+                                  ✎ コース名変更
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { setCourseMenuFor(null); setSelectedCourse(name); deleteCourse(); }}
+                                  className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50"
+                                >
+                                  🗑 コース削除
+                                </button>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -1397,109 +1455,35 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                               まだタスクがありません。下の<strong className="mx-1">「追加」</strong>ボタンから新規タスクを追加してください。
                             </div>
                           ) : (
-                            courseTasksForList.map((task, idx) => (
-                              <div
-                                key={`${task.timeOffset}_${task.timeOffsetEnd ?? task.timeOffset}_${normalizeLabel(task.label)}_${idx}`}
-                                className="py-2 px-2 bg-white rounded-md border border-gray-200 shadow-sm hover:shadow-md transition group"
-                              >
-                                <div
-                                  className={`grid items-center gap-3 ${
-                                    isTablet ? 'grid-cols-[auto,1fr,auto,64px]' : 'grid-cols-[auto,1fr,64px]'
-                                  }`}
-                                >
-                                  {/* col 1: time (with stepper in edit mode) */}
-                                  {editingTimeTask && editingTimeTask.offset === task.timeOffset && normEq(editingTimeTask.label, task.label) ? (
-                                    <div className="flex flex-col items-center gap-2 shrink-0 min-w-[220px]" data-keepedit="1">
-                                      <div className="flex flex-wrap items-center justify-center gap-3">
-                                        <div className="flex flex-col items-center gap-1">
-                                          <span className="text-[11px] font-medium text-sky-700">開始</span>
-                                          <div className="inline-flex items-stretch rounded-md border border-sky-300 bg-sky-50/70 shadow-sm overflow-hidden" role="group" aria-label="開始時間調整">
-                                            <button
-                                              type="button"
-                                              data-keepedit="1"
-                                              onPointerDown={(e) => { e.preventDefault(); startHold(-5, editingTimeTask.offset, task.label, 'start'); }}
-                                              onPointerUp={stopHold}
-                                              onPointerCancel={stopHold}
-                                              onPointerLeave={stopHold}
-                                              className="px-2 w-10 h-10 text-sm font-medium text-sky-700 bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                                              aria-label="開始を5分早く"
-                                            >
-                                              -5
-                                            </button>
-                                            <div className="min-w-[80px] h-10 px-2 grid place-items-center text-sm font-semibold text-sky-900 tabular-nums bg-sky-50 shrink-0">
-                                              {formatTaskOffset(editingTimeTask.offset)}
-                                            </div>
-                                            <button
-                                              type="button"
-                                              data-keepedit="1"
-                                              onPointerDown={(e) => { e.preventDefault(); startHold(+5, editingTimeTask.offset, task.label, 'start'); }}
-                                              onPointerUp={stopHold}
-                                              onPointerCancel={stopHold}
-                                              onPointerLeave={stopHold}
-                                              className="px-2 w-10 h-10 text-sm font-medium text-sky-700 bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                                              aria-label="開始を5分遅く"
-                                            >
-                                              +5
-                                            </button>
-                                          </div>
-                                        </div>
-                                        <span className="text-xs font-semibold text-sky-700" aria-hidden="true">〜</span>
-                                        <div className="flex flex-col items-center gap-1">
-                                          <span className="text-[11px] font-medium text-sky-700">終了</span>
-                                          <div className="inline-flex items-stretch rounded-md border border-sky-300 bg-sky-50/70 shadow-sm overflow-hidden" role="group" aria-label="終了時間調整">
-                                            <button
-                                              type="button"
-                                              data-keepedit="1"
-                                              onPointerDown={(e) => { e.preventDefault(); startHold(-5, editingTimeTask.offset, task.label, 'end'); }}
-                                              onPointerUp={stopHold}
-                                              onPointerCancel={stopHold}
-                                              onPointerLeave={stopHold}
-                                              className="px-2 w-10 h-10 text-sm font-medium text-sky-700 bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                                              aria-label="終了を5分早く"
-                                            >
-                                              -5
-                                            </button>
-                                            <div className="min-w-[80px] h-10 px-2 grid place-items-center text-sm font-semibold text-sky-900 tabular-nums bg-sky-50 shrink-0">
-                                              {formatTaskOffset(editingTimeTask.end)}
-                                            </div>
-                                            <button
-                                              type="button"
-                                              data-keepedit="1"
-                                              onPointerDown={(e) => { e.preventDefault(); startHold(+5, editingTimeTask.offset, task.label, 'end'); }}
-                                              onPointerUp={stopHold}
-                                              onPointerCancel={stopHold}
-                                              onPointerLeave={stopHold}
-                                              className="px-2 w-10 h-10 text-sm font-medium text-sky-700 bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                                              aria-label="終了を5分遅く"
-                                            >
-                                              +5
-                                            </button>
-                                          </div>
-                                        </div>
-                                      </div>
-                                      <button
-                                        type="button"
-                                        data-keepedit="1"
-                                        onClick={() => { stopHold(); setEditingTimeTask(null); }}
-                                        className="px-3 py-1.5 rounded-md border border-sky-200 bg-white text-xs font-medium text-sky-700 hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                                        aria-label="時間編集を閉じる"
-                                      >
-                                        編集を閉じる
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      onClick={() => startTimeEdit(task.timeOffset, task.timeOffsetEnd ?? task.timeOffset, task.label)}
-                                      className="h-9 inline-flex items-center justify-center px-3 rounded-full border border-sky-200 bg-sky-50 text-sky-800 text-sm font-medium tabular-nums active:scale-[.99] hover:bg-sky-100 focus:outline-none focus:ring-2 focus:ring-sky-400 shrink-0"
-                                      title="タップで時間編集"
-                                    >
-                                      {formatTaskRange(task.timeOffset, task.timeOffsetEnd)}
-                                    </button>
-                                  )}
+                            courseTasksForList.map((task, idx) => {
+                              const startOffset = task.timeOffset;
+                              const endOffset = task.timeOffsetEnd ?? task.timeOffset;
+                              const hasRange = endOffset !== startOffset;
+                              const timeButtonBaseClass =
+                                'inline-flex justify-center px-3 rounded-full border font-medium tabular-nums active:scale-[.99] focus:outline-none focus:ring-2 shrink-0';
+                              const timeButtonLayoutClass = hasRange
+                                ? 'flex-col items-center gap-0.5 py-1 text-[10px] md:text-[11px]'
+                                : 'items-center h-8 text-xs md:h-9 md:text-sm';
+                              const timeButtonColorClass =
+                                startOffset < 0
+                                  ? 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100 focus:ring-red-400'
+                                  : 'border-sky-200 bg-sky-50 text-sky-800 hover:bg-sky-100 focus:ring-sky-400';
+                              const startOffsetLabel = formatTaskOffset(startOffset);
+                              const endOffsetLabel = formatTaskOffset(endOffset);
+                              const activeEditingTask =
+                                editingTimeTask &&
+                                editingTimeTask.offset === task.timeOffset &&
+                                normEq(editingTimeTask.label, task.label)
+                                  ? editingTimeTask
+                                  : null;
 
-                                  {/* col 2: label */}
-                                  {editingLabelTask && editingLabelTask.offset === task.timeOffset && normEq(editingLabelTask.label, task.label) ? (
+                              const renderLabelField = () => {
+                                if (
+                                  editingLabelTask &&
+                                  editingLabelTask.offset === task.timeOffset &&
+                                  normEq(editingLabelTask.label, task.label)
+                                ) {
+                                  return (
                                     <input
                                       ref={editingInputRef}
                                       type="text"
@@ -1509,9 +1493,15 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                                       autoCorrect="off"
                                       spellCheck={false}
                                       lang="ja"
-                                      onCompositionStart={() => { editingLabelComposingRef.current = true; }}
-                                      onCompositionEnd={() => { editingLabelComposingRef.current = false; }}
-                                      onBlur={() => { /* no-op */ }}
+                                      onCompositionStart={() => {
+                                        editingLabelComposingRef.current = true;
+                                      }}
+                                      onCompositionEnd={() => {
+                                        editingLabelComposingRef.current = false;
+                                      }}
+                                      onBlur={() => {
+                                        /* no-op */
+                                      }}
                                       onKeyDown={(e) => {
                                         const isComp = (e as any).nativeEvent?.isComposing;
                                         if (e.key === 'Enter' && !isComp && !editingLabelComposingRef.current) {
@@ -1524,46 +1514,236 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                                       }}
                                       onMouseDown={(e) => e.stopPropagation()}
                                       onClick={(e) => e.stopPropagation()}
+                                      data-keepedit="1"
                                       autoFocus
-                                      className="min-w-0 h-9 w-full px-3 rounded-md border border-gray-300 bg-white text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                                    className="min-w-0 h-9 w-full px-3 rounded-md border border-gray-300 bg-white text-[13px] shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400 md:text-sm"
                                       key={`edit-${task.timeOffset}-${task.timeOffsetEnd ?? task.timeOffset}-${task.label}`}
                                     />
-                                  ) : (
-                                    <span
-                                      className="min-w-0 h-9 w-full inline-flex items-center px-3 rounded-md border border-gray-200 bg-white text-gray-900 text-sm cursor-text overflow-hidden text-ellipsis whitespace-nowrap transition group-hover:bg-gray-50"
-                                      onMouseDown={(e) => { e.preventDefault(); }}
-                                      onClick={() => startLabelEdit(task.timeOffset, task.label)}
-                                      title="クリックして名前を編集"
-                                    >
-                                      {!isTablet && (
-                                        <span
-                                          aria-hidden="true"
-                                          className={`mr-2 inline-flex h-3 w-3 flex-none rounded-full border border-gray-300 ${task.bgColor}`}
-                                        />
-                                      )}
-                                      {task.label}
-                                    </span>
-                                  )}
-
-                                  {isTablet && (
-                                    <TaskColorSelector
-                                      value={task.bgColor}
-                                      onChange={(nextColor) => updateTaskColor(task.timeOffset, task.label, nextColor)}
-                                      ariaLabel={`${task.label} の色`}
-                                      compact
-                                    />
-                                  )}
-
-                                  {/* delete */}
-                                  <button
-                                    onClick={() => deleteTaskFromCourse(task.timeOffset, task.label)}
-                                    className="w-[56px] h-9 rounded-md border border-red-200 text-red-600/90 hover:bg-red-50 active:scale-[.99] justify-self-end text-sm shrink-0"
+                                  );
+                                }
+                                return (
+                                  <span
+                                    className="min-w-0 h-9 w-full inline-flex items-center px-3 rounded-md border border-gray-200 bg-white text-gray-900 text-[13px] md:text-sm cursor-text overflow-hidden text-ellipsis whitespace-nowrap transition group-hover:bg-gray-50"
+                                    onMouseDown={(e) => {
+                                      e.preventDefault();
+                                    }}
+                                    onClick={() => startLabelEdit(task.timeOffset, task.label)}
+                                    data-keepedit="1"
+                                    title="クリックして名前を編集"
                                   >
-                                    削除
-                                  </button>
+                                    {!isTablet && (
+                                      <span
+                                        aria-hidden="true"
+                                        className={`mr-2 inline-flex h-3 w-3 flex-none rounded-full border border-gray-300 ${task.bgColor}`}
+                                      />
+                                    )}
+                                    {task.label}
+                                  </span>
+                                );
+                              };
+
+                              const renderColorSelector = () => {
+                                if (!isTablet) return null;
+                                return (
+                                  <TaskColorSelector
+                                    value={task.bgColor}
+                                    onChange={(nextColor) => updateTaskColor(task.timeOffset, task.label, nextColor)}
+                                    ariaLabel={`${task.label} の色`}
+                                    compact
+                                  />
+                                );
+                              };
+
+                              const renderDeleteButton = () => (
+                                <button
+                                  onClick={() => deleteTaskFromCourse(task.timeOffset, task.label)}
+                                  className="w-[48px] h-8 rounded-md border border-red-200 text-red-600/90 hover:bg-red-50 active:scale-[.99] justify-self-end text-xs font-medium shrink-0"
+                                  data-keepedit="1"
+                                >
+                                  削除
+                                </button>
+                              );
+
+                              if (activeEditingTask) {
+                                const stepperButtonClass =
+                                  'px-1.5 w-7 h-7 text-[10px] font-medium text-sky-700 bg-white hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400 md:w-10 md:h-10 md:text-sm md:px-2';
+                                const stepperValueClass =
+                                  'min-w-[52px] h-7 px-1.5 grid place-items-center text-[10px] font-semibold text-sky-900 tabular-nums bg-sky-50 shrink-0 md:min-w-[80px] md:h-10 md:text-sm md:px-2';
+                                const stepperLabelClass =
+                                  'text-[9px] font-medium text-sky-700 md:text-[11px]';
+                                const stepperRowClass =
+                                  'flex flex-nowrap items-center justify-center gap-1.5 md:flex-wrap md:gap-3';
+                                return (
+                                  <div
+                                    key={`${task.timeOffset}_${task.timeOffsetEnd ?? task.timeOffset}_${normalizeLabel(task.label)}_${idx}`}
+                                    className="py-2 px-2 bg-white rounded-md border border-gray-200 shadow-sm hover:shadow-md transition group"
+                                  >
+                                    <div className="flex flex-col gap-3" data-keepedit="1">
+                                      <div
+                                        className="rounded-lg border border-sky-200 bg-sky-50/80 p-2.5 shadow-sm md:p-3"
+                                        data-keepedit="1"
+                                      >
+                                        <div
+                                          className={`${stepperRowClass} flex-wrap justify-center md:flex-nowrap md:justify-between`}
+                                          data-keepedit="1"
+                                        >
+                                          <div className="flex flex-col items-center gap-1" data-keepedit="1">
+                                            <span className={stepperLabelClass}>開始</span>
+                                            <div
+                                              className="inline-flex items-stretch rounded-md border border-sky-300 bg-white shadow-sm overflow-hidden"
+                                              role="group"
+                                              aria-label="開始時間調整"
+                                            >
+                                              <button
+                                                type="button"
+                                                data-keepedit="1"
+                                                onPointerDown={(e) => {
+                                                  e.preventDefault();
+                                                  startHold(-5, activeEditingTask.offset, task.label, 'start');
+                                                }}
+                                                onPointerUp={stopHold}
+                                                onPointerCancel={stopHold}
+                                                onPointerLeave={stopHold}
+                                                className={stepperButtonClass}
+                                                aria-label="開始を5分早く"
+                                              >
+                                                -5
+                                              </button>
+                                              <div className={stepperValueClass}>
+                                                {formatTaskOffset(activeEditingTask.offset)}
+                                              </div>
+                                              <button
+                                                type="button"
+                                                data-keepedit="1"
+                                                onPointerDown={(e) => {
+                                                  e.preventDefault();
+                                                  startHold(+5, activeEditingTask.offset, task.label, 'start');
+                                                }}
+                                                onPointerUp={stopHold}
+                                                onPointerCancel={stopHold}
+                                                onPointerLeave={stopHold}
+                                                className={stepperButtonClass}
+                                                aria-label="開始を5分遅く"
+                                              >
+                                                +5
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <span
+                                            className="text-[9px] font-semibold text-sky-700 md:text-xs"
+                                            aria-hidden="true"
+                                            data-keepedit="1"
+                                          >
+                                            〜
+                                          </span>
+                                          <div className="flex flex-col items-center gap-1" data-keepedit="1">
+                                            <span className={stepperLabelClass}>終了</span>
+                                            <div
+                                              className="inline-flex items-stretch rounded-md border border-sky-300 bg-white shadow-sm overflow-hidden"
+                                              role="group"
+                                              aria-label="終了時間調整"
+                                            >
+                                              <button
+                                                type="button"
+                                                data-keepedit="1"
+                                                onPointerDown={(e) => {
+                                                  e.preventDefault();
+                                                  startHold(-5, activeEditingTask.offset, task.label, 'end');
+                                                }}
+                                                onPointerUp={stopHold}
+                                                onPointerCancel={stopHold}
+                                                onPointerLeave={stopHold}
+                                                className={stepperButtonClass}
+                                                aria-label="終了を5分早く"
+                                              >
+                                                -5
+                                              </button>
+                                              <div className={stepperValueClass}>
+                                                {formatTaskOffset(activeEditingTask.end)}
+                                              </div>
+                                              <button
+                                                type="button"
+                                                data-keepedit="1"
+                                                onPointerDown={(e) => {
+                                                  e.preventDefault();
+                                                  startHold(+5, activeEditingTask.offset, task.label, 'end');
+                                                }}
+                                                onPointerUp={stopHold}
+                                                onPointerCancel={stopHold}
+                                                onPointerLeave={stopHold}
+                                                className={stepperButtonClass}
+                                                aria-label="終了を5分遅く"
+                                              >
+                                                +5
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            data-keepedit="1"
+                                            onClick={() => {
+                                              stopHold();
+                                              setEditingTimeTask(null);
+                                            }}
+                                            className="self-center px-3 h-8 rounded-md border border-sky-200 bg-white text-xs font-medium text-sky-700 hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400 md:h-9"
+                                            aria-label="時間編集を閉じる"
+                                          >
+                                            編集を閉じる
+                                          </button>
+                                        </div>
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-2 sm:gap-3" data-keepedit="1">
+                                        <div className="flex-1 min-w-[9.5rem] sm:min-w-[12rem]" data-keepedit="1">
+                                          {renderLabelField()}
+                                        </div>
+                                        {isTablet && (
+                                          <div className="shrink-0" data-keepedit="1">
+                                            {renderColorSelector()}
+                                          </div>
+                                        )}
+                                        <div className="shrink-0" data-keepedit="1">
+                                          {renderDeleteButton()}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              }
+
+                              return (
+                                <div
+                                  key={`${task.timeOffset}_${task.timeOffsetEnd ?? task.timeOffset}_${normalizeLabel(task.label)}_${idx}`}
+                                  className="py-2 px-2 bg-white rounded-md border border-gray-200 shadow-sm hover:shadow-md transition group"
+                                >
+                                  <div
+                                    className={`grid items-center gap-2 md:gap-3 ${
+                                      isTablet ? 'grid-cols-[auto,1fr,auto,52px]' : 'grid-cols-[auto,1fr,52px]'
+                                    }`}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        startTimeEdit(task.timeOffset, task.timeOffsetEnd ?? task.timeOffset, task.label)
+                                      }
+                                      className={`${timeButtonBaseClass} ${timeButtonLayoutClass} ${timeButtonColorClass}`}
+                                      title="タップで時間編集"
+                                    >
+                                      {hasRange ? (
+                                        <span className="flex flex-col items-center leading-tight">
+                                          <span className="whitespace-nowrap">{startOffsetLabel}</span>
+                                          <span className="whitespace-nowrap">〜 {endOffsetLabel}</span>
+                                        </span>
+                                      ) : (
+                                        <span className="whitespace-nowrap">{startOffsetLabel}</span>
+                                      )}
+                                    </button>
+                                    <div className="min-w-0">{renderLabelField()}</div>
+                                    {isTablet && renderColorSelector()}
+                                    {renderDeleteButton()}
+                                  </div>
                                 </div>
-                              </div>
-                            ))
+                              );
+                            })
                           )}
                         </div>
 

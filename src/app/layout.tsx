@@ -80,6 +80,8 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-title" content="フロント君" />
         {/* iOS でアドレスバー無しの全画面化 */}
         <meta name="apple-mobile-web-app-capable" content="yes" />
+        {/* Chrome / 一部新仕様向け */}
+        <meta name="mobile-web-app-capable" content="yes" />
         <meta
           name="viewport"
           content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover"

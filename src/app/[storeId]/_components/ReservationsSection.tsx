@@ -2,10 +2,11 @@
 import { memo, useEffect, useMemo, useRef, useState, useLayoutEffect, useCallback } from 'react';
 import type { FormEvent, Dispatch, SetStateAction } from 'react';
 import dynamic from 'next/dynamic';
-import type { ResOrder, Reservation, PendingTables } from '@/types';
+import type { CourseDef, ResOrder, Reservation, PendingTables } from '@/types';
 import { parseTimeToMinutes } from '@/lib/time';
 import { useReservationMutations } from '@/hooks/useReservationMutations';
 import type { ImportedReservation } from '@/lib/clipboardImport';
+import { getCourseColorStyle, normalizeCourseColor, type CourseColorStyle } from '@/lib/courseColors';
 
 const ReservationImportModal = dynamic(() => import('./ReservationImportModal'), { ssr: false });
 
@@ -404,7 +405,7 @@ type Props = {
 
   /** セレクトの選択肢 */
   timeOptions: string[];
-  courses: { name: string }[];
+  courses: CourseDef[];
   eatOptions: string[];
   drinkOptions: string[];
 
@@ -516,6 +517,16 @@ const ReservationsSection = memo(function ReservationsSection({
 }: Props) {
   const [showImportModal, setShowImportModal] = useState(false);
   const { createReservation } = useReservationMutations(storeId, { dayStartMs });
+  const defaultCourseStyle = useMemo(() => getCourseColorStyle(null), []);
+  const courseColorMap = useMemo(() => {
+    const map = new Map<string, CourseColorStyle>();
+    courses.forEach((course) => {
+      const key = normalizeCourseColor(course.color);
+      map.set(course.name, getCourseColorStyle(key));
+    });
+    map.set('未選択', defaultCourseStyle);
+    return map;
+  }, [courses, defaultCourseStyle]);
 
   const handleImportApply = useCallback(
     async (rows: ImportedReservation[]) => {
@@ -1144,7 +1155,7 @@ const ReservationsSection = memo(function ReservationsSection({
   };
 
   return (
-    <section className="space-y-4 text-sm">
+    <section className="space-y-4 text-[13px] sm:text-sm">
       {showImportModal && (
         <ReservationImportModal
           storeId={storeId}
@@ -1299,7 +1310,7 @@ const ReservationsSection = memo(function ReservationsSection({
             </div>
           </div>
         </div>
-        <div className="sm:p-4 p-2 space-y-4 text-sm border rounded overflow-x-auto relative">
+        <div className="sm:p-4 p-2 space-y-4 text-[13px] sm:text-sm border rounded overflow-x-auto relative">
           {/* ── 予約リスト ヘッダー ───────────────────── */}
           <div className="flex flex-col space-y-2">
             {/* 下段：卓番変更 & 全リセット & 予約確定 */}
@@ -1307,13 +1318,13 @@ const ReservationsSection = memo(function ReservationsSection({
               <button
                 type="button"
                 onClick={() => setShowImportModal(true)}
-                className="px-3 py-1 rounded text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700"
+                className="px-3 py-1 rounded text-xs sm:text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700"
               >
                 インポート
               </button>
               <button
                 onClick={onToggleEditTableMode}
-                className={`px-3 py-1 rounded text-sm font-semibold ${
+                className={`px-3 py-1 rounded text-xs sm:text-sm font-semibold ${
                   editTableMode
                     ? 'bg-amber-600 text-white'
                     : 'bg-amber-500 text-white hover:bg-amber-600'
@@ -1344,7 +1355,7 @@ const ReservationsSection = memo(function ReservationsSection({
               <div className="ml-auto">
                 <button
                   onClick={resetAllReservations}
-                  className="px-3 py-1 rounded text-sm bg-red-600 text-white hover:bg-red-700"
+                  className="px-3 py-1 rounded text-xs sm:text-sm bg-red-600 text-white hover:bg-red-700"
                   title="すべての変更をリセット"
                 >
                   全リセット
@@ -1408,7 +1419,7 @@ const ReservationsSection = memo(function ReservationsSection({
                       }}
                       disabled={hasPendingConflict || pendingCount === 0}
                       title={hasPendingConflict ? '重複があります' : (pendingCount === 0 ? '変更がありません' : '変更を適用')}
-                      className={`ml-auto inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-semibold shrink-0
+                      className={`ml-auto inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-xs sm:text-sm font-semibold shrink-0
                ${hasPendingConflict || pendingCount === 0
                  ? 'bg-white/30 text-white/70 cursor-not-allowed ring-2 ring-white/50'
                  : 'bg-amber-500 text-gray-900 hover:bg-amber-600 active:bg-amber-700 shadow-sm ring-2 ring-white/80'}`}
@@ -1427,7 +1438,7 @@ const ReservationsSection = memo(function ReservationsSection({
                         // モード終了
                         onToggleEditTableMode();
                       }}
-                      className="px-2.5 py-1 rounded-md text-sm bg-white text-amber-700 ring-1 ring-white/70 hover:bg-amber-50 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                      className="px-2.5 py-1 rounded-md text-xs sm:text-sm bg-white text-amber-700 ring-1 ring-white/70 hover:bg-amber-50 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
                       aria-label="キャンセル"
                       title="キャンセル"
                     >
@@ -1498,7 +1509,7 @@ const ReservationsSection = memo(function ReservationsSection({
 
           {/* 予約テーブル */}
           <form id="new-res-form" onSubmit={addReservation} className="hidden" />
-          <table className="min-w-full table-auto border text-sm">
+          <table className="min-w-full table-auto border text-[13px] sm:text-sm">
             <thead className="bg-gray-50">
               <tr>
                 <th className="border px-1 py-1 w-24">来店時刻</th>
@@ -1566,7 +1577,7 @@ const ReservationsSection = memo(function ReservationsSection({
                       <select
                         value={r.time}
                         onChange={(e) => updateReservationField(r.id, 'time', e.target.value)}
-                        className="border px-1 py-0.5 rounded text-sm font-semibold tabular-nums"
+                        className="border px-1 py-0.5 rounded text-[13px] sm:text-sm font-semibold tabular-nums"
                       >
                         {timeOptions.map((t) => (
                           <option key={t} value={t}>
@@ -1616,7 +1627,7 @@ const ReservationsSection = memo(function ReservationsSection({
                                   openNumPad({ id: r.id, field: 'table', value: '' });
                                 }
                               }}
-                              className={`border px-1 py-0.5 rounded text-sm w-full !text-center tabular-nums cursor-pointer ${
+                              className={`border px-1 py-0.5 rounded text-[13px] sm:text-sm w-full !text-center tabular-nums cursor-pointer ${
                                 editTableMode && tablesForMove.includes(r.id) ? 'border-4 border-amber-500' : ''
                               }`}
                             />
@@ -1633,7 +1644,7 @@ const ReservationsSection = memo(function ReservationsSection({
                           value={r.name ?? ''}
                           onChange={(e) => updateReservationField(r.id, 'name', e.target.value)}
                           placeholder="氏名"
-                          className="border px-1 py-0.5 w-full rounded text-sm text-center"
+                          className="border px-1 py-0.5 w-full rounded text-[13px] sm:text-sm text-center"
                         />
                       </td>
                     )}
@@ -1648,11 +1659,17 @@ const ReservationsSection = memo(function ReservationsSection({
                           if (next === selectValue) return;
                           updateReservationField(r.id, 'course', next);
                         };
+                        const courseStyle = courseColorMap.get(selectValue) ?? defaultCourseStyle;
                         return (
                           <select
                             value={selectValue}
                             onChange={(e) => handleChange(e.target.value)}
-                            className="border px-1 py-0.5 rounded text-sm"
+                            className="border px-1 py-0.5 rounded text-[13px] sm:text-sm transition-colors"
+                            style={{
+                              backgroundColor: courseStyle.background,
+                              color: courseStyle.text,
+                              borderColor: courseStyle.border,
+                            }}
                           >
                             <option value="未選択">未設定</option>
                             {courses.filter((c) => c.name !== '未選択').map((c) => (
@@ -1726,7 +1743,7 @@ const ReservationsSection = memo(function ReservationsSection({
                         value={String(r.guests ?? '')}
                         readOnly
                         onClick={() => openNumPad({ id: r.id, field: 'guests', value: '' })}
-                        className="border px-1 py-0.5 w-8 rounded text-sm !text-center cursor-pointer"
+                        className="border px-1 py-0.5 w-8 rounded text-[13px] sm:text-sm !text-center cursor-pointer"
                       />
                     </td>
 
@@ -1738,7 +1755,7 @@ const ReservationsSection = memo(function ReservationsSection({
                           value={notesValue}
                           readOnly
                           placeholder="備考"
-                          className="border px-1 py-0.5 w-full rounded text-sm text-center cursor-pointer"
+                          className="border px-1 py-0.5 w-full rounded text-[13px] sm:text-sm text-center cursor-pointer"
                           title={trimmedNotes || '備考を入力'}
                           onClick={() =>
                             setNoteEditor({
@@ -1774,7 +1791,7 @@ const ReservationsSection = memo(function ReservationsSection({
                     <td className={`border px-1 ${padY} hidden sm:table-cell`}>
                       <button
                         onClick={() => toggleArrivalChecked(r.id)}
-                        className={`px-2 py-0.5 rounded text-sm ${
+                        className={`px-2 py-0.5 rounded text-[13px] sm:text-sm ${
                           checkedDepartures.includes(r.id)
                             ? 'bg-gray-500 text-white'
                             : checkedArrivals.includes(r.id)
@@ -1790,7 +1807,7 @@ const ReservationsSection = memo(function ReservationsSection({
                     <td className="hidden sm:table-cell px-1">
                       <button
                         onClick={() => togglePaymentChecked(r.id)}
-                        className={`px-2 py-0.5 rounded text-sm ${
+                        className={`px-2 py-0.5 rounded text-[13px] sm:text-sm ${
                           checkedDepartures.includes(r.id)
                             ? 'bg-gray-500 text-white'
                             : checkedPayments.includes(r.id)
@@ -1806,7 +1823,7 @@ const ReservationsSection = memo(function ReservationsSection({
                     <td className={`border px-1 ${padY} hidden sm:table-cell`}>
                       <button
                         onClick={() => toggleDepartureChecked(r.id)}
-                        className={`px-2 py-0.5 rounded text-sm ${
+                        className={`px-2 py-0.5 rounded text-[13px] sm:text-sm ${
                           checkedDepartures.includes(r.id) ? 'bg-gray-500 text-white' : 'bg-gray-200 text-black'
                         }`}
                       >
@@ -1839,7 +1856,7 @@ const ReservationsSection = memo(function ReservationsSection({
                     form="new-res-form"
                     value={newResTime}
                     onChange={(e) => setNewResTime(e.target.value)}
-                    className="border px-1 py-0.5 rounded text-sm font-semibold tabular-nums"
+                    className="border px-1 py-0.5 rounded text-[13px] sm:text-sm font-semibold tabular-nums"
                     required
                   >
                     {timeOptions.map((t) => (
@@ -1860,7 +1877,7 @@ const ReservationsSection = memo(function ReservationsSection({
                     onClick={() => setNumPadState({ id: '-1', field: 'table', value: '' })}
                     placeholder="例:101"
                     maxLength={3}
-                    className="border px-1 py-0.5 w-8 rounded text-sm !text-center cursor-pointer"
+                    className="border px-1 py-0.5 w-8 rounded text-[13px] sm:text-sm !text-center cursor-pointer"
                     required
                   />
                 </td>
@@ -1874,26 +1891,37 @@ const ReservationsSection = memo(function ReservationsSection({
                       value={newResName}
                       onChange={(e) => setNewResName(e.target.value)}
                       placeholder="氏名"
-                      className="border px-1 py-0.5 w-full rounded text-sm text-center"
+                      className="border px-1 py-0.5 w-full rounded text-[13px] sm:text-sm text-center"
                     />
                   </td>
                 )}
 
                 {/* 新規コースセル */}
                 <td className="border px-1 py-1">
-                  <select
-                    form="new-res-form"
-                    value={newResCourse}
-                    onChange={(e) => setNewResCourse(e.target.value)}
-                    className="border px-1 py-0.5 rounded text-sm"
-                  >
-                    <option value="未選択">未設定</option>
-                    {courses.filter((c) => c.name !== '未選択').map((c) => (
-                      <option key={c.name} value={c.name}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
+                  {(() => {
+                    const normalizedNewCourse = newResCourse && newResCourse.trim() ? newResCourse : '未選択';
+                    const courseStyle = courseColorMap.get(normalizedNewCourse) ?? defaultCourseStyle;
+                    return (
+                      <select
+                        form="new-res-form"
+                        value={newResCourse}
+                        onChange={(e) => setNewResCourse(e.target.value)}
+                        className="border px-1 py-0.5 rounded text-[13px] sm:text-sm transition-colors"
+                        style={{
+                          backgroundColor: courseStyle.background,
+                          color: courseStyle.text,
+                          borderColor: courseStyle.border,
+                        }}
+                      >
+                        <option value="未選択">未設定</option>
+                        {courses.filter((c) => c.name !== '未選択').map((c) => (
+                          <option key={c.name} value={c.name}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    );
+                  })()}
                 </td>
 
                 {/* 新規食べ放題セル */}
@@ -1903,7 +1931,7 @@ const ReservationsSection = memo(function ReservationsSection({
                       form="new-res-form"
                       value={newResEat}
                       onChange={(e) => setNewResEat(e.target.value)}
-                      className="border px-1 py-0.5 rounded w-full text-sm"
+                      className="border px-1 py-0.5 rounded w-full text-[13px] sm:text-sm"
                     >
                       <option value="">未選択</option>
                       {eatOptions.map((o) => (
@@ -1922,7 +1950,7 @@ const ReservationsSection = memo(function ReservationsSection({
                       form="new-res-form"
                       value={newResDrink}
                       onChange={(e) => setNewResDrink(e.target.value)}
-                      className="border px-1 py-0.5 rounded w-full text-sm"
+                      className="border px-1 py-0.5 rounded w-full text-[13px] sm:text-sm"
                     >
                       <option value="">未選択</option>
                       {drinkOptions.map((o) => (
@@ -1945,7 +1973,7 @@ const ReservationsSection = memo(function ReservationsSection({
                       onClick={() => setNumPadState({ id: '-1', field: 'guests', value: '' })}
                       placeholder="人数"
                       maxLength={3}
-                      className="border px-1 py-0.5 w-8 rounded text-sm !text-center cursor-pointer"
+                      className="border px-1 py-0.5 w-8 rounded text-[13px] sm:text-sm !text-center cursor-pointer"
                       required
                     />
                   </td>
@@ -1960,7 +1988,7 @@ const ReservationsSection = memo(function ReservationsSection({
                       value={typeof newResNotes === 'string' ? newResNotes : ''}
                       readOnly
                       placeholder="備考"
-                      className="border px-1 py-0.5 w-full rounded text-sm text-center cursor-pointer"
+                      className="border px-1 py-0.5 w-full rounded text-[13px] sm:text-sm text-center cursor-pointer"
                       title={
                         typeof newResNotes === 'string' && newResNotes.trim()
                           ? newResNotes.trim()
@@ -1990,7 +2018,7 @@ const ReservationsSection = memo(function ReservationsSection({
 
                 {/* 追加ボタンセル */}
                 <td className="border px-1 py-1 text-center" colSpan={showNameCol ? 2 : 1}>
-                  <button type="submit" form="new-res-form" className="bg-blue-500 text-white px-2 py-0.5 rounded text-sm">
+                  <button type="submit" form="new-res-form" className="bg-blue-500 text-white px-2 py-0.5 rounded text-[13px] sm:text-sm">
                     ＋
                   </button>
                 </td>

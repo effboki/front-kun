@@ -740,7 +740,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                       setSelectedShiftMinutes(null);
                                     } else {
                                       setOpenShiftMenuFor(keyForTask);
-                                      setMinutePickerOpenFor(null); // デフォルトは閉じた状態（分選択は開かない）
+                                      setMinutePickerOpenFor(keyForTask); // デフォルトで分選択メニューを開く
                                       setShiftModeKey(keyForTask);
                                       setShiftTargets(defaultShiftTargetIds);
                                       setSelectedShiftMinutes(null);
@@ -1045,7 +1045,7 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                     setSelectedShiftMinutes(null);
                                   } else {
                                     setOpenShiftMenuFor(keyForTask);
-                                    setMinutePickerOpenFor(null); // デフォルトは閉じた状態（分選択は開かない）
+                                    setMinutePickerOpenFor(keyForTask); // デフォルトで分選択メニューを開く
                                     setShiftModeKey(keyForTask);
                                     setShiftTargets(defaultShiftTargetIds); // 対象はデフォルトで全卓を選択
                                     setSelectedShiftMinutes(null);      // ★毎回リセット

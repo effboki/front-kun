@@ -2,6 +2,8 @@
 // 店舗設定（UIドラフト）と Firestore 保存形の“型の一本化”＋相互変換（tasks を含む）
 
 // ========== 共通型（コース & タスク） ==========
+import { normalizeCourseColor, type CourseColorKey } from '@/lib/courseColors';
+
 export type CourseTask = {
   timeOffset: number; // 分（開始からの相対）
   timeOffsetEnd?: number; // 分（終了。省略時は timeOffset と同じ）
@@ -14,6 +16,7 @@ export type CourseDef = {
   /** 滞在時間（分）。未指定時はアプリ側のデフォルト（例: 120分）を適用 */
   stayMinutes?: number;
   tasks: CourseTask[];
+  color?: CourseColorKey;
 };
 
 export type AreaDef = {
@@ -110,6 +113,7 @@ export const sanitizeCourses = (arr: unknown): CourseDef[] => {
     let name = '';
     let tasksInput: unknown;
     let stayInput: unknown;
+    let colorInput: unknown;
 
     if (typeof candidate === 'string') {
       name = candidate.trim();
@@ -118,6 +122,7 @@ export const sanitizeCourses = (arr: unknown): CourseDef[] => {
       if (typeof courseObj.name === 'string') name = courseObj.name;
       tasksInput = courseObj.tasks;
       stayInput = courseObj.stayMinutes;
+      colorInput = courseObj.color;
     }
 
     if (!name) continue;
@@ -145,7 +150,8 @@ export const sanitizeCourses = (arr: unknown): CourseDef[] => {
 
     const stayRaw = Number(stayInput);
     const stayMinutes = Number.isFinite(stayRaw) && stayRaw > 0 ? stayRaw : undefined;
-    out.push({ name, stayMinutes, tasks });
+    const color = normalizeCourseColor(colorInput);
+    out.push({ name, stayMinutes, tasks, color });
   }
   return out;
 };

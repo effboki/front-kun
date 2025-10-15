@@ -1,4 +1,5 @@
 import type { FormEvent } from 'react';
+import type { CourseColorKey } from '@/lib/courseColors';
 // Shared types used across the app
 
 // 並び順
@@ -83,6 +84,8 @@ export interface CourseDef {
   stayMinutes?: number;
   /** そのコースで行うタスク一覧 */
   tasks: TaskDef[];
+  /** コースの表示色 */
+  color?: CourseColorKey;
 }
 
 // 数値パッドで編集するフィールド種別
