@@ -379,7 +379,49 @@ export default function Home() {
 
 function HomeBody() {
   // ── Bottom tabs: 予約リスト / タスク表 / コース開始時間表 / スケジュール
-const [bottomTab, setBottomTab] = useState<BottomTab>('reservations');
+  const [bottomTab, setBottomTab] = useState<BottomTab>('reservations');
+  const bottomBarRef = useRef<HTMLElement | null>(null);
+  const [bottomBarHeight, setBottomBarHeight] = useState<number>(72);
+
+  const measureBottomBar = useCallback(() => {
+    if (!bottomBarRef.current) return;
+    const rect = bottomBarRef.current.getBoundingClientRect();
+    const next = Math.round(rect.height);
+    setBottomBarHeight((prev) => (Math.abs(prev - next) > 0.5 ? next : prev));
+  }, []);
+
+  useLayoutEffect(() => {
+    measureBottomBar();
+  }, [measureBottomBar, bottomTab]);
+
+  useLayoutEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return;
+    const el = bottomBarRef.current;
+    if (!el) return;
+
+    const observer = new ResizeObserver(() => measureBottomBar());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [measureBottomBar]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => measureBottomBar();
+
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+
+    const viewport = window.visualViewport;
+    viewport?.addEventListener('resize', handleResize);
+    viewport?.addEventListener('scroll', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+      viewport?.removeEventListener('resize', handleResize);
+      viewport?.removeEventListener('scroll', handleResize);
+    };
+  }, [measureBottomBar]);
 
   // ---- schedule tab routing helpers (layout.tsx が ?tab=schedule を見て表示を切替) ----
   const router = useRouter();
@@ -417,6 +459,13 @@ const [bottomTab, setBottomTab] = useState<BottomTab>('reservations');
     selectedMenu === '店舗設定画面' || selectedMenu === '営業前設定';
   // メイン画面へ戻す
   const goMain = () => setSelectedMenu('予約リスト×タスク表');
+  const mainPaddingBottom = useMemo(() => {
+    if (!isSettings && bottomTab === 'schedule') {
+      return 'calc(env(safe-area-inset-bottom) + 0.25rem)';
+    }
+    const height = Math.max(bottomBarHeight, 0);
+    return `${height + 16}px`;
+  }, [isSettings, bottomTab, bottomBarHeight]);
   // 下部タブを押したとき：設定画面ならメインに戻してからタブ切替
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return;
@@ -3610,12 +3659,8 @@ const onNumPadConfirm = () => {
         </div>
       )}
       <main
-        className="pt-12 p-4 space-y-6 pb-24"
-        style={
-          !isSettings && bottomTab === 'schedule'
-            ? { paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.25rem)' }
-            : undefined
-        }
+        className="pt-12 px-4 space-y-6"
+        style={{ paddingBottom: mainPaddingBottom }}
       >
         
       
@@ -3856,8 +3901,10 @@ scheduleEndHour={scheduleEndHour}
 
  {/* ─ BottomTab: 予約リスト / タスク表 / コース開始時間表 ─ */}
 <footer
-  className="fixed bottom-0 inset-x-0 z-50 bg-white border-t"
+  ref={bottomBarRef}
+  className="fixed inset-x-0 bottom-0 z-50 bg-white border-t"
   data-app-bottom-bar
+  style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
 >
   <div className="max-w-6xl mx-auto grid grid-cols-4">
     <button

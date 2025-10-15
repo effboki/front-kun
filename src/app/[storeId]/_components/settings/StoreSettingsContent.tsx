@@ -2561,135 +2561,250 @@ const NewTaskForm = memo(function NewTaskForm({ onAdd, allowColorSelection }: Ne
     setOffsetEnd((prev) => Math.max(prev, offset));
   }, [offset]);
 
-  return (
-    <div className="mt-2 flex flex-wrap items-center gap-2">
-      <input
-        ref={inputRef}
-        type="text"
-        placeholder="例: ドリンク説明"
-        value={draft}
-        inputMode="text"
-        autoCapitalize="none"
-        autoCorrect="off"
-        spellCheck={false}
-        autoComplete="off"
-        lang="ja"
-        onChange={(e) => setDraft(e.currentTarget.value)}
-        onCompositionStart={() => setIsComposing(true)}
-        onCompositionEnd={(e) => {
-          setIsComposing(false);
-          setDraft(e.currentTarget.value);
-        }}
-        className="border px-3 py-2 rounded-md text-sm flex-1 min-w-[10rem]"
-        aria-label="新規タスク名"
-        enterKeyHint="done"
-        onKeyDown={(e) => {
-          const isComp = (e as any).nativeEvent?.isComposing;
-          if (e.key === 'Enter' && !isComp && !isComposing) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-      />
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex flex-col items-center gap-1">
-          <span className="text-[11px] font-medium text-emerald-700">開始</span>
-          <div className="inline-flex items-stretch rounded-md border border-emerald-300 bg-emerald-50/70 overflow-hidden" role="group" aria-label="開始時間">
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() =>
-                setOffset((prev) => {
-                  const next = clampTaskOffset(prev - 5);
-                  setOffsetEnd((endPrev) => Math.max(endPrev, next));
-                  return next;
-                })
-              }
-              className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
-              aria-label="開始を5分早く"
-            >
-              -5
-            </button>
-            <div className="min-w-[80px] h-10 grid place-items-center px-2 text-sm font-semibold tabular-nums text-emerald-900">
-              {formatTaskOffset(offset)}
-            </div>
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() =>
-                setOffset((prev) => {
-                  const next = clampTaskOffset(prev + 5);
-                  setOffsetEnd((endPrev) => Math.max(endPrev, next));
-                  return next;
-                })
-              }
-              className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
-              aria-label="開始を5分遅く"
-            >
-              +5
-            </button>
+  const currentRangeLabel = formatTaskRange(offset, offsetEnd);
+
+  const nameInput = (
+    <input
+      ref={inputRef}
+      type="text"
+      placeholder="例: ドリンク説明"
+      value={draft}
+      inputMode="text"
+      autoCapitalize="none"
+      autoCorrect="off"
+      spellCheck={false}
+      autoComplete="off"
+      lang="ja"
+      onChange={(e) => setDraft(e.currentTarget.value)}
+      onCompositionStart={() => setIsComposing(true)}
+      onCompositionEnd={(e) => {
+        setIsComposing(false);
+        setDraft(e.currentTarget.value);
+      }}
+      className="w-full border px-3 py-2 rounded-md text-sm shadow-sm"
+      aria-label="新規タスク名"
+      enterKeyHint="done"
+      onKeyDown={(e) => {
+        const isComp = (e as any).nativeEvent?.isComposing;
+        if (e.key === 'Enter' && !isComp && !isComposing) {
+          e.preventDefault();
+          submit();
+        }
+      }}
+    />
+  );
+
+  const addButton = (
+    <button
+      type="button"
+      onClick={submit}
+      disabled={!canSubmit}
+      className={`${allowColorSelection ? 'h-10' : 'h-9'} px-4 rounded-md text-sm transition active:scale-[.99] ${canSubmit ? 'bg-emerald-600 text-white shadow-sm' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+      title="タスクを追加"
+    >
+      追加
+    </button>
+  );
+
+  if (allowColorSelection) {
+    const startControl = (
+      <div className="flex flex-col items-center gap-1">
+        <span className="text-[11px] font-medium text-emerald-700">開始</span>
+        <div className="inline-flex items-stretch rounded-md border border-emerald-300 bg-emerald-50/70 overflow-hidden" role="group" aria-label="開始時間">
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() =>
+              setOffset((prev) => {
+                const next = clampTaskOffset(prev - 5);
+                setOffsetEnd((endPrev) => Math.max(endPrev, next));
+                return next;
+              })
+            }
+            className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            aria-label="開始を5分早く"
+          >
+            -5
+          </button>
+          <div className="min-w-[80px] h-10 grid place-items-center px-2 text-sm font-semibold tabular-nums text-emerald-900">
+            {formatTaskOffset(offset)}
           </div>
-        </div>
-        <div className="flex flex-col items-center gap-1">
-          <span className="text-[11px] font-medium text-emerald-700">終了</span>
-          <div className="inline-flex items-stretch rounded-md border border-emerald-300 bg-emerald-50/70 overflow-hidden" role="group" aria-label="終了時間">
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() =>
-                setOffsetEnd((prev) => {
-                  const next = clampTaskOffset(prev - 5);
-                  return Math.max(next, offset);
-                })
-              }
-              className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
-              aria-label="終了を5分早く"
-            >
-              -5
-            </button>
-            <div className="min-w-[80px] h-10 grid place-items-center px-2 text-sm font-semibold tabular-nums text-emerald-900">
-              {formatTaskOffset(offsetEnd)}
-            </div>
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() =>
-                setOffsetEnd((prev) => {
-                  const next = clampTaskOffset(prev + 5);
-                  return Math.max(next, offset);
-                })
-              }
-              className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
-              aria-label="終了を5分遅く"
-            >
-              +5
-            </button>
-          </div>
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() =>
+              setOffset((prev) => {
+                const next = clampTaskOffset(prev + 5);
+                setOffsetEnd((endPrev) => Math.max(endPrev, next));
+                return next;
+              })
+            }
+            className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            aria-label="開始を5分遅く"
+          >
+            +5
+          </button>
         </div>
       </div>
-      <span className="text-xs text-gray-500 min-w-[10rem]">
-        現在の範囲: {formatTaskRange(offset, offsetEnd)}
-      </span>
-      {allowColorSelection ? (
-        <TaskColorSelector
-          value={color}
-          onChange={setColor}
-          ariaLabel="新規タスクの色"
-        />
-      ) : (
-        <span className="h-10 flex items-center text-xs text-gray-500">
+    );
+
+    const endControl = (
+      <div className="flex flex-col items-center gap-1">
+        <span className="text-[11px] font-medium text-emerald-700">終了</span>
+        <div className="inline-flex items-stretch rounded-md border border-emerald-300 bg-emerald-50/70 overflow-hidden" role="group" aria-label="終了時間">
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() =>
+              setOffsetEnd((prev) => {
+                const next = clampTaskOffset(prev - 5);
+                return Math.max(next, offset);
+              })
+            }
+            className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            aria-label="終了を5分早く"
+          >
+            -5
+          </button>
+          <div className="min-w-[80px] h-10 grid place-items-center px-2 text-sm font-semibold tabular-nums text-emerald-900">
+            {formatTaskOffset(offsetEnd)}
+          </div>
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() =>
+              setOffsetEnd((prev) => {
+                const next = clampTaskOffset(prev + 5);
+                return Math.max(next, offset);
+              })
+            }
+            className="px-3 h-10 text-sm bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            aria-label="終了を5分遅く"
+          >
+            +5
+          </button>
+        </div>
+      </div>
+    );
+
+    return (
+      <div className="mt-3 flex flex-col gap-3">
+        <div>{nameInput}</div>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3 flex-1 min-w-[18rem]">
+            <div className="flex items-center gap-3">
+              {startControl}
+              {endControl}
+            </div>
+            <span className="text-xs text-gray-500 whitespace-nowrap">現在の範囲: {currentRangeLabel}</span>
+          </div>
+          <TaskColorSelector
+            value={color}
+            onChange={setColor}
+            ariaLabel="新規タスクの色"
+          />
+          {addButton}
+        </div>
+      </div>
+    );
+  }
+
+  const mobileStartControl = (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] font-medium text-emerald-700 text-center">開始</span>
+      <div className="inline-flex w-full items-stretch rounded-md border border-emerald-300 bg-emerald-50/70 overflow-hidden" role="group" aria-label="開始時間（モバイル）">
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() =>
+            setOffset((prev) => {
+              const next = clampTaskOffset(prev - 5);
+              setOffsetEnd((endPrev) => Math.max(endPrev, next));
+              return next;
+            })
+          }
+          className="h-9 px-2 text-xs font-medium bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+          aria-label="開始を5分早く"
+        >
+          -5
+        </button>
+        <div className="flex-1 min-w-[68px] h-9 grid place-items-center px-2 text-sm font-semibold tabular-nums text-emerald-900">
+          {formatTaskOffset(offset)}
+        </div>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() =>
+            setOffset((prev) => {
+              const next = clampTaskOffset(prev + 5);
+              setOffsetEnd((endPrev) => Math.max(endPrev, next));
+              return next;
+            })
+          }
+          className="h-9 px-2 text-xs font-medium bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+          aria-label="開始を5分遅く"
+        >
+          +5
+        </button>
+      </div>
+    </div>
+  );
+
+  const mobileEndControl = (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] font-medium text-emerald-700 text-center">終了</span>
+      <div className="inline-flex w-full items-stretch rounded-md border border-emerald-300 bg-emerald-50/70 overflow-hidden" role="group" aria-label="終了時間（モバイル）">
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() =>
+            setOffsetEnd((prev) => {
+              const next = clampTaskOffset(prev - 5);
+              return Math.max(next, offset);
+            })
+          }
+          className="h-9 px-2 text-xs font-medium bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+          aria-label="終了を5分早く"
+        >
+          -5
+        </button>
+        <div className="flex-1 min-w-[68px] h-9 grid place-items-center px-2 text-sm font-semibold tabular-nums text-emerald-900">
+          {formatTaskOffset(offsetEnd)}
+        </div>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() =>
+            setOffsetEnd((prev) => {
+              const next = clampTaskOffset(prev + 5);
+              return Math.max(next, offset);
+            })
+          }
+          className="h-9 px-2 text-xs font-medium bg-white hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+          aria-label="終了を5分遅く"
+        >
+          +5
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="mt-3 flex flex-col gap-3">
+      <div>{nameInput}</div>
+      <div className="flex flex-col gap-2">
+        <div className="grid grid-cols-2 gap-2">
+          {mobileStartControl}
+          {mobileEndControl}
+        </div>
+        <span className="text-[11px] text-gray-500 text-center">現在の範囲: {currentRangeLabel}</span>
+      </div>
+      <div className="flex items-start gap-3">
+        <span className="flex-1 text-[11px] text-gray-500 leading-snug whitespace-nowrap">
           色の変更はタブレットからのみ行えます
         </span>
-      )}
-      <button
-        type="button"
-        onClick={submit}
-        disabled={!canSubmit}
-        className={`h-10 px-4 rounded-md text-sm transition active:scale-[.99] ${canSubmit ? 'bg-emerald-600 text-white shadow-sm' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-        title="タスクを追加"
-      >
-        追加
-      </button>
+        {addButton}
+      </div>
     </div>
   );
 });
