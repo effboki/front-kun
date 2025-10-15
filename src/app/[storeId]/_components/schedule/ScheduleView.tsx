@@ -2576,7 +2576,7 @@ function ReservationBlock({
       >
         {/* Status dot removed from inside the card container */}
         <div className={`grid h-full grid-rows-[auto_1fr_auto] text-[12px] ${bodyTextClass} min-w-0`}>
-          <div className="flex items-center justify-between text-[12px] font-semibold min-w-0" style={{ color: textAccent }}>
+          <div className="flex items-center justify-between text-[12px] font-semibold min-w-0 pb-0.5" style={{ color: textAccent }}>
             <div className="flex items-center gap-2 min-w-0 whitespace-nowrap">
               <span className="font-mono text-[13px] tracking-tight leading-none shrink-0">{startLabel}</span>
               <span className="font-mono text-[13px] tracking-tight leading-none shrink-0" aria-label="人数">
@@ -2589,7 +2589,7 @@ function ReservationBlock({
             </div>
           </div>
           <div className={`flex items-center overflow-hidden text-[11px] ${secondaryTextClass} min-w-0`} />
-          <div className={`flex items-end justify-between text-[11px] ${secondaryTextClass} min-w-0`}>
+          <div className={`flex items-end justify-between text-[11px] ${secondaryTextClass} min-w-0 pt-0.5`}>
             <span className="font-medium truncate max-w-[60%]" aria-label="氏名">{name}</span>
             <span
               className={`truncate text-right text-[11px] ${secondaryTextClass}`}
