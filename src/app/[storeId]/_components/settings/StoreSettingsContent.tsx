@@ -19,6 +19,7 @@ import MiniTasksSettings from './MiniTasksSettings';
 import WaveSettings from './WaveSettings';
 import ScheduleSettings from './ScheduleSettings';
 import SeatOptimizerSettings from './SeatOptimizerSettings';
+import { DEFAULT_POSITION_LABEL } from '@/constants/positions';
 
 // --- UI labels for *Store Settings* only (do NOT change from other screens) ---
 const STORE_LABEL_POSITIONS = 'ポジション設定';
@@ -232,7 +233,13 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   const editingInputRef = useRef<HTMLInputElement | null>(null);
   const editingLabelComposingRef = useRef(false);
   const [isTablet, setIsTablet] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 768 : false));
-
+  const [positionReminderTs, setPositionReminderTs] = useState<number | null>(null);
+  const remindPositionSettings = useCallback(() => setPositionReminderTs(Date.now()), []);
+  useEffect(() => {
+    if (!positionReminderTs) return;
+    const timer = window.setTimeout(() => setPositionReminderTs(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [positionReminderTs]);
 
   // track unsaved changes (for Save button "活きてる感")
   const [localDirty, setLocalDirty] = useState(false);
@@ -255,20 +262,38 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     }
   }, [value, baseline]);
   const isDirty = baselineDirty ?? localDirty;
+  const attemptSave = useCallback(() => {
+    if (!isDirty || isSaving) return;
+    remindPositionSettings();
+    return onSave?.();
+  }, [isDirty, isSaving, onSave, remindPositionSettings]);
+  const positionReminderToast = positionReminderTs ? (
+    <div
+      key={positionReminderTs}
+      className="pointer-events-none fixed bottom-24 left-1/2 z-[70] w-[min(320px,90vw)] -translate-x-1/2 rounded-lg bg-amber-500/95 px-4 py-3 text-sm text-white shadow-xl transition-opacity duration-300"
+      role="status"
+      aria-live="polite"
+    >
+      <p className="text-center leading-relaxed">
+        保存しました。必要に応じて<strong className="mx-1">ポジション設定</strong>で表示タスクもご確認ください。
+      </p>
+    </div>
+  ) : null;
   
   // Cmd/Ctrl+S で保存（未保存かつ保存中でない場合）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
-        if (isDirty && !isSaving) {
-          Promise.resolve(onSave?.()).catch(() => {});
+        const result = attemptSave();
+        if (result && typeof (result as Promise<any>).then === 'function') {
+          Promise.resolve(result).catch(() => {});
         }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isDirty, isSaving, onSave]);
+  }, [attemptSave]);
   
   // 未保存の変更がある場合は離脱ガード
   useEffect(() => {
@@ -668,30 +693,43 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
       setEditingLabelTask(null);
       setEditingTaskDraft('');
     },
-    [courses, selectedCourse, cancelTaskLabelEdit, setCourses]
+    [cancelTaskLabelEdit, courses, selectedCourse, setCourses]
   );
 
-  const renameCourse = useCallback(() => {
-    const name = prompt('新しいコース名を入力してください：');
-    if (!name) return;
-    if (courses.some((c) => c.name === name)) {
-      alert('そのコース名は既に存在します。');
-      return;
-    }
-    const base = courses.map((c) => ({ ...c }));
-    const idx = base.findIndex((c) => c.name === selectedCourse);
-    if (idx < 0) return;
-    base[idx].name = name;
-    setCourses(base);
-    setSelectedCourse(name);
-  }, [courses, selectedCourse, setCourses]);
+  const renameCourse = useCallback(
+    (courseName: string) => {
+      setSelectedCourse(courseName);
+      const input = prompt('新しいコース名を入力してください：', courseName);
+      if (input === null) return;
+      const name = input.trim();
+      if (!name || name === courseName) return;
+      if (courses.some((c) => c.name !== courseName && normEq(c.name, name))) {
+        alert('そのコース名は既に存在します。');
+        return;
+      }
+      const base = courses.map((c) => ({ ...c }));
+      const idx = base.findIndex((c) => c.name === courseName);
+      if (idx < 0) return;
+      base[idx].name = name;
+      setCourses(base);
+      setSelectedCourse(name);
+    },
+    [courses, setCourses, setSelectedCourse]
+  );
 
-  const deleteCourse = useCallback(() => {
-    if (!confirm(`コース『${selectedCourse}』を削除しますか？`)) return;
-    const base = courses.filter((c) => c.name !== selectedCourse);
-    setCourses(base);
-    setSelectedCourse(base[0]?.name ?? '');
-  }, [courses, selectedCourse, setCourses]);
+  const deleteCourse = useCallback(
+    (courseName: string) => {
+      const target = courseName;
+      if (!confirm(`コース『${target}』を削除しますか？`)) return;
+      const base = courses.filter((c) => c.name !== target);
+      setCourses(base);
+      setSelectedCourse((prev) => {
+        if (prev && prev !== target) return prev;
+        return base[0]?.name ?? '';
+      });
+    },
+    [courses, setCourses, setSelectedCourse]
+  );
 
   const addCourse = useCallback(
     (rawName: string): boolean => {
@@ -723,6 +761,10 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
 
   const removePosition = useCallback(
     (pos: string) => {
+      if (normEq(pos, DEFAULT_POSITION_LABEL)) {
+        alert('「全て」は削除できません。');
+        return;
+      }
       if (!confirm(`${pos} を削除しますか？`)) return;
       const next = positions.filter((p) => !normEq(p, pos));
       setPositions(next);
@@ -735,8 +777,16 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
 
   const renamePosition = useCallback(
     (pos: string) => {
+      if (normEq(pos, DEFAULT_POSITION_LABEL)) {
+        alert('「全て」は変更できません。');
+        return;
+      }
       const name = (prompt('新しいポジション名: ', pos) ?? '').trim();
       if (!name || normEq(name, pos)) return;
+      if (normEq(name, DEFAULT_POSITION_LABEL)) {
+        alert('「全て」という名前は使用できません。');
+        return;
+      }
       const next = positions.map((p) => (normEq(p, pos) ? name : p));
       setPositions(next);
       const tbp = { ...tasksByPosition } as Record<string, Record<string, string[]>>;
@@ -792,6 +842,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   // 指定ポジション×コースでタスクを一括ON/OFF
   const toggleAllForPositionCourse = useCallback(
     (pos: string, courseName: string, enable: boolean) => {
+      if (normEq(pos, DEFAULT_POSITION_LABEL)) return;
       const tbp = { ...(tasksByPosition || {}) } as Record<string, Record<string, string[]>>;
       const courseTasks = (courses.find((c) => c.name === courseName)?.tasks ?? []).map((t) => t.label);
       const posMap = { ...(tbp[pos] || {}) } as Record<string, string[]>;
@@ -804,6 +855,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
 
   const toggleTaskForPosition = useCallback(
     (pos: string, courseName: string, label: string) => {
+      if (normEq(pos, DEFAULT_POSITION_LABEL)) return;
       const tbp = { ...(tasksByPosition || {}) } as Record<string, Record<string, string[]>>;
       const posMap = { ...(tbp[pos] || {}) } as Record<string, string[]>;
       const arr = Array.isArray(posMap[courseName]) ? [...posMap[courseName]] : [];
@@ -870,41 +922,47 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   );
 
   const SubPageShell: FC<{ title: string; children: ReactNode }> = ({ title, children }) => (
-    <section>
-      <div className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b">
-        <div className="h-12 grid grid-cols-[auto,1fr,auto] items-center">
-          <button
-            onClick={() => setView('root')}
-            className="px-3 pl-0 text-blue-600 justify-self-start"
-          >
-            {'\u2039'} 戻る
-          </button>
-          <div className="justify-self-center font-semibold pointer-events-none">{title}</div>
-          <div />
+    <>
+      <section>
+        <div className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b">
+          <div className="h-12 grid grid-cols-[auto,1fr,auto] items-center">
+            <button
+              onClick={() => setView('root')}
+              className="px-3 pl-0 text-blue-600 justify-self-start"
+            >
+              {'\u2039'} 戻る
+            </button>
+            <div className="justify-self-center font-semibold pointer-events-none">{title}</div>
+            <div />
+          </div>
         </div>
-      </div>
-      <div className="p-4 space-y-4">{children}</div>
-      <div className={`sticky bottom-0 z-10 border-t bg-white/90 backdrop-blur p-4 ${isDirty ? 'shadow-[0_-6px_12px_rgba(0,0,0,0.06)]' : ''}`}>
-        <button
-          type="button"
-          onClick={() => {
-            if (!isDirty || isSaving) return;
-            onSave();
-          }}
-          disabled={!isDirty || !!isSaving}
-          className={`w-full px-4 py-3 rounded-md transition active:scale-[.99] ${isDirty && !isSaving ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 text-gray-500'} ${isSaving ? 'opacity-60' : ''}`}
-          aria-live="polite"
-        >
-          {isSaving ? '保存中…' : isDirty ? '保存' : '保存済み'}
-        </button>
-      </div>
-    </section>
+        <div className="p-4 space-y-4">{children}</div>
+        <div className={`sticky bottom-0 z-10 border-t bg-white/90 backdrop-blur p-4 ${isDirty ? 'shadow-[0_-6px_12px_rgba(0,0,0,0.06)]' : ''}`}>
+          <button
+            type="button"
+            onClick={() => {
+              const result = attemptSave();
+              if (result && typeof (result as Promise<any>).then === 'function') {
+                Promise.resolve(result).catch(() => {});
+              }
+            }}
+            disabled={!isDirty || !!isSaving}
+            className={`w-full px-4 py-3 rounded-md transition active:scale-[.99] ${isDirty && !isSaving ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 text-gray-500'} ${isSaving ? 'opacity-60' : ''}`}
+            aria-live="polite"
+          >
+            {isSaving ? '保存中…' : isDirty ? '保存' : '保存済み'}
+          </button>
+        </div>
+      </section>
+      {positionReminderToast}
+    </>
   );
 
   // ============== render ==============
   // Root list (like iOS Settings top level)
   if (view === 'root') {
     return (
+      <>
       <div className="min-h-0 flex flex-col gap-4">
         <section className="rounded-md border border-gray-200 bg-white">
         <ListItem
@@ -1215,8 +1273,10 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
           <button
             type="button"
             onClick={() => {
-              if (!isDirty || isSaving) return;
-              onSave();
+              const result = attemptSave();
+              if (result && typeof (result as Promise<any>).then === 'function') {
+                Promise.resolve(result).catch(() => {});
+              }
             }}
             disabled={!isDirty || !!isSaving}
             className={`w-full px-4 py-3 rounded-md transition active:scale-[.99] ${isDirty && !isSaving ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 text-gray-500'} ${isSaving ? 'opacity-60' : ''}`}
@@ -1227,6 +1287,8 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
         </div>
         </section>
       </div>
+      {positionReminderToast}
+      </>
     );
   }
   // --- MiniTasks settings page (stub) ---
@@ -1311,7 +1373,6 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
             </p>
             <NewCourseForm onAdd={addCourse} />
           </div>
-
           {/* 登録済みコース（アコーディオン） */}
           {courses.length > 0 ? (
             <>
@@ -1432,14 +1493,14 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                               <div className="border-t border-gray-100 pt-1">
                                 <button
                                   type="button"
-                                  onClick={() => { setCourseMenuFor(null); setSelectedCourse(name); renameCourse(); }}
+                                  onClick={() => { setCourseMenuFor(null); renameCourse(name); }}
                                   className="w-full text-left px-3 py-2 hover:bg-gray-50"
                                 >
                                   ✎ コース名変更
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => { setCourseMenuFor(null); setSelectedCourse(name); deleteCourse(); }}
+                                  onClick={() => { setCourseMenuFor(null); deleteCourse(name); }}
                                   className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50"
                                 >
                                   🗑 コース削除
@@ -1832,6 +1893,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                 const tasksForCourse = (courses.find((c) => c.name === currentCourse)?.tasks ?? [])
                   .slice()
                   .sort((a, b) => a.timeOffset - b.timeOffset);
+                const isDefaultPosition = normEq(pos, DEFAULT_POSITION_LABEL);
 
                 return (
                   <div key={pos} className="rounded-lg border bg-white shadow-sm overflow-visible">
@@ -1900,14 +1962,18 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                               <button
                                 type="button"
                                 onClick={() => { setPosMenuFor(null); renamePosition(pos); }}
-                                className="w-full text-left px-3 py-2 hover:bg-gray-50"
+                                disabled={isDefaultPosition}
+                                className={`w-full text-left px-3 py-2 ${isDefaultPosition ? 'cursor-not-allowed text-gray-400' : 'hover:bg-gray-50'}`}
+                                title={isDefaultPosition ? 'このポジションは変更できません' : undefined}
                               >
                                 ✎ 名前変更
                               </button>
                               <button
                                 type="button"
                                 onClick={() => { setPosMenuFor(null); removePosition(pos); }}
-                                className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50"
+                                disabled={isDefaultPosition}
+                                className={`w-full text-left px-3 py-2 ${isDefaultPosition ? 'cursor-not-allowed text-gray-400' : 'text-red-600 hover:bg-red-50'}`}
+                                title={isDefaultPosition ? 'このポジションは削除できません' : undefined}
                               >
                                 🗑 削除
                               </button>
@@ -1958,7 +2024,9 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
                                       tasksByPosition[pos]?.[currentCourse]?.some((l) => normEq(l, task.label))
                                     )}
                                     onChange={() => toggleTaskForPosition(pos, currentCourse, task.label)}
-                                    className="h-5 w-5 align-middle"
+                                    disabled={isDefaultPosition}
+                                    aria-disabled={isDefaultPosition}
+                                    className={`h-5 w-5 align-middle ${isDefaultPosition ? 'cursor-not-allowed opacity-70' : ''}`}
                                   />
                                 </div>
                               </div>

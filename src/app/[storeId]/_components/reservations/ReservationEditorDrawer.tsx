@@ -4,6 +4,7 @@ import * as React from 'react';
 import { createPortal } from 'react-dom';
 import type { CourseDef, StoreSettingsValue } from '@/types/settings';
 import type { Reservation } from '@/types/reservation';
+import { getCourseColorStyle, normalizeCourseColor } from '@/lib/courseColors';
 import { parseTimeToMinutes, formatMinutesToTime } from '@/lib/time';
 
 /**
@@ -60,6 +61,11 @@ type Props = {
   dayStartMs?: number;
   /** 予約の最新スナップショット（タスク編集用に利用） */
   reservationDetail?: Reservation | null;
+  /** 予約のステータス操作（来店/会計/退店） */
+  statusControls?: {
+    flags: { arrived: boolean; paid: boolean; departed: boolean };
+    onToggle: (kind: 'arrived' | 'paid' | 'departed') => { arrived: boolean; paid: boolean; departed: boolean } | null | void;
+  };
   /** タスク完了フラグの更新 */
   onUpdateReservationField?: (
     id: string,
@@ -142,33 +148,60 @@ const buildStayMinOptions = (min = 30, max = 240, step = 5) => {
   for (let m = min; m <= max; m += step) out.push(m);
   return out;
 };
-const getCourseStayMin = (courseName?: string, courses?: CourseOption[], fallback?: number) => {
-  const name = (courseName ?? '').trim();
-  const list = Array.isArray(courses) ? (courses as any[]) : [];
-  const fb = Number.isFinite(fallback) ? (fallback as number) : 60;
-  if (!name) return fb;
+const getCourseDisplayName = (course: unknown): string => {
+  if (typeof course === 'string') return course.trim();
+  if (!course || typeof course !== 'object') return '';
+  const record = course as Record<string, any>;
+  return String(
+    (record.value ?? record.name ?? record.label ?? record.title ?? '') || ''
+  ).trim();
+};
 
-  const pick = (c: any) => (
-    c?.stayMinutes ?? c?.durationMin ?? c?.stayMin ?? c?.durationMinutes ?? c?.minutes ?? c?.lengthMin ?? c?.lengthMinutes ?? c?.duration ?? c?.stay
+const normalizeCourseNameKey = (value: string) =>
+  value.replace(/\s+/g, '').toLowerCase();
+
+const findCourseDefinition = (courseName?: string, courses?: CourseOption[]) => {
+  const name = typeof courseName === 'string' ? courseName.trim() : '';
+  if (!name) return undefined;
+  const list = Array.isArray(courses) ? (courses as unknown[]) : [];
+  const strict = list.find((course) => getCourseDisplayName(course) === name);
+  if (strict) return strict as CourseOption;
+  const normalized = normalizeCourseNameKey(name);
+  return list.find(
+    (course) => normalizeCourseNameKey(getCourseDisplayName(course)) === normalized
+  ) as CourseOption | undefined;
+};
+
+const pickCourseStayMinutes = (course: unknown) => {
+  if (!course || typeof course !== 'object') return undefined;
+  const record = course as Record<string, any>;
+  return (
+    record.stayMinutes ??
+    record.durationMin ??
+    record.stayMin ??
+    record.durationMinutes ??
+    record.minutes ??
+    record.lengthMin ??
+    record.lengthMinutes ??
+    record.duration ??
+    record.stay
   );
+};
 
-  const strict = list.find((c: any) => {
-    const v = String((c?.value ?? c?.name ?? c?.label ?? c?.title ?? '') || '').trim();
-    return v === name;
-  });
-  let raw = pick(strict);
-  if (raw == null) {
-    const key = name.replace(/\s+/g, '').toLowerCase();
-    const loose = list.find((c: any) => {
-      const v = String((c?.value ?? c?.name ?? c?.label ?? c?.title ?? '') || '')
-        .replace(/\s+/g, '')
-        .toLowerCase();
-      return v === key;
-    });
-    raw = pick(loose);
-  }
+const getCourseStayMin = (courseName?: string, courses?: CourseOption[], fallback?: number) => {
+  const fb = Number.isFinite(fallback) ? (fallback as number) : 60;
+  const course = findCourseDefinition(courseName, courses);
+  const raw = pickCourseStayMinutes(course);
   const n = Math.trunc(Number(raw));
   return Number.isFinite(n) && n > 0 ? n : fb;
+};
+
+const getCourseColorKey = (courseName?: string, courses?: CourseOption[]) => {
+  const course = findCourseDefinition(courseName, courses);
+  if (!course || typeof course !== 'object') return null;
+  const record = course as Record<string, any>;
+  const rawColor = record.color ?? record.courseColor ?? record.colorKey;
+  return normalizeCourseColor(rawColor) ?? null;
 };
 
 const rangesOverlap = (aStart: number, aEnd: number, bStart: number, bEnd: number) =>
@@ -206,6 +239,7 @@ export default function ReservationEditorDrawer(props: Props) {
     drinkOptions: drinkOptionsProp,
     dayStartMs,
     reservationDetail,
+    statusControls,
     onUpdateReservationField,
     onAdjustTaskTime,
     onSave,
@@ -223,6 +257,52 @@ export default function ReservationEditorDrawer(props: Props) {
     if (!open) return;
     setActiveTab('reservation');
   }, [open, reservationId]);
+
+  const statusAvailable = Boolean(reservationId && statusControls);
+  const [statusFlags, setStatusFlags] = React.useState(() => ({
+    arrived: Boolean(statusControls?.flags.arrived),
+    paid: Boolean(statusControls?.flags.paid),
+    departed: Boolean(statusControls?.flags.departed),
+  }));
+
+  React.useEffect(() => {
+    if (!statusControls) {
+      setStatusFlags({ arrived: false, paid: false, departed: false });
+      return;
+    }
+    setStatusFlags({
+      arrived: Boolean(statusControls.flags.arrived),
+      paid: Boolean(statusControls.flags.paid),
+      departed: Boolean(statusControls.flags.departed),
+    });
+  }, [
+    statusControls,
+    statusControls?.flags.arrived,
+    statusControls?.flags.paid,
+    statusControls?.flags.departed,
+    reservationId,
+    open,
+  ]);
+
+  const handleStatusButton = React.useCallback((kind: 'arrived' | 'paid' | 'departed') => {
+    if (!statusControls) return;
+    const result = statusControls.onToggle(kind);
+    if (result && typeof result === 'object') {
+      setStatusFlags({
+        arrived: Boolean(result.arrived),
+        paid: Boolean(result.paid),
+        departed: Boolean(result.departed),
+      });
+      return;
+    }
+    setStatusFlags((prev) => {
+      const next = { ...prev, [kind]: !prev[kind] };
+      if (kind === 'departed' && next.departed) {
+        next.arrived = false;
+      }
+      return next;
+    });
+  }, [statusControls]);
 
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => { setMounted(true); }, []);
@@ -422,6 +502,16 @@ export default function ReservationEditorDrawer(props: Props) {
     if (Number.isFinite(autoStayMinutes)) set.add(autoStayMinutes);
     return Array.from(set).sort((a, b) => a - b);
   }, [stayMinOptions, autoStayMinutes]);
+
+  const selectedCourseColorKey = React.useMemo(
+    () => getCourseColorKey(courseName, mergedCourses),
+    [courseName, mergedCoursesKey, mergedCourses]
+  );
+
+  const selectedCourseColorStyle = React.useMemo(
+    () => getCourseColorStyle(selectedCourseColorKey ?? null),
+    [selectedCourseColorKey]
+  );
 
   // reservationId が変わったら初期値を再読み込み（必要に応じて拡張）
   React.useEffect(() => {
@@ -668,74 +758,130 @@ export default function ReservationEditorDrawer(props: Props) {
         <div className="flex-1 overflow-auto">
           {isReservationTab ? (
             <form onSubmit={handleSubmit} className="px-4 py-4 space-y-4">
-              {/* 来店時間・人数・氏名（グループ） */}
-          <div className="rounded-md border border-sky-200 bg-sky-50/70 p-3 space-y-3">
-            <div className="mb-1 text-xs font-semibold text-sky-700">来店・人数・氏名</div>
-            {/* 来店時間 + 人数（同一行） */}
-            <div className="grid grid-cols-[auto_1fr_auto_5.75rem] items-center gap-2">
-              <label className="text-sm font-medium whitespace-nowrap">来店時間</label>
-              <select
-                value={time}
-                onChange={(e) => setTime(e.currentTarget.value)}
-                className="min-w-0 w-full rounded border px-2 py-2"
-                required
-              >
-                {normalizedTimeOptions.map((opt) => (
-                  <option key={opt} value={opt}>{opt}</option>
-                ))}
-              </select>
-              <label className="text-sm font-medium whitespace-nowrap text-right">人数</label>
-              <input
-                id="reservation-guests"
-                name="guests"
-                type="text"
-                inputMode="numeric"
-                pattern="\\d*"
-                enterKeyHint="done"
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                min={1}
-                readOnly
-                value={guests > 0 ? String(guests) : ''}
-                onClick={() => openPad('guests', guests > 0 ? String(guests) : '')}
-                onFocus={() => openPad('guests', guests > 0 ? String(guests) : '')}
-                className="w-full rounded border px-2 py-2 text-[16px] text-right"
-                required
-                aria-label="人数"
-                placeholder="例: 4"
-              />
-            </div>
-            {/* 氏名 */}
-            <div className="flex items-center gap-2 min-w-0">
-              <label className="w-[7em] shrink-0 text-sm font-medium">氏名</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.currentTarget.value)}
-                className="flex-1 min-w-0 rounded border px-3 py-2"
-                placeholder="山田 太郎"
-              />
-            </div>
-          </div>
+              {statusAvailable && (
+                <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2 shadow-sm">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-600">来店ステータス</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      aria-pressed={statusFlags.arrived}
+                      onClick={() => handleStatusButton('arrived')}
+                      className={`flex-1 rounded-md border px-3 py-2 text-sm font-semibold transition-colors ${
+                        statusFlags.arrived
+                          ? 'border-emerald-600 bg-emerald-600 text-white shadow'
+                          : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                      }`}
+                    >
+                      来店
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={statusFlags.paid}
+                      onClick={() => handleStatusButton('paid')}
+                      className={`flex-1 rounded-md border px-3 py-2 text-sm font-semibold transition-colors ${
+                        statusFlags.paid
+                          ? 'border-sky-600 bg-white text-sky-700 ring-2 ring-sky-500'
+                          : 'border-sky-300 bg-white text-sky-700 hover:bg-sky-50'
+                      }`}
+                    >
+                      会計
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={statusFlags.departed}
+                      onClick={() => handleStatusButton('departed')}
+                      className={`flex-1 rounded-md border px-3 py-2 text-sm font-semibold transition-colors ${
+                        statusFlags.departed
+                          ? 'border-slate-600 bg-slate-600 text-white shadow'
+                          : 'border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      退店
+                    </button>
+                  </div>
+                </div>
+              )}
 
-          {/* コース・飲み/食べ放題（グループ） */}
-          <div className="rounded-md border border-emerald-200 bg-emerald-50/70 p-3 space-y-3">
-            <div className="mb-1 text-xs font-semibold text-emerald-700">コース・飲み放題・食べ放題</div>
-            {/* コース */}
-            <div className="flex items-center gap-2">
-              <label className="w-[7em] shrink-0 text-sm font-medium">コース</label>
-              {mergedCourses && mergedCourses.length > 0 ? (
+              {/* 来店時間・人数・氏名（グループ） */}
+              <div className="rounded-md border border-sky-200 bg-sky-50/70 p-3 space-y-3">
+                <div className="mb-1 text-xs font-semibold text-sky-700">来店・人数・氏名</div>
+                {/* 来店時間 + 人数（同一行） */}
+                <div className="grid grid-cols-[auto_1fr_auto_5.75rem] items-center gap-2">
+                  <label className="text-sm font-medium whitespace-nowrap">来店時間</label>
+                  <select
+                    value={time}
+                    onChange={(e) => setTime(e.currentTarget.value)}
+                    className="min-w-0 w-full rounded border px-2 py-2"
+                    required
+                  >
+                    {normalizedTimeOptions.map((opt) => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                  <label className="text-sm font-medium whitespace-nowrap text-right">人数</label>
+                  <input
+                    id="reservation-guests"
+                    name="guests"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\\d*"
+                    enterKeyHint="done"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    min={1}
+                    readOnly
+                    value={guests > 0 ? String(guests) : ''}
+                    onClick={() => openPad('guests', guests > 0 ? String(guests) : '')}
+                    onFocus={() => openPad('guests', guests > 0 ? String(guests) : '')}
+                    className="w-full rounded border px-2 py-2 text-[16px] text-right"
+                    required
+                    aria-label="人数"
+                    placeholder="例: 4"
+                  />
+                </div>
+                {/* 氏名 */}
+                <div className="grid grid-cols-[3.6rem_1fr] items-center gap-2 min-w-0">
+                  <label className="shrink-0 whitespace-nowrap text-sm font-medium text-right pr-0.5">氏名</label>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.currentTarget.value)}
+                    className="flex-1 min-w-0 rounded border px-3 py-2"
+                    placeholder="山田 太郎"
+                  />
+                </div>
+              </div>
+
+              {/* コース・飲み/食べ放題（グループ） */}
+              <div className="rounded-md border border-emerald-200 bg-emerald-50/70 p-3 space-y-3">
+                <div className="mb-1 text-xs font-semibold text-emerald-700">コース・飲み放題・食べ放題</div>
+                {/* コース */}
+                <div className="flex items-center gap-1.5">
+                  <label className="w-[4.2em] shrink-0 text-sm font-medium">コース</label>
+                  {mergedCourses && mergedCourses.length > 0 ? (
                 <select
-                  className="flex-1 rounded border px-3 py-2"
+                  className="flex-1 rounded border bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-emerald-300"
+                  style={
+                    selectedCourseColorKey
+                      ? {
+                          backgroundColor: selectedCourseColorStyle.background,
+                          color: selectedCourseColorStyle.text,
+                        }
+                      : undefined
+                  }
                   value={courseName}
                   onChange={(e) => setCourseName(e.currentTarget.value)}
                 >
                   <option value="">未選択</option>
                   {mergedCourses.map((c, idx) => {
-                    const label = String((c as any).name ?? (c as any).label ?? (c as any).value ?? (c as any).title ?? '');
-                    const val = label;
-                    return <option key={`${idx}_${val}`} value={val}>{label}</option>;
+                    const label = getCourseDisplayName(c);
+                    if (!label) return null;
+                    return (
+                      <option key={`${idx}_${label}`} value={label}>
+                        {label}
+                      </option>
+                    );
                   })}
                 </select>
               ) : (
@@ -747,32 +893,6 @@ export default function ReservationEditorDrawer(props: Props) {
                   onChange={(e) => setCourseName(e.currentTarget.value)}
                 />
               )}
-            </div>
-            {/* 滞在時間（予約ごとに上書き可能） */}
-            <div className="flex items-center gap-2">
-              <label className="w-[7em] shrink-0 text-sm font-medium">滞在時間</label>
-              <select
-                className="w-[12rem] max-w-full rounded border px-3 py-2"
-                value={String(selectedStayMinutes)}
-                onChange={(e) => {
-                  const n = parseInt(e.currentTarget.value, 10);
-                  if (!Number.isFinite(n)) {
-                    setStayMinutes(null);
-                    return;
-                  }
-                  if (n === autoStayMinutes) {
-                    setStayMinutes(null);
-                  } else {
-                    setStayMinutes(Math.max(5, n));
-                  }
-                }}
-              >
-                {staySelectOptions.map((m) => (
-                  <option key={m} value={String(m)}>
-                    {m}分{m === autoStayMinutes ? '（コース設定）' : ''}
-                  </option>
-                ))}
-              </select>
             </div>
             {/* 飲み放題 / 食べ放題（同一行・コンパクト） */}
             <div className="grid grid-cols-[auto_1fr_auto_1fr] items-center gap-1.5">
@@ -819,6 +939,53 @@ export default function ReservationEditorDrawer(props: Props) {
                 />
               )}
             </div>
+            {/* 滞在時間（予約ごとに上書き可能） */}
+            <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-500">
+              <label
+                htmlFor="reservation-stay-select"
+                className="text-[10px] font-medium"
+              >
+                滞在時間
+              </label>
+              <select
+                id="reservation-stay-select"
+                className="min-w-[6.5rem] rounded border border-slate-300 bg-white px-2 py-[3px] text-[10px] font-medium text-slate-700 shadow-sm focus:outline-none focus:ring-1 focus:ring-emerald-400 text-center"
+                value={String(selectedStayMinutes)}
+                onChange={(e) => {
+                  const n = parseInt(e.currentTarget.value, 10);
+                  if (!Number.isFinite(n)) {
+                    setStayMinutes(null);
+                    return;
+                  }
+                  if (n === autoStayMinutes) {
+                    setStayMinutes(null);
+                  } else {
+                    setStayMinutes(Math.max(5, n));
+                  }
+                }}
+              >
+                {staySelectOptions.map((m) => (
+                  <option key={m} value={String(m)}>
+                    {m}分{m === autoStayMinutes ? '（コース設定）' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* 備考（グループ） */}
+          <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3">
+            <div className="mb-2 text-xs font-semibold text-amber-700">備考</div>
+            <div className="flex items-start gap-2">
+              <label className="w-[7em] shrink-0 pt-2 text-sm font-medium">メモ</label>
+              <textarea
+                ref={memoTextareaRef}
+                className="flex-1 rounded border px-3 py-2 min-h-[80px] resize-none leading-relaxed"
+                value={memo}
+                onChange={(e) => setMemo(e.currentTarget.value)}
+                placeholder="アレルギー、席希望など"
+              />
+            </div>
           </div>
 
           {/* 卓（複数選択） */}
@@ -864,21 +1031,6 @@ export default function ReservationEditorDrawer(props: Props) {
                 }
               />
             )}
-          </div>
-
-          {/* 備考（グループ） */}
-          <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3">
-            <div className="mb-2 text-xs font-semibold text-amber-700">備考</div>
-            <div className="flex items-start gap-2">
-              <label className="w-[7em] shrink-0 pt-2 text-sm font-medium">メモ</label>
-              <textarea
-                ref={memoTextareaRef}
-                className="flex-1 rounded border px-3 py-2 min-h-[80px] resize-none leading-relaxed"
-                value={memo}
-                onChange={(e) => setMemo(e.currentTarget.value)}
-                placeholder="アレルギー、席希望など"
-              />
-            </div>
           </div>
             </form>
           ) : (

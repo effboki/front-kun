@@ -33,7 +33,7 @@ export type WaveSourceReservation = {
 };
 
 export type WaveInputFilters = {
-  positionId: string;
+  positionId?: string | null;
   tables: string[]; // 空配列 = フィルタなし（全卓）
 };
 
@@ -63,11 +63,15 @@ export function selectWaveInputTasks(
     opts.mapToTimeMs ??
     ((r: WaveSourceReservation) => r.startMs);
 
+  const normalizedPositionId =
+    typeof positionId === 'string' ? positionId.trim() : '';
+  const filterByPosition = normalizedPositionId.length > 0;
+
   const out: WaveInputTask[] = [];
 
   for (const r of reservations || []) {
     // フィルタ：ポジション
-    if (r.position !== positionId) continue;
+    if (filterByPosition && r.position !== normalizedPositionId) continue;
     // フィルタ：卓
     const tableStr = String(r.table ?? '');
     if (!allowAllTables && !tables.includes(tableStr)) continue;

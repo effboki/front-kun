@@ -3,6 +3,7 @@
 
 // ========== 共通型（コース & タスク） ==========
 import { normalizeCourseColor, type CourseColorKey } from '@/lib/courseColors';
+import { DEFAULT_POSITION_LABEL } from '@/constants/positions';
 
 export type CourseTask = {
   timeOffset: number; // 分（開始からの相対）
@@ -158,8 +159,8 @@ export const sanitizeCourses = (arr: unknown): CourseDef[] => {
 
 /** positions: string[] | {name:string}[] -> string[] (trim + empty除去) */
 export const toPositionNames = (v: unknown): string[] => {
-  if (!Array.isArray(v)) return [];
-  return (v as unknown[])
+  if (!Array.isArray(v)) return [DEFAULT_POSITION_LABEL];
+  const collected = (v as unknown[])
     .map((item) => {
       if (typeof item === 'string') return item.trim();
       if (item && typeof item === 'object') {
@@ -169,6 +170,24 @@ export const toPositionNames = (v: unknown): string[] => {
       return '';
     })
     .filter((s) => !!s);
+
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  collected.forEach((name) => {
+    if (seen.has(name)) return;
+    seen.add(name);
+    unique.push(name);
+  });
+
+  const existingIndex = unique.findIndex((name) => name === DEFAULT_POSITION_LABEL);
+  if (existingIndex >= 0) {
+    const [existing] = unique.splice(existingIndex, 1);
+    unique.unshift(existing);
+  } else {
+    unique.unshift(DEFAULT_POSITION_LABEL);
+  }
+
+  return unique;
 };
 
 /** 安全な文字列配列化（trim + 空要素除去） */

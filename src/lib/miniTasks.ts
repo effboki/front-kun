@@ -53,5 +53,8 @@ export function countPending(instances: MiniTaskInstance[]): number {
 
 /** yyyymmdd 文字列（当日キー用） */
 export function yyyymmdd(d = new Date()): string {
-  return d.toISOString().slice(0, 10).replace(/-/g, '');
-}   
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
+}

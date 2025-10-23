@@ -1,7 +1,7 @@
 import React from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { AreaDef, CourseDef, TaskDef } from '@/types';
-import { ALL_POSITIONS_KEY } from '@/constants/positions';
+import { ALL_POSITIONS_KEY, DEFAULT_POSITION_LABEL } from '@/constants/positions';
 
 const formatTaskOffset = (offset: number) => {
   if (offset > 0) return `${offset}分後`;
@@ -212,83 +212,48 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
   }, [handleTaskCheck, setCheckedTasks, nsKey]);
 
   // --- Popover state for task settings (anchor: position button) ---
-  const [taskPopover, setTaskPopover] = React.useState<{ open: boolean; x: number; y: number } | null>(null);
+  const [taskPopover, setTaskPopover] = React.useState<{ open: boolean; x: number; y: number; pos: string } | null>(null);
+
+  const ensureDisplayTaskCourse = React.useCallback((pos: string) => {
+    if (courses.length === 0) return;
+    const fallback = courses[0]?.name ?? '';
+    setDisplayTaskCourse((current: string) => {
+      if (pos === 'その他') {
+        return current && current.length > 0 ? current : fallback;
+      }
+      if (current && courses.some((c) => c.name === current)) {
+        return current;
+      }
+      return fallback;
+    });
+  }, [courses, setDisplayTaskCourse]);
 
   const handleSelectPosition = React.useCallback(
     (pos: string) => {
       // queue state updates so React applies them after the current render
       Promise.resolve().then(() => {
         setSelectedDisplayPosition(pos);
-        if (courses.length === 0) return;
-        const fallback = courses[0]?.name ?? '';
-        setDisplayTaskCourse((current: string) => {
-          if (pos === 'その他') {
-            return current && current.length > 0 ? current : fallback;
-          }
-          if (current && courses.some((c) => c.name === current)) {
-            return current;
-          }
-          return fallback;
-        });
+        ensureDisplayTaskCourse(pos);
       });
     },
-    [courses, setDisplayTaskCourse, setSelectedDisplayPosition]
+    [ensureDisplayTaskCourse, setSelectedDisplayPosition]
   );
 
   const openTaskPopover = React.useCallback((el: HTMLElement, pos: string) => {
-    // select position and open bubble near the button
-    handleSelectPosition(pos);
+    ensureDisplayTaskCourse(pos);
     const r = el.getBoundingClientRect();
-    setTaskPopover({ open: true, x: r.left + r.width / 2, y: r.bottom });
-  }, [handleSelectPosition]);
+    setTaskPopover({ open: true, pos, x: r.left + r.width / 2, y: r.bottom });
+  }, [ensureDisplayTaskCourse]);
 
   const closeTaskPopover = React.useCallback(() => setTaskPopover(null), []);
 
-  // --- Today's enabled positions (local only) ---
-  const [enabledPositions, setEnabledPositions] = React.useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(`${nsKey}-enabledPositions`) ?? '[]');
-    } catch {
-      return [];
+  const togglePositionFilter = React.useCallback((pos: string) => {
+    if (selectedDisplayPosition === pos) {
+      setSelectedDisplayPosition(ALL_POSITIONS_KEY);
+      return;
     }
-  });
-  React.useEffect(() => {
-    try {
-      localStorage.setItem(`${nsKey}-enabledPositions`, JSON.stringify(enabledPositions));
-    } catch {}
-  }, [nsKey, enabledPositions]);
-
-  const isEnabledPosition = React.useCallback(
-    (pos: string) => enabledPositions.includes(pos),
-    [enabledPositions]
-  );
-  const togglePositionEnabled = React.useCallback((pos: string) => {
-    setEnabledPositions((prev) => {
-      const set = new Set(prev);
-      if (set.has(pos)) {
-        set.delete(pos);
-      } else {
-        set.add(pos);
-        handleSelectPosition(pos);
-      }
-      return Array.from(set);
-    });
-  }, [handleSelectPosition]);
-
-  const isOtherPositionSelected = selectedDisplayPosition === 'その他';
-  const isAllPositionsSelected =
-    !isOtherPositionSelected &&
-    (selectedDisplayPosition === ALL_POSITIONS_KEY || selectedDisplayPosition === '');
-  const displayPositionLabel = isOtherPositionSelected
-    ? 'その他'
-    : isAllPositionsSelected
-      ? '全ポジション'
-      : selectedDisplayPosition;
-  const displayPositionDescription = isOtherPositionSelected
-    ? '個人カスタム：当日の自分用'
-    : isAllPositionsSelected
-      ? '全ポジションの店舗設定タスクを表示'
-      : '以下は店舗設定で設定したタスクを表示';
+    handleSelectPosition(pos);
+  }, [handleSelectPosition, selectedDisplayPosition, setSelectedDisplayPosition]);
 
   // ===== Render =====
   if (section === 'tables') {
@@ -469,27 +434,21 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
           {/* 縦並びリスト */}
           <div className="space-y-2">
             {[...positions, 'その他'].map((pos) => {
-              const enabled = isEnabledPosition(pos);
+              const isActive = selectedDisplayPosition === pos;
               return (
                 <div
                   key={pos}
-                  className="rounded-lg border bg-white px-3 py-2 shadow-sm cursor-pointer transition hover:border-blue-200"
-                  onClick={() => handleSelectPosition(pos)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      handleSelectPosition(pos);
-                    }
-                  }}
-                  aria-pressed={selectedDisplayPosition === pos}
+                  className="rounded-lg border bg-white px-3 py-2 shadow-sm transition"
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="font-medium truncate">{pos}</div>
                       <div className="text-[11px] text-gray-500">
-                        {pos === 'その他' ? '個人カスタム：当日の自分用' : '店舗設定で決めたタスクを表示'}
+                        {pos === 'その他'
+                          ? '個人カスタム：当日の自分用'
+                          : pos === DEFAULT_POSITION_LABEL
+                            ? '全コースのタスクを常に表示（変更不可）'
+                            : '店舗設定で決めたタスクを表示'}
                       </div>
                     </div>
 
@@ -497,7 +456,10 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
                       {/* 設定（タスク確認/個人カスタム） */}
                       <button
                         type="button"
-                        onClick={(e) => openTaskPopover(e.currentTarget as HTMLElement, pos)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openTaskPopover(e.currentTarget as HTMLElement, pos);
+                        }}
                         className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
                       >
                         設定
@@ -510,10 +472,10 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
                       >
                         <input
                           type="checkbox"
-                          checked={enabled}
+                          checked={isActive}
                           onChange={(event) => {
                             event.stopPropagation();
-                            togglePositionEnabled(pos);
+                            togglePositionFilter(pos);
                           }}
                           className="sr-only peer"
                         />
@@ -533,48 +495,67 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
           </div>
         </div>
         {/* ===== Popover (吹き出し) for course & task selection ===== */}
-        {taskPopover?.open && (
-          <div className="fixed inset-0 z-50" onClick={closeTaskPopover}>
-            {/* backdrop */}
-            <div className="absolute inset-0 bg-black/10" />
-            {/* centered panel */}
-            <div className="absolute inset-0 flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-              <div className="w-[360px] max-w-[92vw]">
-                <div className="rounded-lg border bg-white shadow-lg relative">
-                  <div className="px-4 pt-3 pb-2 border-b bg-gray-50 rounded-t-lg">
-                    <div className="text-sm font-semibold">
-                      {displayPositionLabel}
-                      <span className="ml-2 text-xs text-gray-500">
-                        {displayPositionDescription}
-                      </span>
-                    </div>
-                  </div>
+        {taskPopover?.open && (() => {
+          const previewPosition = taskPopover?.pos ?? selectedDisplayPosition;
+          const isPreviewOther = previewPosition === 'その他';
+          const isPreviewAll =
+            !isPreviewOther && (previewPosition === ALL_POSITIONS_KEY || previewPosition === '');
+          const isPreviewDefault = previewPosition === DEFAULT_POSITION_LABEL;
+          const previewLabel = isPreviewOther
+            ? 'その他'
+            : isPreviewAll
+              ? '全ポジション'
+              : previewPosition;
+          const previewDescription = isPreviewOther
+            ? '個人カスタム：当日の自分用'
+            : isPreviewAll
+              ? '全ポジションの店舗設定タスクを表示'
+              : isPreviewDefault
+                ? '全てのタスクが常に表示されます（変更不可）'
+                : '以下は店舗設定で設定したタスクを表示';
 
-                  <div className="p-3 space-y-3 max-h-[60vh] overflow-auto">
-                    {selectedDisplayPosition !== 'その他' ? (
-                      <>
-                        {/* コース選択（集約セレクト） */}
-                        <div>
-                          <label className="block text-xs text-gray-600 mb-1">コース選択</label>
-                          <div className="relative">
-                            <select
-                              value={displayTaskCourse}
-                              onChange={(e) => setDisplayTaskCourse(e.target.value)}
-                              className="w-full appearance-none px-3 py-2 pr-8 rounded border bg-white text-sm"
-                            >
-                              {courses.map((c) => (
-                                <option key={c.name} value={c.name}>{c.name}</option>
-                              ))}
-                            </select>
-                            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
+          return (
+            <div className="fixed inset-0 z-50" onClick={closeTaskPopover}>
+              {/* backdrop */}
+              <div className="absolute inset-0 bg-black/10" />
+              {/* centered panel */}
+              <div className="absolute inset-0 flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+                <div className="w-[360px] max-w-[92vw]">
+                  <div className="rounded-lg border bg-white shadow-lg relative">
+                    <div className="px-4 pt-3 pb-2 border-b bg-gray-50 rounded-t-lg">
+                      <div className="text-sm font-semibold">
+                        {previewLabel}
+                        <span className="ml-2 text-xs text-gray-500">
+                          {previewDescription}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 space-y-3 max-h-[60vh] overflow-auto">
+                      {!isPreviewOther ? (
+                        <>
+                          {/* コース選択（集約セレクト） */}
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">コース選択</label>
+                            <div className="relative">
+                              <select
+                                value={displayTaskCourse}
+                                onChange={(e) => setDisplayTaskCourse(e.target.value)}
+                                className="w-full appearance-none px-3 py-2 pr-8 rounded border bg-white text-sm"
+                              >
+                                {courses.map((c) => (
+                                  <option key={c.name} value={c.name}>{c.name}</option>
+                                ))}
+                              </select>
+                              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
+                            </div>
                           </div>
-                        </div>
 
                         {/* タスク一覧（選択中コース） */}
                         {(() => {
                           const course = courses.find((c) => c.name === displayTaskCourse) ?? courses[0];
                           const total = (course?.tasks ?? []).length;
-                          const onCount = (tasksByPosition[selectedDisplayPosition]?.[course?.name ?? ""] ?? []).length;
+                          const onCount = (tasksByPosition[previewPosition]?.[course?.name ?? ""] ?? []).length;
 
                           if (!course || total === 0) {
                             return (
@@ -584,7 +565,7 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
                             );
                           }
 
-                          const checkedSet = new Set(tasksByPosition[selectedDisplayPosition]?.[course.name] ?? []);
+                          const checkedSet = new Set(tasksByPosition[previewPosition]?.[course.name] ?? []);
                           const list = (course.tasks ?? []).slice().sort((a, b) => a.timeOffset - b.timeOffset);
 
                           return (
@@ -606,8 +587,9 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
                                           type="checkbox"
                                           checked={checked}
                                           readOnly
-                                          aria-disabled="true"
-                                          className="mr-1 accent-blue-600 pointer-events-none"
+                                          disabled={isPreviewDefault}
+                                          aria-disabled={isPreviewDefault}
+                                          className={`mr-1 accent-blue-600 ${isPreviewDefault ? 'cursor-not-allowed opacity-70' : 'pointer-events-none'}`}
                                         />
                                         <span>表示</span>
                                       </label>
@@ -654,7 +636,7 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
                                   {list.map((task) => (
                                     <div key={`${course?.name ?? 'course'}_${task.timeOffset}_${task.timeOffsetEnd ?? task.timeOffset}_${task.label}`} className="flex items-center gap-3 py-2 text-sm">
                                       <span className="inline-flex min-w-[56px] justify-center px-2 py-0.5 rounded-full text-[11px] bg-blue-50 text-blue-700">
-                                      {formatTaskRange(task.timeOffset, task.timeOffsetEnd)}
+                                        {formatTaskRange(task.timeOffset, task.timeOffsetEnd)}
                                       </span>
                                       <span className="flex-1">{task.label}</span>
                                       <label className="flex items-center space-x-1">
@@ -678,23 +660,24 @@ const PreopenSettingsContent: React.FC<PreopenSettingsProps> = ({
                         </div>
                       </>
                     )}
-                  </div>
+                    </div>
 
-                  {/* footer actions */}
-                  <div className="flex items-center justify-end gap-2 px-3 pb-3">
-                    <button
-                      type="button"
-                      onClick={closeTaskPopover}
-                      className="px-3 py-1.5 rounded border bg-white hover:bg-gray-50 text-sm"
-                    >
-                      閉じる
-                    </button>
+                    {/* footer actions */}
+                    <div className="flex items-center justify-end gap-2 px-3 pb-3">
+                      <button
+                        type="button"
+                        onClick={closeTaskPopover}
+                        className="px-3 py-1.5 rounded border bg-white hover:bg-gray-50 text-sm"
+                      >
+                        閉じる
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </section>
     );
   }

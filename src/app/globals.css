@@ -6,8 +6,13 @@
 html {
   color-scheme: light;      /* ブラウザの自動ダーク適用を抑止 */
   background-color: #ffffff;/* 念のため白背景を固定 */
-  touch-action: manipulation;
-  overscroll-behavior: none;
+}
+
+@media (pointer: coarse) {
+  html {
+    touch-action: manipulation;
+    overscroll-behavior: none;
+  }
 }
 
 :root {

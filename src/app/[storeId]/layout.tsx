@@ -60,7 +60,10 @@ export default function StoreLayout({
 
   // 営業前設定（端末/ユーザーごと）の購読値を使用。uid 未指定時はフォールバック。
   const { activePositionId: prePos, visibleTables: preTables } = usePreopenSettings(storeIdStr, { uid });
-  const activePositionId = prePos ?? (settings.positions?.[0] ?? 'default');
+  const normalizedPrePos =
+    typeof prePos === 'string' ? prePos.trim() : '';
+  const selectedPositionId = normalizedPrePos.length > 0 ? normalizedPrePos : null;
+  const activePositionId = selectedPositionId ?? (settings.positions?.[0] ?? 'default');
   const visibleTables: string[] = Array.isArray(preTables) && preTables.length > 0 ? preTables : [];
 
   // 今日は 00:00〜23:59:59.999 を対象
@@ -142,22 +145,23 @@ export default function StoreLayout({
         s.startMs <= todayRange.endMs
     );
     return selectWaveInputTasks(daySrc, {
-      positionId: activePositionId,
+      positionId: selectedPositionId,
       tables: visibleTables,
     });
-  }, [waveSource, activePositionId, visibleTables, todayRange]);
+  }, [waveSource, selectedPositionId, visibleTables, todayRange]);
 
   return (
     <MiniTaskProvider
       storeId={storeIdStr}
       settings={settings}
       activePositionId={activePositionId}
+      selectedPositionId={selectedPositionId}
       visibleTables={visibleTables}
       todayRange={todayRange}
       tasksForWave={tasksForWave}
     >
-      {/* 紺帯ヘッダーの右上にアクション群を重ねて表示 */}
-      <div className="fixed right-0 top-0 z-[100] h-12 w-0">
+      {/* 紺帯ヘッダーの右上にアクション群を重ねて表示（z はモバイル時間ヘッダーより上にする） */}
+      <div className="fixed right-0 top-0 z-[1600] h-12 w-0">
         <div className="relative h-full">
           <SeatOptimizerButton />
           <ManualSyncButton />

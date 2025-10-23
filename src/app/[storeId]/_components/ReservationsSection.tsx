@@ -518,6 +518,14 @@ const ReservationsSection = memo(function ReservationsSection({
   const [showImportModal, setShowImportModal] = useState(false);
   const { createReservation } = useReservationMutations(storeId, { dayStartMs });
   const defaultCourseStyle = useMemo(() => getCourseColorStyle(null), []);
+  const departedCourseStyle = useMemo<CourseColorStyle>(
+    () => ({
+      background: '#ffffff',
+      text: '#6b7280',
+      border: '#d1d5db',
+    }),
+    [],
+  );
   const courseColorMap = useMemo(() => {
     const map = new Map<string, CourseColorStyle>();
     courses.forEach((course) => {
@@ -627,6 +635,16 @@ const ReservationsSection = memo(function ReservationsSection({
   const closeNumPad = () => setLocalNumPadState(null);
   // Optimistic inline edits for select boxes (eat/drink) to avoid flicker before server echo
   const [inlineEdits, setInlineEdits] = useState<Record<string, { eat?: string; drink?: string }>>({});
+  const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({});
+  const nameCommitTimersRef = useRef<Record<string, number>>({});
+  const reservationsRef = useRef(reservations);
+  useEffect(() => {
+    reservationsRef.current = reservations;
+  }, [reservations]);
+  const nameDraftsRef = useRef(nameDrafts);
+  useEffect(() => {
+    nameDraftsRef.current = nameDrafts;
+  }, [nameDrafts]);
   const [noteEditor, setNoteEditor] = useState<NoteEditorState | null>(null);
   // NEW判定（直後ドット用のローカル検知）
   const NEW_THRESHOLD = 15 * 60 * 1000; // 15分
@@ -669,6 +687,106 @@ const ReservationsSection = memo(function ReservationsSection({
         else next[r.id] = entry;
       }
       return next;
+    });
+  }, [reservations]);
+
+  const cancelScheduledNameCommit = useCallback((id: string) => {
+    const timers = nameCommitTimersRef.current;
+    if (timers[id]) {
+      window.clearTimeout(timers[id]);
+      delete timers[id];
+    }
+  }, []);
+
+  const getReservationName = useCallback((id: string) => {
+    const list = reservationsRef.current;
+    if (!Array.isArray(list)) return '';
+    const target = list.find((res) => res.id === id);
+    return typeof target?.name === 'string' ? target.name : '';
+  }, []);
+
+  const scheduleNameCommit = useCallback(
+    (id: string, value: string, immediate = false) => {
+      cancelScheduledNameCommit(id);
+      const execute = () => {
+        const current = getReservationName(id);
+        if (value !== current) {
+          updateReservationField(id, 'name', value);
+        } else {
+          setNameDrafts((prev) => {
+            if (prev[id] === undefined) return prev;
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+        }
+        delete nameCommitTimersRef.current[id];
+      };
+      if (immediate) {
+        execute();
+      } else {
+        nameCommitTimersRef.current[id] = window.setTimeout(execute, 300);
+      }
+    },
+    [cancelScheduledNameCommit, getReservationName, updateReservationField]
+  );
+
+  const handleNameChange = useCallback(
+    (id: string, value: string) => {
+      const current = getReservationName(id);
+      if (value === current) {
+        cancelScheduledNameCommit(id);
+        setNameDrafts((prev) => {
+          if (prev[id] === undefined) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        return;
+      }
+      setNameDrafts((prev) => {
+        if (prev[id] === value) return prev;
+        return { ...prev, [id]: value };
+      });
+      scheduleNameCommit(id, value);
+    },
+    [getReservationName, cancelScheduledNameCommit, scheduleNameCommit]
+  );
+
+  const handleNameBlur = useCallback(
+    (id: string) => {
+      const draftValue = nameDraftsRef.current?.[id];
+      const value = draftValue !== undefined ? draftValue : getReservationName(id);
+      scheduleNameCommit(id, value, true);
+    },
+    [getReservationName, scheduleNameCommit]
+  );
+
+  useEffect(() => {
+    return () => {
+      Object.values(nameCommitTimersRef.current).forEach((timer) => {
+        window.clearTimeout(timer);
+      });
+      nameCommitTimersRef.current = {};
+    };
+  }, []);
+
+  useEffect(() => {
+    setNameDrafts((prev) => {
+      if (!prev || Object.keys(prev).length === 0) return prev;
+      const nameMap = new Map<string, string>();
+      reservations.forEach((r) => {
+        nameMap.set(r.id, typeof r.name === 'string' ? r.name : '');
+      });
+      let changed = false;
+      const next: Record<string, string> = { ...prev };
+      Object.keys(next).forEach((id) => {
+        if (!nameMap.has(id) || nameMap.get(id) === next[id]) {
+          delete next[id];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
     });
   }, [reservations]);
 
@@ -1320,21 +1438,14 @@ const ReservationsSection = memo(function ReservationsSection({
         <div className="sm:p-4 p-2 space-y-4 text-[13px] sm:text-sm border rounded overflow-x-auto relative">
           {/* ── 予約リスト ヘッダー ───────────────────── */}
           <div className="flex flex-col space-y-2">
-            {/* 下段：卓番変更 & 全リセット & 予約確定 */}
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setShowImportModal(true)}
-                className="px-3 py-1 rounded text-xs sm:text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700"
-              >
-                インポート
-              </button>
+            {/* 下段：卓番変更 & 全リセット */}
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-2 py-2 sm:py-1.5">
               <button
                 onClick={onToggleEditTableMode}
-                className={`px-3 py-1 rounded text-xs sm:text-sm font-semibold ${
+                className={`inline-flex items-center gap-1 rounded border px-3 py-1 text-xs sm:text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 ${
                   editTableMode
-                    ? 'bg-amber-600 text-white'
-                    : 'bg-amber-500 text-white hover:bg-amber-600'
+                    ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+                    : 'border-amber-300 bg-white text-amber-700 hover:bg-amber-50'
                 }`}
                 aria-pressed={editTableMode}
                 title={editTableMode ? '卓番変更モード：ON' : '卓番変更モードを開始'}
@@ -1342,7 +1453,7 @@ const ReservationsSection = memo(function ReservationsSection({
                 {editTableMode ? (
                   <>
                     卓番変更中
-                    <span className="ml-2 text-[10px] px-1 py-0.5 rounded bg-white/20">ON</span>
+                    <span className="ml-1 rounded bg-white/20 px-1 py-0.5 text-[10px]">ON</span>
                   </>
                 ) : (
                   '卓番変更'
@@ -1352,7 +1463,7 @@ const ReservationsSection = memo(function ReservationsSection({
               <button
                 type="button"
                 onClick={() => toggleInfo('tableChange')}
-                className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
+                className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 bg-white hover:bg-gray-50"
                 aria-label="『卓番変更』の説明"
                 aria-expanded={openInfo === 'tableChange'}
                 aria-controls="help-table-change"
@@ -1362,7 +1473,7 @@ const ReservationsSection = memo(function ReservationsSection({
               <div className="ml-auto">
                 <button
                   onClick={resetAllReservations}
-                  className="px-3 py-1 rounded text-xs sm:text-sm bg-red-600 text-white hover:bg-red-700"
+                  className="inline-flex items-center gap-1 rounded border border-red-300 bg-white px-3 py-1 text-xs sm:text-sm font-semibold text-red-600 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-200"
                   title="すべての変更をリセット"
                 >
                   全リセット
@@ -1562,7 +1673,8 @@ const ReservationsSection = memo(function ReservationsSection({
                 const trimmedNotes = notesValue.trim();
                 const tableLabel = displayTableStr.trim();
                 const timeLabel = typeof r.time === 'string' ? r.time : '';
-                const nameLabel = typeof r.name === 'string' ? r.name.trim() : '';
+                const rawName = nameDrafts[r.id] ?? (typeof r.name === 'string' ? r.name : '');
+                const nameLabel = rawName.trim();
                 const guestsStr = String(r.guests ?? '');
                 const isTableThreeDigits = /\d{3}/.test(displayTableStr);
                 const isGuestsThreeDigits = /\d{3}/.test(guestsStr);
@@ -1571,14 +1683,17 @@ const ReservationsSection = memo(function ReservationsSection({
                 // Normalized current values for eat/drink (inline edit takes precedence)
                 const eatCurrent = inlineEdits[r.id]?.eat ?? getEatValue(r);
                 const drinkCurrent = inlineEdits[r.id]?.drink ?? getDrinkValue(r);
+                const isArrived = checkedArrivals.includes(r.id);
+                const isDeparted = checkedDepartures.includes(r.id);
+                const isPaymentChecked = checkedPayments.includes(r.id);
 
                 return (
                   <tr
                     key={r.id}
                     className={`${
-                      checkedArrivals.includes(r.id) ? 'bg-green-100 ' : ''
+                      isArrived ? 'bg-green-100 ' : ''
                     }${
-                      checkedDepartures.includes(r.id) ? 'bg-gray-300 text-gray-400 ' : ''
+                      isDeparted ? 'bg-gray-300 text-gray-400 ' : ''
                     }${borderClass} text-center ${
                       firstRotatingId[displayTableStr] === r.id ? 'text-red-500' : ''
                     }${editTableMode && tablesForMove.includes(r.id) ? 'bg-amber-50 ' : ''}`}
@@ -1653,8 +1768,9 @@ const ReservationsSection = memo(function ReservationsSection({
                       <td className={`border px-1 ${padY} hidden sm:table-cell`}>
                         <input
                           type="text"
-                          value={r.name ?? ''}
-                          onChange={(e) => updateReservationField(r.id, 'name', e.target.value)}
+                          value={rawName}
+                          onChange={(e) => handleNameChange(r.id, e.target.value)}
+                          onBlur={() => handleNameBlur(r.id)}
                           placeholder="氏名"
                           className="border px-1 py-0.5 w-full rounded text-[13px] sm:text-sm text-center"
                         />
@@ -1671,12 +1787,14 @@ const ReservationsSection = memo(function ReservationsSection({
                           if (next === selectValue) return;
                           updateReservationField(r.id, 'course', next);
                         };
-                        const courseStyle = courseColorMap.get(selectValue) ?? defaultCourseStyle;
+                        const courseStyle = isDeparted
+                          ? departedCourseStyle
+                          : courseColorMap.get(selectValue) ?? defaultCourseStyle;
                         return (
                           <select
                             value={selectValue}
                             onChange={(e) => handleChange(e.target.value)}
-                            className="border px-1 py-0.5 rounded text-[13px] sm:text-sm transition-colors"
+                            className="border border-gray-300 px-1 py-0.5 rounded text-[13px] sm:text-sm transition-colors"
                             style={{
                               backgroundColor: courseStyle.background,
                               color: courseStyle.text,
@@ -1804,9 +1922,9 @@ const ReservationsSection = memo(function ReservationsSection({
                       <button
                         onClick={() => toggleArrivalChecked(r.id)}
                         className={`px-2 py-0.5 rounded text-[13px] sm:text-sm ${
-                          checkedDepartures.includes(r.id)
+                          isDeparted
                             ? 'bg-gray-500 text-white'
-                            : checkedArrivals.includes(r.id)
+                            : isArrived
                             ? 'bg-green-500 text-white'
                             : 'bg-gray-200 text-black'
                         }`}
@@ -1820,9 +1938,9 @@ const ReservationsSection = memo(function ReservationsSection({
                       <button
                         onClick={() => togglePaymentChecked(r.id)}
                         className={`px-2 py-0.5 rounded text-[13px] sm:text-sm ${
-                          checkedDepartures.includes(r.id)
+                          isDeparted
                             ? 'bg-gray-500 text-white'
-                            : checkedPayments.includes(r.id)
+                            : isPaymentChecked
                             ? 'bg-blue-500 text-white'
                             : 'bg-gray-200 text-black'
                         }`}
@@ -1836,7 +1954,7 @@ const ReservationsSection = memo(function ReservationsSection({
                       <button
                         onClick={() => toggleDepartureChecked(r.id)}
                         className={`px-2 py-0.5 rounded text-[13px] sm:text-sm ${
-                          checkedDepartures.includes(r.id) ? 'bg-gray-500 text-white' : 'bg-gray-200 text-black'
+                          isDeparted ? 'bg-gray-500 text-white' : 'bg-gray-200 text-black'
                         }`}
                       >
                         退
@@ -1918,7 +2036,7 @@ const ReservationsSection = memo(function ReservationsSection({
                         form="new-res-form"
                         value={newResCourse}
                         onChange={(e) => setNewResCourse(e.target.value)}
-                        className="border px-1 py-0.5 rounded text-[13px] sm:text-sm transition-colors"
+                        className="border border-gray-300 px-1 py-0.5 rounded text-[13px] sm:text-sm transition-colors"
                         style={{
                           backgroundColor: courseStyle.background,
                           color: courseStyle.text,
@@ -2037,6 +2155,15 @@ const ReservationsSection = memo(function ReservationsSection({
               </tr>
             </tbody>
           </table>
+          <div className="flex justify-end pt-3">
+            <button
+              type="button"
+              onClick={() => setShowImportModal(true)}
+              className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-white px-3 py-1 text-xs sm:text-sm font-semibold text-emerald-700 shadow-sm hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
+            >
+              インポート
+            </button>
+          </div>
           {/* 左下：予約リストの使い方 i ボタン */}
         </div>
         {/* i ボタンをテーブル直下・右下に配置 */}

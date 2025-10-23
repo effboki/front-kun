@@ -4,6 +4,11 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { Reservation, CourseDef } from '@/types';
 import { parseTimeToMinutes } from '@/lib/time';
+import {
+  getCourseColorStyle,
+  normalizeCourseColor,
+  type CourseColorStyle,
+} from '@/lib/courseColors';
 
 const NEW_THRESHOLD = 15 * 60 * 1000; // 15 minutes
 
@@ -45,6 +50,16 @@ const CourseStartSection = memo(function CourseStartSection(props: Props) {
   } = props;
 
   const [highlightNow, setHighlightNow] = useState(() => Date.now());
+  const defaultCourseColorStyle = useMemo(() => getCourseColorStyle(null), []);
+  const courseColorMap = useMemo(() => {
+    const map = new Map<string, CourseColorStyle>();
+    for (const course of courses) {
+      const key = normalizeCourseColor(course.color);
+      map.set(course.name, getCourseColorStyle(key));
+    }
+    map.set('未選択', defaultCourseColorStyle);
+    return map;
+  }, [courses, defaultCourseColorStyle]);
 
   // 並び替えモード（親から渡されなければローカルで管理）
   const [innerStartSort, setInnerStartSort] = useState<'table' | 'guests'>(() => {
@@ -304,8 +319,8 @@ const CourseStartSection = memo(function CourseStartSection(props: Props) {
                   {timeKey}
                 </span>
               </div>
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[12px] md:text-[13px] lg:text-sm font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
-                <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              <span className="inline-flex items-center gap-1 rounded-full border border-gray-300 bg-white px-2.5 py-1 text-[12px] md:text-[13px] lg:text-sm font-semibold text-gray-800 shadow-sm">
+                <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-gray-500" />
                 合計
                 <span className="tabular-nums">{summary.totalReservations}</span>
                 件（
@@ -323,6 +338,9 @@ const CourseStartSection = memo(function CourseStartSection(props: Props) {
                 // --- フォールバック：コース名が空/undefined の場合は '未選択' に寄せる ---
                 const courseLabel = (group.courseName && group.courseName.trim()) ? group.courseName : '未選択';
 
+                const courseStyle =
+                  courseColorMap.get(courseLabel) ?? defaultCourseColorStyle;
+
                 return (
                   <div
                     key={courseLabel + timeKey}
@@ -330,15 +348,25 @@ const CourseStartSection = memo(function CourseStartSection(props: Props) {
                   >
                     {/* コース名 + コース内合計 */}
                     <span className="inline-flex items-center gap-1.5">
-                      <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-indigo-500" />
-                      <span className="text-sm md:text-sm lg:text-base font-semibold text-gray-800 tracking-tight">
+                      <span
+                        aria-hidden
+                        className="inline-block h-1.5 w-1.5 rounded-full"
+                        style={{ backgroundColor: courseStyle.text }}
+                      />
+                      <span
+                        className="text-sm md:text-sm lg:text-base font-semibold tracking-tight"
+                        style={{ color: courseStyle.text }}
+                      >
                         {courseLabel}
                       </span>
                     </span>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50/70 px-2 py-0.5 text-[11px] md:text-[11px] lg:text-xs font-medium text-emerald-700/90 ring-1 ring-inset ring-emerald-200/70">
-                      <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
-                      <span className="tabular-nums">{courseCount}</span>件（
-                      <span className="tabular-nums">{courseGuests}</span>人）
+                    <span className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] md:text-[11px] lg:text-xs font-medium text-gray-700 shadow-sm">
+                      <span className="tabular-nums">{courseCount}</span>
+                      <span>
+                        件（
+                        <span className="tabular-nums">{courseGuests}</span>
+                        人）
+                      </span>
                     </span>
 
                     {/* 予約のチップ（卓番（人数） or 名前） */}

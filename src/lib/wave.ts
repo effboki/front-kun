@@ -22,7 +22,7 @@ export type WaveParams = {
 
 export type WaveFilter = {
   /** 集計対象のポジションID（自分の担当） */
-  positionId: string;
+  positionId?: string | null;
   /** 表示対象の卓番号（空なら全卓） */
   visibleTables: string[];
 };
@@ -55,8 +55,10 @@ export function buildSeries(
 
   const score = slots.map((slot) => {
     // フィルタ後に該当バケットへ入るタスクだけを数える
+    const applyPositionFilter =
+      typeof filter.positionId === 'string' && filter.positionId.length > 0;
     const inSlot = tasks.filter((tk) => {
-      if (tk.positionId !== filter.positionId) return false;
+      if (applyPositionFilter && tk.positionId !== filter.positionId) return false;
       if (filter.visibleTables.length > 0) {
         if (!tk.table || !filter.visibleTables.includes(String(tk.table))) return false;
       }

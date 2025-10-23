@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
-import type { ChangeEvent, FormEvent } from 'react';
+import type { ChangeEvent, FormEvent, SetStateAction } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { renameCourseTx } from '@/lib/courses';
 import { db } from '@/lib/firebase';
@@ -52,7 +52,7 @@ import ScheduleView from './_components/schedule/ScheduleView'; // NOTE: render 
 import { parseTimeToMinutes, formatMinutesToTime, startOfDayMs } from '@/lib/time';
 import StoreSettingsContent from "./_components/settings/StoreSettingsContent";
 import PreopenSettingsContent from "./_components/preopen/PreopenSettingsContent";
-import { ALL_POSITIONS_KEY } from '@/constants/positions';
+import { ALL_POSITIONS_KEY, DEFAULT_POSITION_LABEL } from '@/constants/positions';
 
 import type { AreaDef } from '@/types';
 import { useReservationMutations } from '@/hooks/useReservationMutations';
@@ -169,6 +169,79 @@ const setArrayIfChanged = <T,>(prevArr: readonly T[] | undefined, nextArr: reado
   return sameArrayShallow(prevArr, nextArr) ? cloneArray(prevArr) : [...nextArr];
 };
 
+const isDefaultPosition = (label: string) => normEq(label, DEFAULT_POSITION_LABEL);
+
+const ensureDefaultPositionPresent = (input: readonly string[] | undefined): string[] => {
+  const cleaned = Array.isArray(input)
+    ? input
+        .map((pos) => (typeof pos === 'string' ? pos.trim() : ''))
+        .filter((pos) => pos.length > 0)
+    : [];
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  cleaned.forEach((pos) => {
+    const key = normalizeLabel(pos);
+    if (seen.has(key)) return;
+    seen.add(key);
+    unique.push(pos);
+  });
+  const existingIndex = unique.findIndex((pos) => isDefaultPosition(pos));
+  if (existingIndex >= 0) {
+    const [currentDefault] = unique.splice(existingIndex, 1);
+    unique.unshift(currentDefault);
+  } else {
+    unique.unshift(DEFAULT_POSITION_LABEL);
+  }
+  return unique;
+};
+
+const dedupeTaskLabels = (labels: unknown[]): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  labels.forEach((item) => {
+    if (typeof item !== 'string') return;
+    const trimmed = item.trim();
+    if (!trimmed) return;
+    const key = normalizeLabel(trimmed);
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(trimmed);
+  });
+  return result;
+};
+
+const sanitizeTasksByPositionWithDefault = (
+  input: Record<string, Record<string, string[]>> | undefined,
+  courses: CourseDef[]
+): Record<string, Record<string, string[]>> => {
+  const result: Record<string, Record<string, string[]>> = {};
+
+  if (input && typeof input === 'object') {
+    Object.entries(input).forEach(([pos, courseMap]) => {
+      if (!courseMap || typeof courseMap !== 'object') return;
+      if (isDefaultPosition(pos)) return; // default is rebuilt below
+      const sanitizedCourseMap: Record<string, string[]> = {};
+      Object.entries(courseMap).forEach(([courseName, labels]) => {
+        if (!Array.isArray(labels)) return;
+        const deduped = dedupeTaskLabels(labels);
+        sanitizedCourseMap[courseName] = deduped;
+      });
+      result[pos] = sanitizedCourseMap;
+    });
+  }
+
+  const defaultCourseMap: Record<string, string[]> = {};
+  courses.forEach((course) => {
+    const labels = Array.isArray(course?.tasks)
+      ? dedupeTaskLabels(course.tasks.map((task) => task?.label))
+      : [];
+    defaultCourseMap[course.name] = labels;
+  });
+  result[DEFAULT_POSITION_LABEL] = defaultCourseMap;
+
+  return result;
+};
+
 //
 // ───────────────────────────── ① TYPES ────────────────────────────────────────────
 
@@ -205,16 +278,35 @@ const RootNumPad = ({
 }: RootNumPadProps) => {
   const [val, setVal] = useState<string>('');
   const [list, setList] = useState<string[]>([]);
+  const initialValueRef = useRef<string>('');
+  const firstInputRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (!open) return;
-    setVal(value || '');
+    const initial = value || '';
+    initialValueRef.current = initial;
+    firstInputRef.current = true;
+    setVal(initial);
     setList(multi ? (Array.isArray(initialList) ? [...initialList] : []) : []);
   }, [open, value, initialList, multi]);
 
-  const appendDigit = (d: string) => setVal((prev) => (prev + d).replace(/^0+(?=\d)/, ''));
-  const backspace = () => setVal((prev) => prev.slice(0, -1));
-  const clearAll = () => setVal('');
+  const appendDigit = (d: string) => {
+    setVal((prev) => {
+      const shouldReplace = firstInputRef.current && initialValueRef.current.length > 0;
+      const nextRaw = shouldReplace ? d : prev + d;
+      return nextRaw.replace(/^0+(?=\d)/, '');
+    });
+    firstInputRef.current = false;
+  };
+  const backspace = () => {
+    firstInputRef.current = false;
+    setVal((prev) => prev.slice(0, -1));
+  };
+  const clearAll = () => {
+    firstInputRef.current = false;
+    initialValueRef.current = '';
+    setVal('');
+  };
 
   // 「＋ 追加」: 現在の val を list に確定（空/重複は無視）
   const pushCurrentToList = () => {
@@ -625,6 +717,20 @@ const {
   deleteReservation: deleteReservationMut,
 } = useReservationMutations(id as string, { dayStartMs });
 
+  const storeSlug = useMemo(() => {
+    const raw = typeof id === 'string' ? id : '';
+    const normalized = raw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 12);
+    return normalized || 'res';
+  }, [id]);
+
+  const generateReservationId = useCallback(() => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `${storeSlug}-${crypto.randomUUID()}`;
+    }
+    const random = Math.random().toString(36).slice(2, 8);
+    return `${storeSlug}-${Date.now().toString(36)}-${random}`;
+  }, [storeSlug]);
+
   // 名前空間付き localStorage キー定義
   const ns = useMemo(() => `front-kun-${id}`, [id]);
   const { key: nsKey, getJSON: nsGetJSON, setJSON: nsSetJSON, getStr: nsGetStr, setStr: nsSetStr } = useMemo(
@@ -939,13 +1045,12 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
     setPresetTables(tableList);
     nsSetJSON('presetTables', tableList);
 
-    const posNames = toPositionNames(serverSettings.positions);
+    const posNames = ensureDefaultPositionPresent(toPositionNames(serverSettings.positions));
     setPositions(posNames);
-    nsSetJSON('positions', posNames);
 
-    const tasksByPos = sanitizeTasksByPosition(serverSettings.tasksByPosition) ?? {};
+    const rawTasksByPos = sanitizeTasksByPosition(serverSettings.tasksByPosition) ?? {};
+    const tasksByPos = sanitizeTasksByPositionWithDefault(rawTasksByPos, normalizedCourses);
     setTasksByPosition(tasksByPos);
-    nsSetJSON('tasksByPosition', tasksByPos);
 
     const cachePayload: Partial<StoreSettings> = {
       courses: normalizedCourses,
@@ -1170,7 +1275,7 @@ useEffect(() => {
     nsGetStr('tasks_showGuestsAll', '1') === '1'
   );
   const [mergeSameTasks, setMergeSameTasks] = useState<boolean>(() =>
-    nsGetStr('tasks_mergeSameTasks', '0') === '1'
+    nsGetStr('tasks_mergeSameTasks', '1') === '1'
   );
 
   // Course Start tab settings (namespaced)
@@ -1494,20 +1599,87 @@ const updateReservationFieldCb = useCallback((
       ? newResTables.map(String)
       : (tableStr ? [tableStr] : []);
 
-    // Firestore には必ず number(ms) の startMs を保存
-    await createReservationMut({
-      startMs,
-      time: newResTime,
+    const eatLabel = String(newResEat ?? '').trim();
+   const drinkLabel = String(newResDrink ?? '').trim();
+    const foodAllYouCan = eatLabel.length > 0;
+    const drinkAllYouCan = drinkLabel.length > 0;
+
+    const reservationId = generateReservationId();
+    const now = Date.now();
+    const localReservation = {
+      id: reservationId,
       table: tableStr,
       tables: tablesArr,
+      time: newResTime,
+      timeHHmm: newResTime,
+      startMs,
+      course: courseLabel,
+      courseName: courseLabel,
       guests: guestsNum,
       name: newResName,
-      course: courseLabel,          // UI と表示用
-      courseName: courseLabel,      // 後方互換（集計側が参照する場合あり）
-      eat: newResEat,
-      drink: newResDrink,
       notes: newResNotes,
-    } as any);
+      memo: newResNotes,
+      eat: eatLabel,
+      drink: drinkLabel,
+      eatLabel,
+      drinkLabel,
+      foodAllYouCan,
+      drinkAllYouCan,
+      completed: {},
+      freshUntilMs: now + 15 * 60 * 1000,
+      editedUntilMs: now + 15 * 60 * 1000,
+      createdAtMs: now,
+      updatedAtMs: now,
+    } satisfies Reservation & {
+      courseName: string;
+      createdAtMs: number;
+      updatedAtMs: number;
+    };
+
+    setReservations(prev => {
+      const exists = prev.some(r => r.id === reservationId);
+      const next = exists
+        ? prev.map(r => (r.id === reservationId ? { ...r, ...localReservation } : r))
+        : [...prev, localReservation];
+      persistReservations(next);
+      writeReservationsCache(next);
+      return next;
+    });
+
+    // Firestore には必ず number(ms) の startMs を保存
+    try {
+      await createReservationMut({
+        id: reservationId,
+        startMs,
+        time: newResTime,
+        table: tableStr,
+        tables: tablesArr,
+        guests: guestsNum,
+        name: newResName,
+        course: courseLabel,          // UI と表示用
+        courseName: courseLabel,      // 後方互換（集計側が参照する場合あり）
+        eat: eatLabel,
+        drink: drinkLabel,
+        eatLabel,
+        drinkLabel,
+        foodAllYouCan,
+        drinkAllYouCan,
+        notes: newResNotes,
+      } as any);
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        toast('オフラインのため後でサーバへ送信します', { icon: '📶' });
+      }
+    } catch (err) {
+      console.error('createReservationMut failed:', err);
+      setReservations(prev => {
+        const next = prev.filter(r => r.id !== reservationId);
+        persistReservations(next);
+        writeReservationsCache(next);
+        return next;
+      });
+      toast.error('予約の保存に失敗しました');
+      return;
+    }
 
     // 入力クリア（任意）
     setNewResTable('');
@@ -1797,31 +1969,88 @@ useEffect(() => {
   const [tableEditMode, setTableEditMode] = useState<boolean>(false);
   const [posSettingsOpen, setPosSettingsOpen] = useState<boolean>(false);
   // ─── ポジション設定 state ───
-  const [positions, setPositions] = useState<string[]>(() =>
-  nsGetJSON<string[]>('positions', ['フロント', 'ホール', '刺し場', '焼き場', 'オーブン', 'ストーブ', '揚げ場'])
-);
+  const defaultPositionSeed = ensureDefaultPositionPresent([
+    DEFAULT_POSITION_LABEL,
+    'フロント',
+    'ホール',
+    '刺し場',
+    '焼き場',
+    'オーブン',
+    'ストーブ',
+    '揚げ場',
+  ]);
+  const [positions, setPositionsState] = useState<string[]>(() =>
+    ensureDefaultPositionPresent(nsGetJSON<string[]>('positions', defaultPositionSeed))
+  );
+  const setPositions = useCallback((update: SetStateAction<string[]>) => {
+    setPositionsState((prev) => {
+      const raw = typeof update === 'function' ? (update as (prev: string[]) => string[])(prev) : update;
+      const sanitized = ensureDefaultPositionPresent(Array.isArray(raw) ? raw : []);
+      return sameArrayShallow(prev, sanitized) ? prev : sanitized;
+    });
+  }, []);
+  useEffect(() => {
+    try {
+      nsSetJSON('positions', positions);
+    } catch {}
+  }, [positions]);
   const [newPositionName, setNewPositionName] = useState<string>('');
   // ポジションごと × コースごと でタスクを保持する  {pos: {course: string[]}}
-  const [tasksByPosition, setTasksByPosition] =
-  useState<Record<string, Record<string, string[]>>>(() => {
-    const parsed = nsGetJSON<Record<string, any>>('tasksByPosition', {});
+  const [tasksByPosition, setTasksByPositionState] =
+    useState<Record<string, Record<string, string[]>>>(() => {
+      const parsed = nsGetJSON<Record<string, any>>('tasksByPosition', {});
 
-    // 旧フォーマット (pos -> string[]) を course:"*" に移行
-    const isOldFormat =
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      !Array.isArray(parsed) &&
-      Object.values(parsed).every((v) => Array.isArray(v));
+      // 旧フォーマット (pos -> string[]) を course:"*" に移行
+      const isOldFormat =
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        !Array.isArray(parsed) &&
+        Object.values(parsed).every((v) => Array.isArray(v));
 
-    if (isOldFormat) {
-      const migrated: Record<string, Record<string, string[]>> = {};
-      Object.entries(parsed).forEach(([p, arr]) => {
-        migrated[p] = { '*': arr as string[] };
+      let normalized: Record<string, Record<string, string[]>>;
+      if (isOldFormat) {
+        const migrated: Record<string, Record<string, string[]>> = {};
+        Object.entries(parsed).forEach(([p, arr]) => {
+          migrated[p] = { '*': arr as string[] };
+        });
+        normalized = migrated;
+      } else {
+        normalized = (parsed as Record<string, Record<string, string[]>>) || {};
+      }
+
+      return sanitizeTasksByPositionWithDefault(normalized, []);
+    });
+  const setTasksByPosition = useCallback(
+    (update: SetStateAction<Record<string, Record<string, string[]>>>) => {
+      setTasksByPositionState((prev) => {
+        const raw =
+          typeof update === 'function'
+            ? (update as (prev: Record<string, Record<string, string[]>>) => Record<string, Record<string, string[]>>)(prev)
+            : update;
+        const sanitized = sanitizeTasksByPositionWithDefault(
+          raw && typeof raw === 'object' ? raw : {},
+          courses
+        );
+        const prevStr = JSON.stringify(prev);
+        const nextStr = JSON.stringify(sanitized);
+        return prevStr === nextStr ? prev : sanitized;
       });
-      return migrated;
-    }
-    return (parsed as Record<string, Record<string, string[]>>) || {};
-  });
+    },
+    [courses]
+  );
+  useEffect(() => {
+    setTasksByPositionState((prev) => {
+      const sanitized = sanitizeTasksByPositionWithDefault(prev, courses);
+      const prevStr = JSON.stringify(prev);
+      const nextStr = JSON.stringify(sanitized);
+      return prevStr === nextStr ? prev : sanitized;
+    });
+  }, [courses]);
+  useEffect(() => {
+    try {
+      nsSetJSON('tasksByPosition', tasksByPosition);
+    } catch {}
+  }, [tasksByPosition]);
 
 
   // ── Settings: save handler (placed AFTER all live states it depends on) ─────────
@@ -1852,9 +2081,15 @@ const handleStoreSave = useCallback(async () => {
     setBaselineSettings(draftForSave);
     try {
       nsSetJSON('courses',         draftForSave.courses || []);
-      nsSetJSON('positions',       draftForSave.positions || []);
+      nsSetJSON('positions',       ensureDefaultPositionPresent(draftForSave.positions || []));
+      nsSetJSON(
+        'tasksByPosition',
+        sanitizeTasksByPositionWithDefault(
+          (draftForSave.tasksByPosition as Record<string, Record<string, string[]>> | undefined) || {},
+          draftForSave.courses || []
+        )
+      );
       nsSetJSON('presetTables',    draftForSave.tables || []);
-      nsSetJSON('tasksByPosition', draftForSave.tasksByPosition || {});
       nsSetJSON('eatOptions',      draftForSave.eatOptions || []);
       nsSetJSON('drinkOptions',    draftForSave.drinkOptions || []);
       nsSetJSON('settings-cache',  { cachedAt: Date.now(), data: draftForSave });
@@ -1922,7 +2157,6 @@ const handleStoreSave = useCallback(async () => {
         next[pos] = newMap;
       });
       if (changed) {
-        nsSetJSON('tasksByPosition', next);
         setTasksByPosition(next);
       }
     } catch (err) {
@@ -2000,41 +2234,41 @@ const handleStoreSave = useCallback(async () => {
   }, [courses]);
   // ポジション操作ヘルパー
   const addPosition = () => {
-    if (!newPositionName.trim() || positions.includes(newPositionName.trim())) return;
-    const next = [...positions, newPositionName.trim()];
-    setPositions(next);
-    nsSetJSON('positions', next);
+    const trimmed = newPositionName.trim();
+    if (!trimmed) return;
+    if (positions.some((p) => normEq(p, trimmed))) return;
+    setPositions((prev) => [...prev, trimmed]);
     setNewPositionName('');
     // --- 追加: courseByPosition / openPositions の初期化 -----------------
     // 新しく作ったポジションにはデフォルトで先頭のコースを割り当てる。
     const defaultCourse = courses[0]?.name || '';
     const nextCourseByPosition = {
       ...courseByPosition,
-      [newPositionName.trim()]: defaultCourse,
+      [trimmed]: defaultCourse,
     };
     setCourseByPosition(nextCourseByPosition);
     nsSetJSON('courseByPosition', nextCourseByPosition);
 
     // openPositions にもエントリを追加しておく（初期状態は閉じる）
-    setOpenPositions(prev => ({ ...prev, [newPositionName.trim()]: false }));
+    setOpenPositions((prev) => ({ ...prev, [trimmed]: false }));
     // --------------------------------------------------------------------
   };
   const removePosition = (pos: string) => {
-    const next = positions.filter((p) => p !== pos);
-    setPositions(next);
-    nsSetJSON('positions', next);
-    const nextTasks = { ...tasksByPosition };
-    delete nextTasks[pos];
-    setTasksByPosition(nextTasks);
-    nsSetJSON('tasksByPosition', nextTasks);
+    if (isDefaultPosition(pos)) return;
+    setPositions((prev) => prev.filter((p) => !normEq(p, pos)));
+    setTasksByPosition((prev) => {
+      const next = { ...prev };
+      delete next[pos];
+      return next;
+    });
     // --- 追加: courseByPosition / openPositions から該当ポジションを削除 ----
-    setCourseByPosition(prev => {
+    setCourseByPosition((prev) => {
       const next = { ...prev };
       delete next[pos];
       nsSetJSON('courseByPosition', next);
       return next;
     });
-    setOpenPositions(prev => {
+    setOpenPositions((prev) => {
       const next = { ...prev };
       delete next[pos];
       return next;
@@ -2044,51 +2278,53 @@ const handleStoreSave = useCallback(async () => {
 
   // ポジションの並び替え: 上へ移動
   const movePositionUp = (pos: string) => {
+    if (isDefaultPosition(pos)) return;
     setPositions(prev => {
-      const idx = prev.indexOf(pos);
+      const idx = prev.findIndex((p) => normEq(p, pos));
       if (idx <= 0) return prev;
       const next = [...prev];
       [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
-      nsSetJSON('positions', next);
       return next;
     });
   };
 
   // ポジションの並び替え: 下へ移動
   const movePositionDown = (pos: string) => {
+    if (isDefaultPosition(pos)) return;
     setPositions(prev => {
-      const idx = prev.indexOf(pos);
+      const idx = prev.findIndex((p) => normEq(p, pos));
       if (idx < 0 || idx === prev.length - 1) return prev;
       const next = [...prev];
       [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
-      nsSetJSON('positions', next);
       return next;
     });
   };
   // ポジション名を変更
   const renamePosition = (pos: string) => {
-    const newName = prompt(`「${pos}」の新しいポジション名を入力してください`, pos);
-    if (!newName || newName.trim() === "" || newName === pos) return;
-    if (positions.includes(newName)) {
-      alert("同名のポジションが既に存在します。");
+    if (isDefaultPosition(pos)) return;
+    const input = prompt(`「${pos}」の新しいポジション名を入力してください`, pos);
+    const newName = typeof input === 'string' ? input.trim() : '';
+    if (!newName || normEq(newName, pos)) return;
+    if (isDefaultPosition(newName)) {
+      alert('「全て」は変更できません。');
+      return;
+    }
+    if (positions.some((p) => normEq(p, newName))) {
+      alert('同名のポジションが既に存在します。');
       return;
     }
     // positions 配列の更新
-    setPositions(prev => {
-      const next = prev.map(p => (p === pos ? newName : p));
-      nsSetJSON('positions', next);
-      return next;
-    });
+    setPositions(prev => prev.map(p => (normEq(p, pos) ? newName : p)));
     // tasksByPosition のキーを更新
     setTasksByPosition(prev => {
       const next = { ...prev, [newName]: prev[pos] || {} };
       delete next[pos];
-      nsSetJSON('tasksByPosition', next);
       return next;
     });
     // openPositions のキーを更新
     setOpenPositions(prev => {
-      const next = { ...prev, [newName]: prev[pos] };
+      const next = { ...prev };
+      next[newName] = prev[pos];
       delete next[pos];
       return next;
     });
@@ -2102,6 +2338,7 @@ const handleStoreSave = useCallback(async () => {
   };
   // pos・course 単位でタスク表示をトグル
   const toggleTaskForPosition = (pos: string, courseName: string, label: string) => {
+    if (isDefaultPosition(pos)) return;
     setTasksByPosition(prev => {
       const courseTasks = prev[pos]?.[courseName] ?? [];
       const nextTasks = includesNorm(courseTasks, label)
@@ -2109,9 +2346,7 @@ const handleStoreSave = useCallback(async () => {
         : addIfMissingNorm(courseTasks, label);
 
       const nextPos = { ...(prev[pos] || {}), [courseName]: nextTasks };
-      const next = { ...prev, [pos]: nextPos };
-      nsSetJSON('tasksByPosition', next);
-      return next;
+      return { ...prev, [pos]: nextPos };
     });
   };
   const [courseSettingsTableOpen, setCourseSettingsTableOpen] = useState<boolean>(false);
@@ -2173,10 +2408,38 @@ const handleStoreSave = useCallback(async () => {
     return result;
   }, [checkedTasks, selectedDisplayPosition, tasksByPosition, courses]);
 
+  const assignedLabelSetByCourse = useMemo<Record<string, Set<string>>>(() => {
+    const result: Record<string, Set<string>> = {};
+    const positionMaps = Object.values(tasksByPosition || {});
+    positionMaps.forEach((posMap) => {
+      Object.entries(posMap || {}).forEach(([courseName, labels]) => {
+        if (!Array.isArray(labels)) return;
+        const set =
+          result[courseName] ??
+          (result[courseName] = new Set<string>());
+        labels.forEach((label) => set.add(normalizeLabel(label)));
+      });
+    });
+    return result;
+  }, [tasksByPosition]);
+
   const isTaskAllowed = (courseName: string, label: string) => {
+    if (selectedDisplayPosition === ALL_POSITIONS_KEY || selectedDisplayPosition === '') {
+      return true;
+    }
+    const normLabel = normalizeLabel(label);
     const set = allowedLabelSetByCourse[courseName];
     // 集合が無い／空なら制約なし、正規化一致なら可
-    return !set || set.size === 0 || set.has(normalizeLabel(label));
+    if (!set || set.size === 0 || set.has(normLabel)) {
+      return true;
+    }
+    if (selectedDisplayPosition === 'その他') {
+      const assigned = assignedLabelSetByCourse[courseName];
+      if (!assigned || !assigned.has(normLabel)) {
+        return true;
+      }
+    }
+    return false;
   };
   // 営業前設定・タスクプレビュー用に表示中のコース
   // const [displayTaskCourse, setDisplayTaskCourse] = useState<string>(() => courses[0]?.name || '');
@@ -2255,10 +2518,7 @@ const handleStoreSave = useCallback(async () => {
         next[pos] = { ...cur, [selectedCourse]: cleaned };
       });
 
-      if (changed) {
-        try { nsSetJSON('tasksByPosition', next); } catch {}
-        return next;
-      }
+      if (changed) return next;
       return prev;
     });
     setEditingTask(null);
@@ -2391,7 +2651,6 @@ const handleStoreSave = useCallback(async () => {
           next[pos] = { ...(cmap || {}), [selectedCourse]: replaced };
         }
       });
-      try { nsSetJSON('tasksByPosition', next); } catch {}
       return next;
     });
 
@@ -2450,21 +2709,20 @@ const handleStoreSave = useCallback(async () => {
     setTasksByPosition(prev => {
       let changed = false;
       const next: Record<string, Record<string, string[]>> = {};
-      Object.entries(prev || {}).forEach(([pos, cmap]) => {
-        const newMap: Record<string, string[]> = {};
-        Object.entries(cmap || {}).forEach(([courseName, labels]) => {
-          const filtered = (labels || []).filter(l => allNorm.has(normalizeLabel(l)));
-          if (filtered.length !== (labels || []).length) changed = true;
-          newMap[courseName] = filtered;
-        });
-        next[pos] = newMap;
+    Object.entries(prev || {}).forEach(([pos, cmap]) => {
+      const newMap: Record<string, string[]> = {};
+      Object.entries(cmap || {}).forEach(([courseName, labels]) => {
+        const filtered = (labels || []).filter(l => allNorm.has(normalizeLabel(l)));
+        if (filtered.length !== (labels || []).length) changed = true;
+        newMap[courseName] = filtered;
       });
-      if (changed) {
-        try { nsSetJSON('tasksByPosition', next); } catch {}
-        return next;
-      }
-      return prev;
+      next[pos] = newMap;
     });
+    if (changed) {
+      return next;
+    }
+    return prev;
+  });
   }, [courses]);
 
   /** 可視フィルター自己修復（何も表示されない状態の自動リセット） */
@@ -2501,17 +2759,13 @@ const handleStoreSave = useCallback(async () => {
       // フィルターで選ばれているものの中に、現存ラベルが1つも無ければリセット
       const anyExists = Array.from(combinedNorm).some(l => allNorm.has(l));
       if (!anyExists) {
-  setCheckedTasks([]);
-  try { nsSetJSON('checkedTasks', []); } catch {}
+        setCheckedTasks([]);
+        try { nsSetJSON('checkedTasks', []); } catch {}
 
-  if (selectedDisplayPosition !== 'その他' && selectedDisplayPosition !== ALL_POSITIONS_KEY) {
-    setTasksByPosition(prev => {
-      const next = { ...prev, [selectedDisplayPosition]: {} };
-      try { nsSetJSON('tasksByPosition', next); } catch {}
-      return next;
-    });
-  }
-}
+        if (selectedDisplayPosition !== 'その他' && selectedDisplayPosition !== ALL_POSITIONS_KEY) {
+          setTasksByPosition(prev => ({ ...prev, [selectedDisplayPosition]: {} }));
+        }
+      }
     } catch {
       /* noop */
     }
@@ -2599,7 +2853,6 @@ const renameCourse = async () => {
       }
       next[pos] = newCourseMap;
     });
-    nsSetJSON('tasksByPosition', next);
     return next;
   });
 
@@ -2681,7 +2934,6 @@ const deleteCourse = async () => {
       delete newMap[target];
       next[pos] = newMap;
     });
-    nsSetJSON('tasksByPosition', next);
     return next;
   });
 
@@ -3600,11 +3852,11 @@ const onNumPadConfirm = () => {
       {sidebarOpen && (
         <div className="fixed inset-0 z-50 flex">
           {/* Sidebar panel */}
-          <div className="w-64 bg-gray-600 text-white p-4">
+          <div className="w-64 bg-gray-600 text-white p-4 flex flex-col">
             <button
               onClick={() => setSidebarOpen(false)}
               aria-label="Close menu"
-              className="text-xl mb-4"
+              className="text-xl mb-4 self-start px-1"
             >
               ×
             </button>
@@ -3637,19 +3889,19 @@ const onNumPadConfirm = () => {
               <li aria-hidden="true">
                 <hr className="my-4 border-gray-600 opacity-50" />
               </li>
-              <li className="mt-6 border-t border-gray-600 pt-4">
-                <label className="flex items-center space-x-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={remindersEnabled}
-                    onChange={handleRemindersToggle}
-                    disabled={notiBusy}
-                  />
-                  <span>通知（taskEvents 送信）を有効化</span>
-                  {notiBusy && <span className="ml-2 opacity-70">設定中...</span>}
-                </label>
-              </li>
             </ul>
+            <div className="mt-auto border-t border-gray-600 pt-4">
+              <label className="flex items-center space-x-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={remindersEnabled}
+                  onChange={handleRemindersToggle}
+                  disabled={notiBusy}
+                />
+                <span>通知を有効化</span>
+                {notiBusy && <span className="ml-2 opacity-70">設定中...</span>}
+              </label>
+            </div>
           </div>
           {/* Backdrop */}
           <div
@@ -3902,9 +4154,13 @@ scheduleEndHour={scheduleEndHour}
  {/* ─ BottomTab: 予約リスト / タスク表 / コース開始時間表 ─ */}
 <footer
   ref={bottomBarRef}
-  className="fixed inset-x-0 bottom-0 z-50 bg-white border-t"
+  className={[
+    'fixed inset-x-0 bottom-0 z-50 bg-white border-t transform-gpu transition duration-200 ease-out',
+    sidebarOpen ? 'translate-y-full pointer-events-none' : 'translate-y-0',
+  ].join(' ')}
   data-app-bottom-bar
   style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+  aria-hidden={sidebarOpen}
 >
   <div className="max-w-6xl mx-auto grid grid-cols-4">
     <button
@@ -3917,21 +4173,23 @@ scheduleEndHour={scheduleEndHour}
           : 'text-gray-600 hover:bg-gray-50'
       ].join(' ')}
       aria-pressed={bottomTab === 'reservations'}
+      tabIndex={sidebarOpen ? -1 : 0}
     >
       予約リスト
     </button>
     {/* ▼ スケジュールタブ */}
-<button
-  type="button"
-  onClick={() => handleBottomTabClick('schedule')}
-  className={[
-    'py-3 text-sm font-medium border-l border-r',
-    bottomTab === 'schedule' ? 'text-blue-600' : 'text-gray-600 hover:bg-gray-50',
-  ].join(' ')}
-  aria-pressed={bottomTab === 'schedule'}
->
-  スケジュール
-</button>
+    <button
+      type="button"
+      onClick={() => handleBottomTabClick('schedule')}
+      className={[
+        'py-3 text-sm font-medium border-l border-r',
+        bottomTab === 'schedule' ? 'text-blue-600' : 'text-gray-600 hover:bg-gray-50',
+      ].join(' ')}
+      aria-pressed={bottomTab === 'schedule'}
+      tabIndex={sidebarOpen ? -1 : 0}
+    >
+      スケジュール
+    </button>
     <button
       type="button"
       onClick={() => handleBottomTabClick('tasks')}
@@ -3942,6 +4200,7 @@ scheduleEndHour={scheduleEndHour}
           : 'text-gray-600 hover:bg-gray-50'
       ].join(' ')}
       aria-pressed={bottomTab === 'tasks'}
+      tabIndex={sidebarOpen ? -1 : 0}
     >
       タスク表
     </button>
@@ -3955,6 +4214,7 @@ scheduleEndHour={scheduleEndHour}
           : 'text-gray-600 hover:bg-gray-50'
       ].join(' ')}
       aria-pressed={bottomTab === 'courseStart'}
+      tabIndex={sidebarOpen ? -1 : 0}
     >
       コース開始時間表
     </button>

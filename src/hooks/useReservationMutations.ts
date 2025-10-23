@@ -73,6 +73,17 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
       : (tableSingle ? [tableSingle] : []);
     const tablesNorm = toTables(tablesSrc);
 
+    const drinkLabelNorm = trimOrEmpty(
+      (input as any).drinkLabel ?? (input as any).drink
+    );
+    const eatLabelNorm = trimOrEmpty(
+      (input as any).eatLabel ?? (input as any).eat
+    );
+    const hasDrinkFlag = 'drinkAllYouCan' in input;
+    const hasFoodFlag = 'foodAllYouCan' in input;
+    const drinkAllFlag = hasDrinkFlag ? toBool(input.drinkAllYouCan) : drinkLabelNorm.length > 0;
+    const foodAllFlag = hasFoodFlag ? toBool(input.foodAllYouCan) : eatLabelNorm.length > 0;
+
     const payload: ReservationDoc & { id?: string } = {
       startMs,
       endMs: input.endMs != null ? toNum(input.endMs) : undefined,
@@ -80,12 +91,15 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
       table: tableSingle || (tablesNorm[0] ?? ''),
       name: trimOrEmpty(input.name),
       courseName: trimOrEmpty(input.courseName) || undefined,
-      drinkAllYouCan: toBool(input.drinkAllYouCan),
-      foodAllYouCan: toBool(input.foodAllYouCan),
-      drinkLabel: trimOrEmpty(input.drinkLabel),
-      eatLabel: trimOrEmpty(input.eatLabel),
+      drinkAllYouCan: drinkAllFlag,
+      foodAllYouCan: foodAllFlag,
+      drinkLabel: drinkLabelNorm,
+      eatLabel: eatLabelNorm,
       memo: trimOrEmpty(input.memo),
     } as any;
+
+    (payload as any).drink = drinkLabelNorm;
+    (payload as any).eat = eatLabelNorm;
 
     // durationMin: save only when explicitly specified (auto = omit)
     if (input.durationMin != null) {
@@ -178,6 +192,19 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
       (p as any).course = courseLabel;
     }
 
+    if ('drink' in patch) {
+      const dl = trimOrEmpty((patch as any).drink);
+      (p as any).drink = dl;
+      if (!('drinkLabel' in patch)) p.drinkLabel = dl;
+      if (!('drinkAllYouCan' in patch)) p.drinkAllYouCan = dl.length > 0;
+    }
+    if ('eat' in patch) {
+      const el = trimOrEmpty((patch as any).eat);
+      (p as any).eat = el;
+      if (!('eatLabel' in patch)) p.eatLabel = el;
+      if (!('foodAllYouCan' in patch)) p.foodAllYouCan = el.length > 0;
+    }
+
     if ('drinkAllYouCan' in patch) p.drinkAllYouCan = toBool(patch.drinkAllYouCan);
     if ('foodAllYouCan' in patch) p.foodAllYouCan = toBool(patch.foodAllYouCan);
 
@@ -228,6 +255,17 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
       : (tableSingle ? [tableSingle] : []);
     const tablesNorm = toTables(tablesSrc);
 
+    const drinkLabelNorm = trimOrEmpty(
+      (input as any).drinkLabel ?? (input as any).drink
+    );
+    const eatLabelNorm = trimOrEmpty(
+      (input as any).eatLabel ?? (input as any).eat
+    );
+    const hasDrinkFlag = 'drinkAllYouCan' in input;
+    const hasFoodFlag = 'foodAllYouCan' in input;
+    const drinkAllFlag = hasDrinkFlag ? toBool(input.drinkAllYouCan) : drinkLabelNorm.length > 0;
+    const foodAllFlag = hasFoodFlag ? toBool(input.foodAllYouCan) : eatLabelNorm.length > 0;
+
     const __courseNameNorm = trimOrEmpty((input as any).course ?? input.courseName);
     const __courseLabel = __courseNameNorm || '未選択';
 
@@ -240,10 +278,10 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
       name: trimOrEmpty(input.name),
       course: __courseLabel as any,
       courseName: __courseLabel,
-      drinkAllYouCan: toBool(input.drinkAllYouCan),
-      foodAllYouCan: toBool(input.foodAllYouCan),
-      drinkLabel: trimOrEmpty(input.drinkLabel),
-      eatLabel: trimOrEmpty(input.eatLabel),
+      drinkAllYouCan: drinkAllFlag,
+      foodAllYouCan: foodAllFlag,
+      drinkLabel: drinkLabelNorm,
+      eatLabel: eatLabelNorm,
       memo: trimOrEmpty(input.memo),
       guests,
       time: trimOrEmpty((input as any).time) || undefined,
@@ -251,6 +289,8 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
       createdAtMs: Date.now(),
       updatedAtMs: Date.now(),
     };
+    data.drink = drinkLabelNorm;
+    data.eat = eatLabelNorm;
     if (input.durationMin != null) {
       const n = toNum(input.durationMin);
       if (Number.isFinite(n)) data.durationMin = Math.trunc(n);

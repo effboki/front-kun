@@ -9,8 +9,6 @@ import { SLOT_MS, snap5m } from '@/lib/schedule';
 import { startOfDayMs } from '@/lib/time';
 import { getCourseColorStyle, normalizeCourseColor, type CourseColorStyle } from '@/lib/courseColors';
 import ReservationEditorDrawer, { type ReservationInput, type CourseOption } from '../reservations/ReservationEditorDrawer';
-import { DndContext, useDraggable, type DragEndEvent, PointerSensor, TouchSensor, useSensor, useSensors } from '@dnd-kit/core';
-import { restrictToParentElement } from '@dnd-kit/modifiers';
 
 type OptimisticPatch = Partial<ScheduleItem> & { [key: string]: unknown };
 
@@ -292,6 +290,8 @@ export default function ScheduleView({
   const LOCK_SLACK_PX = 18;
   const scrollIdleTimerRef = useRef<number | null>(null);
   const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
+  const initialScrollOffsetsRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
+  const resetScrollScheduleRef = useRef<{ raf: number | null; timeout: number | null }>({ raf: null, timeout: null });
 
   // No auto page scroll: header visibility is ensured by layering (z-index).
   const ensureHeaderNotUnderAppBar = useCallback(() => { /* intentionally empty */ }, []);
@@ -313,6 +313,14 @@ export default function ScheduleView({
       headerLeftOverlayRef.current.style.transform = `translate3d(${x}px,0,0)`;
     }
   }, [snapPx]);
+
+  useEffect(() => {
+    return () => {
+      const { raf, timeout } = resetScrollScheduleRef.current;
+      if (raf != null) cancelAnimationFrame(raf);
+      if (timeout != null) clearTimeout(timeout);
+    };
+  }, []);
 
   // ===== 行高の自動計算（スマホ：画面に約12行が収まるように） =====
   // タブレットは従来どおり `rowHeightPx` をそのまま使用し、
@@ -343,16 +351,10 @@ export default function ScheduleView({
   const effectiveRowH = Math.max(rowHeightPx, autoRowH);
 
   const [pendingMutations, setPendingMutations] = useState<Record<string, OptimisticPatch>>({});
-  // Long-press arming: only an "armed" card can be dragged/resized
-  const [armedId, setArmedId] = useState<string | null>(null);
-  // ---- Card-tap action & table reassign mode ----
-  const [actionMenuOpen, setActionMenuOpen] = useState(false);
-  const [actionTarget, setActionTarget] = useState<(ScheduleItem & { _startCol?: number; _spanCols?: number; _row?: number; _table?: string; _key?: string }) | null>(null);
+  // 卓番再割り当てモード
   const [reassign, setReassign] = useState<{ base: ScheduleItem & { _startCol: number; _spanCols: number; _row?: number; _table?: string; _key?: string }; selected: string[]; original: string[] } | null>(null);
-  // --- ポップオーバー座標 ---
-  const [actionBubble, setActionBubble] = useState<{ left: number; top: number } | null>(null);
+  const [editingStatusOverride, setEditingStatusOverride] = useState<{ arrived: boolean; paid: boolean; departed: boolean } | null>(null);
   // Axis-lock for DnD (x or y). Decided per drag and reset on end.
-  const axisLockRef = useRef<'x' | 'y' | null>(null);
 
   const applyScrollLock = useCallback((axis: 'x' | 'y' | null) => {
     const el = scrollParentRef.current;
@@ -399,6 +401,25 @@ export default function ScheduleView({
 
     applyScrollLock(axis);
   }, [applyScrollLock]);
+
+  useEffect(() => {
+    if (!reassign) return;
+    const el = scrollParentRef.current;
+    const pointerId = pointerStateRef.current.pointerId;
+    if (el && typeof el.releasePointerCapture === 'function' && pointerId != null) {
+      try {
+        if (el.hasPointerCapture?.(pointerId)) {
+          el.releasePointerCapture(pointerId);
+        }
+      } catch {
+        /* noop */
+      }
+    }
+    pointerStateRef.current = { x: 0, y: 0, active: false, pointerId: null };
+    clearScrollIdleTimer();
+    releaseScrollAxisLock();
+    applyScrollLock(null);
+  }, [reassign, clearScrollIdleTimer, releaseScrollAxisLock, applyScrollLock]);
 
   const handleScroll = useCallback((e: UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -778,27 +799,57 @@ export default function ScheduleView({
     return Math.max(1, Math.round(diffMs / SLOT_MS));
   }, [windowHours, SLOT_MS]);
 
-  const resetScrollOffsets = useCallback(() => {
-    const container = scrollParentRef.current;
-    if (!container) return;
-
-    const forceReset = () => {
+  const resetScrollOffsets = useCallback(
+    (opts?: { left?: number; top?: number; updateInitial?: boolean }) => {
+      const container = scrollParentRef.current;
       if (!container) return;
-      if (container.scrollTop !== 0) {
-        container.scrollTop = 0;
-      }
-      if (container.scrollLeft !== 0) {
-        container.scrollLeft = 0;
-      }
-    };
 
-    forceReset();
-    requestAnimationFrame(forceReset);
-    setTimeout(forceReset, 120);
+      const normalise = (value: number | undefined, fallback: number) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+        return value < 0 ? 0 : value;
+      };
 
-    scrollPosRef.current = { left: container.scrollLeft, top: container.scrollTop };
-    lockOriginRef.current = { left: container.scrollLeft, top: container.scrollTop };
-  }, []);
+      const nextLeft = normalise(opts?.left, initialScrollOffsetsRef.current.left);
+      const nextTop = normalise(opts?.top, initialScrollOffsetsRef.current.top);
+
+      if (opts?.updateInitial) {
+        initialScrollOffsetsRef.current = { left: nextLeft, top: nextTop };
+      }
+
+      const cancelPending = () => {
+        const { raf, timeout } = resetScrollScheduleRef.current;
+        if (raf != null) {
+          window.cancelAnimationFrame(raf);
+        }
+        if (timeout != null) {
+          window.clearTimeout(timeout);
+        }
+        resetScrollScheduleRef.current = { raf: null, timeout: null };
+      };
+
+      const apply = () => {
+        const target = scrollParentRef.current;
+        if (!target) return;
+        if (target.scrollTop !== nextTop) target.scrollTop = nextTop;
+        if (target.scrollLeft !== nextLeft) target.scrollLeft = nextLeft;
+      };
+
+      cancelPending();
+      apply();
+      resetScrollScheduleRef.current.raf = window.requestAnimationFrame(() => {
+        apply();
+        resetScrollScheduleRef.current.raf = null;
+      });
+      resetScrollScheduleRef.current.timeout = window.setTimeout(() => {
+        apply();
+        resetScrollScheduleRef.current.timeout = null;
+      }, 120);
+
+      scrollPosRef.current = { left: nextLeft, top: nextTop };
+      lockOriginRef.current = { left: nextLeft, top: nextTop };
+    },
+    [],
+  );
 
   const restoreViewportScroll = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -937,6 +988,7 @@ export default function ScheduleView({
   }, [resetScrollOffsets, restoreViewportScroll]);
 
   useEffect(() => {
+    initialScrollOffsetsRef.current = { left: 0, top: 0 };
     didAutoCenterRef.current = false;
   }, [anchorStartMs, rangeEndMs, nCols, colWpx, leftColW]);
 
@@ -947,6 +999,7 @@ export default function ScheduleView({
 
     const now = Date.now();
     if (!(now >= anchorStartMs && now <= rangeEndMs)) {
+      initialScrollOffsetsRef.current = { left: 0, top: 0 };
       didAutoCenterRef.current = true;
       return;
     }
@@ -954,6 +1007,7 @@ export default function ScheduleView({
     const viewport = el.clientWidth;
     const contentWidth = leftColW + nCols * colWpx;
     if (!viewport || contentWidth <= viewport) {
+      initialScrollOffsetsRef.current = { left: 0, top: 0 };
       didAutoCenterRef.current = true;
       return;
     }
@@ -964,21 +1018,18 @@ export default function ScheduleView({
     const nextLeft = Math.max(0, Math.min(desired, maxScroll));
 
     if (!Number.isFinite(nextLeft)) {
+      initialScrollOffsetsRef.current = { left: 0, top: 0 };
       didAutoCenterRef.current = true;
       return;
     }
 
-    requestAnimationFrame(() => {
-      const target = scrollParentRef.current;
-      if (!target) return;
-      target.scrollLeft = nextLeft;
-      scrollPosRef.current.left = nextLeft;
-      scrollPosRef.current.top = target.scrollTop;
-      lockOriginRef.current.left = nextLeft;
-      lockOriginRef.current.top = target.scrollTop;
+    const rafId = window.requestAnimationFrame(() => {
+      resetScrollOffsets({ left: nextLeft, top: 0, updateInitial: true });
       didAutoCenterRef.current = true;
     });
-  }, [anchorStartMs, rangeEndMs, nCols, colWpx, leftColW]);
+
+    return () => window.cancelAnimationFrame(rafId);
+  }, [anchorStartMs, rangeEndMs, nCols, colWpx, leftColW, resetScrollOffsets]);
 
   // 1時間あたりのカラム数（SLOT_MS=5分なら 12）と、1時間のピクセル幅（ピクセルスナップ済みを使用）
   const colsPerHour = Math.round((60 * 60 * 1000) / SLOT_MS);
@@ -988,23 +1039,6 @@ export default function ScheduleView({
   // 当日0:00基準（保存・変換は必ず「その日の0:00」基準）
   // （上で day0 を定義済み）
   // anchorStartMs が当日0:00から何スロット目か（5分=1スロット）
-  const anchorStartSlotIndex = useMemo(() => Math.round((anchorStartMs - day0) / SLOT_MS), [anchorStartMs, day0]);
-
-  // === カラム⇄時間 変換の共通関数（保存は ms の加減算のみで処理） ===
-  const startMsFromCol = useCallback((col: number) => {
-    // グリッドの列は anchorStartMs が 1 列目。保存は当日0:00起点で一貫化。
-    // day0 + (anchorStartSlotIndex + (col-1)) * SLOT_MS
-    return day0 + (anchorStartSlotIndex + (col - 1)) * SLOT_MS;
-  }, [day0, anchorStartSlotIndex]);
-
-  const endMsFromColSpan = useCallback((startCol: number, spanCols: number) => {
-    return startMsFromCol(startCol) + spanCols * SLOT_MS;
-  }, [startMsFromCol]);
-
-  const durationMinFromSpan = useCallback((spanCols: number) => {
-    return Math.round((spanCols * SLOT_MS) / 60000);
-  }, []);
-
   // 4) 行（卓）の決定：tablesProp > tablesOptions > data から抽出。
   const tables = useMemo<string[]>(() => {
     // 優先順位: 1) 明示テーブル 2) 店舗設定の卓順 3) 予約から抽出
@@ -1078,6 +1112,23 @@ export default function ScheduleView({
     setDrawerOpen(true);
   }, []);
 
+  useEffect(() => {
+    if (!editingReservation) {
+      setEditingStatusOverride(null);
+      return;
+    }
+    setEditingStatusOverride({
+      arrived: Boolean((editingReservation as any)?.arrived),
+      paid: Boolean((editingReservation as any)?.paid),
+      departed: Boolean((editingReservation as any)?.departed),
+    });
+  }, [
+    editingReservation?.id,
+    editingReservation?.arrived,
+    editingReservation?.paid,
+    editingReservation?.departed,
+  ]);
+
 
   // 卓番再割り当ての保存
   const confirmReassign = useCallback(() => {
@@ -1091,6 +1142,145 @@ export default function ScheduleView({
     runSave(baseId, patch, { tables: picked, table: picked[0], editedUntilMs: Date.now() + 15000 });
     setReassign(null);
   }, [reassign, runSave]);
+
+  const toggleReservationStatus = useCallback((
+    reservationId: string,
+    kind: 'arrived' | 'paid' | 'departed',
+  ) => {
+    if (!reservationId) return null;
+    const scheduleItem = data.find((it) => String((it.id ?? it._key)) === reservationId);
+    const reservationSnapshot = Array.isArray(reservations)
+      ? reservations.find((r) => String(r.id ?? '') === reservationId)
+      : undefined;
+    const base = scheduleItem ?? reservationSnapshot;
+    if (!base) return null;
+
+    const prevFlags =
+      editing?.id === reservationId && editingStatusOverride
+        ? editingStatusOverride
+        : {
+            arrived: Boolean((base as any)?.arrived),
+            paid: Boolean((base as any)?.paid),
+            departed: Boolean((base as any)?.departed),
+          };
+
+    const nextFlags = { ...prevFlags };
+    const nextValue = !prevFlags[kind];
+    nextFlags[kind] = nextValue;
+    if (kind === 'departed' && nextValue) {
+      nextFlags.arrived = false;
+    }
+
+    const id = String((base as any).id ?? reservationId);
+    const key = String((base as any).id ?? (base as any)._key ?? reservationId);
+
+    if (kind === 'departed') {
+      const startMs = Math.max(
+        0,
+        Number(
+          (scheduleItem as any)?.startMs ??
+          (base as any)?.startMs ??
+          0,
+        ),
+      );
+      if (startMs > 0) {
+        if (nextValue) {
+          const plannedRaw = Number((base as any)?.durationMin);
+          const planned = Number.isFinite(plannedRaw) && plannedRaw > 0
+            ? Math.trunc(plannedRaw)
+            : getCourseStayMin((base as any)?.course ?? (base as any)?.courseName);
+          if (key) departDurationBackupRef.current[key] = planned;
+
+          const nowSnap = snap5m(Date.now());
+          const rawMin = Math.round((nowSnap - startMs) / 60000);
+          const durationMin = Math.max(5, rawMin);
+
+          if (key) applyOptimistic(key, { durationMin });
+          if (id && onSave) runSave(id, { durationMin });
+        } else {
+          const planned = (key && departDurationBackupRef.current[key] != null)
+            ? departDurationBackupRef.current[key]
+            : (() => {
+                const rawDur = Number((base as any)?.durationMin);
+                if (Number.isFinite(rawDur) && rawDur > 0) return Math.trunc(rawDur);
+                return getCourseStayMin((base as any)?.course ?? (base as any)?.courseName);
+              })();
+          const durationMin = Math.max(5, planned);
+
+          if (key) applyOptimistic(key, { durationMin });
+          if (id && onSave) runSave(id, { durationMin });
+          if (key) delete departDurationBackupRef.current[key];
+        }
+      }
+    }
+
+    if (kind === 'arrived') {
+      if (id && typeof onToggleArrival === 'function') onToggleArrival(id);
+      else if (id && typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'arrived', nextValue);
+    } else if (kind === 'paid') {
+      if (id && typeof onTogglePayment === 'function') onTogglePayment(id);
+      else if (id && typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'paid', nextValue);
+    } else {
+      if (id && typeof onToggleDeparture === 'function') onToggleDeparture(id);
+      else if (id && typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'departed', nextValue);
+    }
+
+    if (editing?.id === reservationId) {
+      setEditingStatusOverride(nextFlags);
+    }
+
+    return nextFlags;
+  }, [
+    data,
+    reservations,
+    editing?.id,
+    editingStatusOverride,
+    onToggleArrival,
+    onTogglePayment,
+    onToggleDeparture,
+    onUpdateReservationField,
+    getCourseStayMin,
+    applyOptimistic,
+    onSave,
+    runSave,
+    setEditingStatusOverride,
+  ]);
+
+  const startReassignForItem = useCallback((target: (ScheduleItem & { _startCol?: number; _spanCols?: number; _row?: number; _table?: string; _key?: string }) | null) => {
+    if (!target) return;
+    const selected = Array.isArray((target as any)?.tables)
+      ? (target as any).tables.map((t: unknown) => String(t))
+      : [];
+    setReassign({
+      base: {
+        ...(target as any),
+        _startCol: Number((target as any)._startCol ?? 1),
+        _spanCols: Number((target as any)._spanCols ?? 1),
+      },
+      selected,
+      original: selected,
+    });
+  }, [setReassign]);
+
+  const drawerStatusControls = useMemo(() => {
+    if (!editing?.id) return undefined;
+    const baseFlags = editingStatusOverride ?? {
+      arrived: Boolean(editingReservation?.arrived),
+      paid: Boolean(editingReservation?.paid),
+      departed: Boolean(editingReservation?.departed),
+    };
+    return {
+      flags: { ...baseFlags },
+      onToggle: (kind: 'arrived' | 'paid' | 'departed') => toggleReservationStatus(editing.id as string, kind),
+    };
+  }, [
+    editing?.id,
+    editingStatusOverride,
+    editingReservation?.arrived,
+    editingReservation?.paid,
+    editingReservation?.departed,
+    toggleReservationStatus,
+  ]);
 
   // 5) レンジ内にかかる予約のみ描画（範囲外はスキップ）
   const clipped = useMemo(() => {
@@ -1174,315 +1364,9 @@ export default function ScheduleView({
     return tables.map((t) => (rowStackCount[String(t)] ?? 1) * effectiveRowH);
   }, [tables, rowStackCount, effectiveRowH]);
 
-  // タップ時のアクションメニュー（卓番変更 / 予約詳細）
-  const onCardTap = useCallback((it: ScheduleItem & { _startCol?: number; _spanCols?: number; _row?: number; _table?: string; _key?: string }) => {
-    setArmedId(null);
-    setActionTarget(it);
-
-    // === ポップオーバー座標を、グリッド内の予約カード位置から算出（近めに表示） ===
-    const rowIdx = Math.max(0, Number((it as any)._row ?? 1) - 1);
-    // 行の先頭位置（可変行高対応）
-    let top = 0;
-    for (let i = 0; i < rowIdx; i++) top += (rowHeightsPx[i] ?? 0);
-    // 被りスタックの層オフセット（重なり段を考慮したカードの実表示位置と高さ）
-    const key = String((it as any)._table ?? (it as any)._row ?? '');
-    const layers = Math.max(1, Number(rowStackCount[key] ?? 1));
-    const rowH = Math.max(1, Number(rowHeightsPx[rowIdx] ?? effectiveRowH));
-    const perLayerH = Math.max(1, Math.floor(rowH / layers));
-    const stackIndex = Math.max(0, Number((it as any)._stackIndex ?? 0));
-    const cardTop = top + stackIndex * perLayerH + 4; // カードの上端
-    const cardBottom = cardTop + perLayerH;            // カードの下端
-
-    const startCol = Math.max(1, Number((it as any)._startCol ?? 1));
-    const spanCols = Math.max(1, Number((it as any)._spanCols ?? 1));
-
-    // ポップオーバーのサイズと最小余白（近めに表示）
-    const bubbleW = 200; // 旧: 220
-    const bubbleH = 110; // 旧: 132
-    const GAP = 4;       // 旧: 8
-
-    // カードの左右端・幅（px）
-    const cardLeft = (startCol - 1) * colWpx;
-    const cardWidth = spanCols * colWpx;
-    const cardRight = cardLeft + cardWidth;
-
-    // 水平位置はカード中央に。はみ出す場合はクランプ。
-    let left = cardLeft + (cardWidth - bubbleW) / 2;
-    const maxLeft = nCols * colWpx - bubbleW;
-    left = Math.max(4, Math.min(left, maxLeft));
-
-    // 垂直位置は「真下（優先）→上」の順。どちらも 4px だけ離す。
-    const gridH = rowHeightsPx.reduce((a, b) => a + b, 0);
-    let topPos = cardBottom + GAP; // まずは下側
-    if (topPos + bubbleH > gridH) {
-      // 下に入らなければ上側に切り替え
-      topPos = Math.max(0, cardTop - bubbleH - GAP);
-      // さらにクランプ
-      if (topPos + bubbleH > gridH) topPos = Math.max(0, gridH - bubbleH);
-    }
-
-    setActionBubble({ left, top: topPos });
-    setActionMenuOpen(true);
-  }, [rowHeightsPx, rowStackCount, effectiveRowH, colWpx, nCols]);
-
-  // 同じカードが最新データで更新されたら、メニュー表示中でも状態を同期する
-  useEffect(() => {
-    if (!actionTarget) return;
-    const targetId = String(actionTarget.id ?? '');
-    const targetTable = String((actionTarget as any)._table ?? '');
-    const next = (stacked as any[]).find((it) => {
-      if (!it) return false;
-      const sameId = String(it.id ?? '') === targetId;
-      const sameTable = String((it as any)._table ?? '') === targetTable;
-      return sameId && sameTable;
-    });
-
-    if (!next) {
-      setActionTarget(null);
-      setActionMenuOpen(false);
-      return;
-    }
-
-    const keysToSync = [
-      'arrived',
-      'paid',
-      'departed',
-      'freshUntilMs',
-      'editedUntilMs',
-      '_startCol',
-      '_spanCols',
-      '_row',
-      '_table',
-      '_stackIndex',
-      'startMs',
-      'endMs',
-    ];
-
-    const changed = keysToSync.some((key) => (next as any)[key] !== (actionTarget as any)[key]);
-    if (changed) {
-      setActionTarget({ ...(next as any) });
-    }
-  }, [stacked, actionTarget]);
-
-  const handleStatusToggle = useCallback(
-    (kind: 'arrived' | 'paid' | 'departed') => {
-      if (!actionTarget) return;
-      const raw: any = actionTarget as any;
-      const id = String(raw.id ?? ''); // real DB id (may be empty in demo)
-      const key = String(raw.id ?? raw._key ?? ''); // fallback to _key for optimistic UI
-      const current = Boolean(raw[kind]);
-      const next = !current;
-
-      // --- Special handling for "departed" ---
-      if (kind === 'departed') {
-        const startMs = Math.max(0, Number(raw.startMs ?? 0));
-        if (next) {
-          // going to departed=true → shorten to now (5m snap) and backup the planned duration
-          const planned: number = Number.isFinite(Number(raw.durationMin)) && Number(raw.durationMin) > 0
-            ? Math.trunc(Number(raw.durationMin))
-            : getCourseStayMin(raw.course ?? raw.courseName);
-          if (key) departDurationBackupRef.current[key] = planned;
-
-          const nowSnap = snap5m(Date.now());
-          const rawMin = Math.round((nowSnap - startMs) / 60000);
-          const durationMin = Math.max(5, rawMin);
-
-          if (key) applyOptimistic(key, { durationMin });
-          if (id && onSave) runSave(id, { durationMin });
-        } else {
-          // turning departed=false → restore backed-up planned duration
-          const planned = (key && departDurationBackupRef.current[key] != null)
-            ? departDurationBackupRef.current[key]
-            : (Number.isFinite(Number(raw.durationMin)) && Number(raw.durationMin) > 0
-                ? Math.trunc(Number(raw.durationMin))
-                : getCourseStayMin(raw.course ?? raw.courseName));
-
-          if (key) applyOptimistic(key, { durationMin: planned });
-          if (id && onSave) runSave(id, { durationMin: planned });
-          if (key) delete departDurationBackupRef.current[key];
-        }
-      }
-
-      // Keep existing flag toggle behavior (call site-provided handlers if any)
-      if (kind === 'arrived') {
-        if (id && typeof onToggleArrival === 'function') onToggleArrival(id);
-        else if (id && typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'arrived', next);
-      } else if (kind === 'paid') {
-        if (id && typeof onTogglePayment === 'function') onTogglePayment(id);
-        else if (id && typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'paid', next);
-      } else {
-        if (id && typeof onToggleDeparture === 'function') onToggleDeparture(id);
-        else if (id && typeof onUpdateReservationField === 'function') onUpdateReservationField(id, 'departed', next);
-      }
-
-      // Reflect UI state of the action popover immediately
-      setActionTarget((prev) => {
-        if (!prev) return prev;
-        const prevId = String((prev as any).id ?? '');
-        if (prevId && id && prevId !== id) return prev;
-        const updated: any = { ...prev, [kind]: next };
-        if (kind === 'departed' && next) {
-          updated.arrived = false; // departed implies no longer "arrived"
-        }
-        return updated;
-      });
-    },
-    [actionTarget, onToggleArrival, onTogglePayment, onToggleDeparture, onUpdateReservationField, onSave, runSave, applyOptimistic, getCourseStayMin]
-  );
-
-  const actionStatus = {
-    arrived: Boolean((actionTarget as any)?.arrived),
-    paid: Boolean((actionTarget as any)?.paid),
-    departed: Boolean((actionTarget as any)?.departed),
-  } as const;
-
-  const handleDragEnd = useCallback((e: DragEndEvent) => {
-    if (!onSave) return;
-    const rawId = String(e.active.id || '');
-    const sepIndex = rawId.indexOf(':');
-    if (sepIndex <= 0) return;
-
-    const kind = rawId.slice(0, sepIndex);
-    if (kind !== 'move') return; // リサイズ系は無効化
-
-    const payload = rawId.slice(sepIndex + 1);
-    if (!payload) return;
-
-    const payloadParts = payload.split('::');
-    const baseId = payloadParts[0] ?? '';
-    const tableToken = payloadParts[1];
-
-    if (!baseId) return;
-
-    const base = clipped.find(x => {
-      const candidateId = String((x.id ?? x._key) ?? '');
-      if (candidateId !== baseId) return false;
-      if (!tableToken) return true;
-      const candidateTable = String((x._table ?? x._row) ?? '');
-      return candidateTable === tableToken;
-    });
-
-    if (!base) return;
-
-    const deltaX = e.delta?.x ?? 0;
-    const deltaY = e.delta?.y ?? 0;
-
-    const startCol = base._startCol;
-    const spanCols = base._spanCols;
-
-    // 移動方向判定（横優先）
-    const absX = Math.abs(deltaX);
-    const absY = Math.abs(deltaY);
-
-    if (absX < 1 && absY < 1) return; // 微小移動は無視
-
-    if (absX >= absY) {
-      // 横移動：開始列→startMs 再計算
-      const deltaCols = Math.round(deltaX / colWpx);
-      if (!deltaCols) return;
-      const newStartCol = Math.max(1, startCol + deltaCols);
-      const newStartMs = startMsFromCol(newStartCol);
-      const newEndMs = endMsFromColSpan(newStartCol, spanCols);
-      const patch: any = {
-        startMs: newStartMs,
-        endMs: newEndMs,
-        durationMin: durationMinFromSpan(spanCols),
-      };
-      runSave(baseId, patch, { startMs: newStartMs, endMs: newEndMs, editedUntilMs: Date.now() + 15000 });
-      setArmedId(null);
-    } else {
-      // 縦移動：行（卓）変更
-      const baseRowH = rowHeightsPx[base._row - 1] ?? effectiveRowH;
-      const deltaRows = Math.round(deltaY / baseRowH);
-      if (!deltaRows) return;
-
-      const currentRowIdx = base._row - 1;
-      let targetRowIdx = currentRowIdx + deltaRows;
-      targetRowIdx = Math.max(0, Math.min(tables.length - 1, targetRowIdx));
-      if (targetRowIdx === currentRowIdx) return;
-
-      const newTable = tables[targetRowIdx];
-      if (!newTable) return;
-
-      const currentTable = String(base._table ?? '');
-      if (currentTable === newTable) return;
-
-      const originalTables = Array.isArray(base.tables) ? base.tables.map(String) : (currentTable ? [currentTable] : []);
-      let nextTables = originalTables.length > 0 ? [...originalTables] : (currentTable ? [currentTable] : []);
-      if (nextTables.length === 0) {
-        nextTables = [newTable];
-      } else {
-        const idx = nextTables.findIndex(t => t === currentTable);
-        if (idx >= 0) {
-          nextTables[idx] = newTable;
-        } else {
-          nextTables[0] = newTable;
-        }
-      }
-
-      const deduped: string[] = [];
-      for (const t of nextTables) {
-        if (!deduped.includes(t)) deduped.push(t);
-      }
-      if (deduped.length === 0) deduped.push(newTable);
-
-      const patch: any = {
-        tables: deduped,
-        table: deduped[0] ?? newTable,
-      };
-
-      runSave(baseId, patch, { tables: deduped, table: patch.table, editedUntilMs: Date.now() + 15000 });
-      setArmedId(null);
-    }
-  }, [onSave, runSave, clipped, colWpx, startMsFromCol, endMsFromColSpan, durationMinFromSpan, effectiveRowH, tables, setArmedId, rowHeightsPx]);
-
-// DnD センサー: 長押ししてからドラッグ開始（スクロールを妨げない）
-const sensors = useSensors(
-  useSensor(PointerSensor),
-  // 長押ししてからドラッグ開始（スクロールを妨げない）
-  useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
-);
-
-// --- Axis lock: decide axis on first movement, keep until drag ends ---
-const handleDragStart = useCallback(() => {
-  axisLockRef.current = null; // ドラッグ開始ごとにリセット
-}, []);
-
-const handleDragMove = useCallback((e: any) => {
-  // まだ軸が決まっていない最初の有意な移動で軸を確定
-  if (axisLockRef.current) return;
-  const dx = Math.abs(e?.delta?.x ?? 0);
-  const dy = Math.abs(e?.delta?.y ?? 0);
-  if (dx >= 1 || dy >= 1) {
-    axisLockRef.current = dx >= dy ? 'x' : 'y';
-  }
-}, []);
-
-  // Modifier that forces movement to a single axis (locks the weaker axis to 0)
-  const axisLockModifier: any = useCallback((args: any) => {
-    const t = args?.transform ?? { x: 0, y: 0, scaleX: 1, scaleY: 1 };
-    const lock = axisLockRef.current;
-    if (lock === 'x') return { ...t, y: 0 };
-    if (lock === 'y') return { ...t, x: 0 };
-    const ax = Math.abs(t.x ?? 0);
-    const ay = Math.abs(t.y ?? 0);
-    if (ax >= ay) return { ...t, y: 0 };
-    return { ...t, x: 0 };
-  }, []);
 
   // 空きマスクリックで新規予約を作成
   const handleGridClick = useCallback((e: MouseEvent<HTMLDivElement>) => {
-    // どこか空きマスをタップしたらドラッグ武装を解除
-    setArmedId(null);
-
-    // アクションメニュー表示中は閉じるだけ（新規作成しない）
-    if (actionMenuOpen) {
-      setActionMenuOpen(false);
-      setActionTarget(null);
-      setActionBubble(null);
-      return;
-    }
-
     // クリック座標 → 列・行
     const target = e.currentTarget;
     const rect = target.getBoundingClientRect();
@@ -1519,7 +1403,7 @@ const handleDragMove = useCallback((e: any) => {
       initial: { startMs, tables: joined, table: mainTable, guests: 0, name: '' },
     });
     setDrawerOpen(true);
-  }, [nCols, anchorStartMs, tables, colWpx, rowHeightsPx, actionMenuOpen]);
+  }, [nCols, anchorStartMs, tables, colWpx, rowHeightsPx]);
 
   // Pointer-based axis decision (touch/pen/mouse drag on the scroll area)
   const handleScrollPointerDown = useCallback((e: PointerEvent<HTMLDivElement>) => {
@@ -1841,179 +1725,61 @@ const handleDragMove = useCallback((e: any) => {
           />
 
           {/* タイムライン本体（予約・グリッド線） */}
-          <DndContext
-            sensors={sensors}
-            modifiers={[restrictToParentElement, axisLockModifier]}
-            onDragStart={handleDragStart}
-            onDragMove={handleDragMove}
-            onDragEnd={(e) => { axisLockRef.current = null; handleDragEnd(e); }}
+          <div
+            className="absolute z-0"
+            style={{
+              left: leftColW,
+              top: contentTopPx,
+              width: nCols * colWpx,
+              height: gridHeightPx,
+              touchAction: 'pan-x pan-y',
+            }}
+            onClick={handleGridClick}
+            aria-label="空きセルクリックレイヤー（本体）"
           >
             <div
-              className="absolute z-0"
+              className="relative grid h-full w-full"
               style={{
-                left: leftColW,
-                top: contentTopPx,
-                width: nCols * colWpx,
-                height: gridHeightPx,
-                touchAction: 'pan-x pan-y',
+                gridTemplateColumns: `repeat(${nCols}, ${colWpx}px)`,
+                gridTemplateRows: rowHeightsPx.map(h => `${h}px`).join(' '),
+                backgroundImage: `
+                  repeating-linear-gradient(to right, #d1d5db 0, #d1d5db 1px, transparent 1px, transparent ${hourPx}px),
+                  repeating-linear-gradient(to right, #e5e7eb 0, #e5e7eb 1px, transparent 1px, transparent ${minorSolidStepPx}px),
+                  repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)
+                `,
               }}
-              onPointerDownCapture={() => setArmedId(null)}
-              onClick={handleGridClick}
-              aria-label="空きセルクリックレイヤー（本体）"
             >
-              <div
-                className="relative grid h-full w-full"
-                style={{
-                  gridTemplateColumns: `repeat(${nCols}, ${colWpx}px)`,
-                  gridTemplateRows: rowHeightsPx.map(h => `${h}px`).join(' '),
-                  backgroundImage: `
-                    repeating-linear-gradient(to right, #d1d5db 0, #d1d5db 1px, transparent 1px, transparent ${hourPx}px),
-                    repeating-linear-gradient(to right, #e5e7eb 0, #e5e7eb 1px, transparent 1px, transparent ${minorSolidStepPx}px),
-                    repeating-linear-gradient(to right, rgba(17,24,39,0.035) 0, rgba(17,24,39,0.035) ${hourPx}px, transparent ${hourPx}px, transparent ${hourPx * 2}px)
-                  `,
-                }}
-              >
-                <ScheduleGrid nCols={nCols} colW={colWpx} rowHeights={rowHeightsPx} />
+              <ScheduleGrid nCols={nCols} colW={colWpx} rowHeights={rowHeightsPx} />
 
-                {/* 15/45 分の破線（タブレットのみ） */}
-                {isTablet && (
-                  <DashedQuarterLines nCols={nCols} colW={colWpx} colsPerHour={colsPerHour} />
-                )}
+              {/* 15/45 分の破線（タブレットのみ） */}
+              {isTablet && (
+                <DashedQuarterLines nCols={nCols} colW={colWpx} colsPerHour={colsPerHour} />
+              )}
 
-                <NowMarker
-                  anchorStartMs={anchorStartMs}
-                  rangeEndMs={rangeEndMs}
-                  colW={colWpx}
-                  className="absolute top-0 bottom-0 pointer-events-none z-[20]"
+              <NowMarker
+                anchorStartMs={anchorStartMs}
+                rangeEndMs={rangeEndMs}
+                colW={colWpx}
+                className="absolute top-0 bottom-0 pointer-events-none z-[20]"
+              />
+
+              {/* 予約ブロック */}
+              {stacked.map((it) => (
+                <ReservationBlock
+                  key={`${it.id}_${it._row}`}
+                  item={it}
+                  row={it._row}
+                  startCol={it._startCol}
+                  spanCols={it._spanCols}
+                  onClick={() => openEditorFor(it)}
+                  onLongPress={() => startReassignForItem(it)}
+                  stackCount={rowStackCount[String((it as any)._table ?? (it as any)._row)] ?? 1}
+                  rowHeightPx={rowHeightsPx[(it as any)._row - 1] ?? effectiveRowH}
+                  courseColorMap={courseColorMap}
                 />
-
-                {/* 予約ブロック */}
-                {stacked.map((it) => (
-                  <ReservationBlock
-                    key={`${it.id}_${it._row}`}
-                    item={it}
-                    row={it._row}
-                    startCol={it._startCol}
-                    spanCols={it._spanCols}
-                    onClick={() => onCardTap(it)}
-                    armedId={armedId}
-                    setArmedId={setArmedId}
-                    stackCount={rowStackCount[String((it as any)._table ?? (it as any)._row)] ?? 1}
-                    rowHeightPx={rowHeightsPx[(it as any)._row - 1] ?? effectiveRowH}
-                    courseColorMap={courseColorMap}
-                  />
-                ))}
-                {/* --- ポップオーバーアクションメニュー --- */}
-                {actionMenuOpen && actionTarget && actionBubble && (
-                  <div
-                    className="absolute z-[95]"
-                    data-scroll-lock-ignore
-                    style={{
-                      left: Math.max(4, Math.min(actionBubble.left, nCols * colWpx - 220)),
-                      top: actionBubble.top,
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label="card-action-popover"
-                  >
-                    <div className="relative rounded-lg border bg-white shadow-xl">
-                      <div
-                        className="absolute -top-2 right-6 w-0 h-0"
-                        style={{ borderLeft: '8px solid transparent', borderRight: '8px solid transparent', borderBottom: '8px solid white' }}
-                        aria-hidden
-                      />
-                      <div className="flex flex-col p-2 gap-2">
-                        <div className="flex flex-col gap-1">
-                          <span className="text-[10px] font-semibold tracking-wide text-slate-500 uppercase">状態</span>
-                          <div className="flex gap-1">
-                            <button
-                              type="button"
-                              aria-pressed={actionStatus.arrived}
-                              aria-label="来店ステータスを切り替え"
-                              className={`flex-1 rounded-md border px-2 py-1 text-[12px] font-semibold transition-colors ${
-                                actionStatus.arrived
-                                  ? 'border-emerald-600 bg-emerald-600 text-white'
-                                  : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                              }`}
-                              onClick={() => handleStatusToggle('arrived')}
-                            >
-                              来
-                            </button>
-                            <button
-                              type="button"
-                              aria-pressed={actionStatus.paid}
-                              aria-label="会計ステータスを切り替え"
-                              className={`flex-1 rounded-md border px-2 py-1 text-[12px] font-semibold transition-colors ${
-                                actionStatus.paid
-                                  ? 'border-sky-600 bg-white text-sky-700 ring-2 ring-sky-500'
-                                  : 'border-sky-300 bg-white text-sky-700 hover:bg-gray-50'
-                              }`}
-                              onClick={() => handleStatusToggle('paid')}
-                            >
-                              会
-                            </button>
-                            <button
-                              type="button"
-                              aria-pressed={actionStatus.departed}
-                              aria-label="退店ステータスを切り替え"
-                              className={`flex-1 rounded-md border px-2 py-1 text-[12px] font-semibold transition-colors ${
-                                actionStatus.departed
-                                  ? 'border-slate-600 bg-slate-600 text-white'
-                                  : 'border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200'
-                              }`}
-                              onClick={() => handleStatusToggle('departed')}
-                            >
-                              退
-                            </button>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          className="w-full rounded-md border px-3 py-2 text-left hover:bg-gray-50"
-                          onClick={() => {
-                            const sel = Array.isArray((actionTarget as any).tables) ? (actionTarget as any).tables.map(String) : [];
-                            setReassign({
-                              base: {
-                                ...(actionTarget as any),
-                                _startCol: Number((actionTarget as any)._startCol ?? 1),
-                                _spanCols: Number((actionTarget as any)._spanCols ?? 1),
-                              } as any,
-                              selected: sel,
-                              original: sel,
-                            });
-                            setActionMenuOpen(false);
-                            setActionTarget(null);
-                            setActionBubble(null);
-                          }}
-                        >
-                          卓番変更
-                        </button>
-                        <button
-                          type="button"
-                          className="w-full rounded-md border px-3 py-2 text-left hover:bg-gray-50"
-                          onClick={() => {
-                            const target = actionTarget as any;
-                            setActionMenuOpen(false);
-                            setActionTarget(null);
-                            setActionBubble(null);
-                            openEditorFor(target);
-                          }}
-                        >
-                          予約詳細変更
-                        </button>
-                        <button
-                          type="button"
-                          className="w-full rounded-md px-3 py-1 text-center text-gray-500 hover:bg-gray-50"
-                          onClick={() => { setActionMenuOpen(false); setActionTarget(null); setActionBubble(null); }}
-                        >
-                          キャンセル
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
+              ))}
             </div>
-          </DndContext>
+          </div>
           {/* 卓番再割り当てオーバーレイ */}
           {reassign && (
             <div className="absolute inset-0 z-[80] bg-black/10" data-scroll-lock-ignore>
@@ -2084,7 +1850,9 @@ const handleDragMove = useCallback((e: any) => {
 
                     <button
                       type="button"
-                      onClick={() => setReassign(null)}
+                      onClick={() => {
+                        setReassign(null);
+                      }}
                       className="px-3 py-2 rounded bg-white border shadow-sm text-gray-700"
                     >
                       キャンセル
@@ -2118,6 +1886,7 @@ const handleDragMove = useCallback((e: any) => {
         onSave={onSave}
         onDelete={onDelete}
         reservationDetail={editingReservation}
+        statusControls={drawerStatusControls}
         onUpdateReservationField={onUpdateReservationField}
         onAdjustTaskTime={onAdjustTaskTime}
         storeSettings={storeSettings}
@@ -2184,14 +1953,20 @@ function DashedQuarterLines({
     positions.push((h * colsPerHour + quarter) * colW);
     positions.push((h * colsPerHour + threeQuarter) * colW);
   }
+  const dashPx = 4;
+  const gapPx = 12;
 
   return (
     <div className="absolute inset-0 pointer-events-none">
       {positions.map((x, i) => (
         <div
           key={i}
-          className="absolute top-0 bottom-0 border-l border-gray-300"
-          style={{ left: x, borderLeftStyle: 'dashed', opacity: 0.9 }}
+          className="absolute top-0 bottom-0 w-px"
+          style={{
+            left: x,
+            transform: 'translateX(-0.5px)',
+            backgroundImage: `repeating-linear-gradient(to bottom, rgba(209,213,219,0.9) 0, rgba(209,213,219,0.9) ${dashPx}px, transparent ${dashPx}px, transparent ${dashPx + gapPx}px)`,
+          }}
         />
       ))}
     </div>
@@ -2345,8 +2120,7 @@ function ReservationBlock({
   startCol,
   spanCols,
   onClick,
-  armedId,
-  setArmedId,
+  onLongPress,
   stackCount,
   rowHeightPx,
   courseColorMap,
@@ -2356,16 +2130,12 @@ function ReservationBlock({
   startCol: number;
   spanCols: number;
   onClick?: () => void;
-  armedId: string | null;
-  setArmedId: (id: string | null) => void;
+  onLongPress?: () => void;
   stackCount: number;
   rowHeightPx: number;
   courseColorMap: Map<string, CourseColorStyle>;
 }) {
   const warn = item.status === 'warn';
-  const baseId = String(item.id ?? item._key ?? `tmp_${row}_${startCol}`);
-  const tableToken = String(item._table ?? row);
-  const blockKey = `${baseId}::${tableToken}`;
   const raw = item as any;
   const arrived = Boolean(raw?.arrived);
   const paid = Boolean(raw?.paid);
@@ -2414,10 +2184,21 @@ function ReservationBlock({
   const secondaryTextClass = state === 'departed' ? 'text-slate-500' : 'text-slate-600';
 
   // 長押し判定
-  const LONG_PRESS_MS = 900;
+  const LONG_PRESS_MS = 600;
   const MOVE_TOLERANCE_PX = 8;
-  const pressRef = useRef<{ x: number; y: number; tid: number | null }>({ x: 0, y: 0, tid: null });
-  const isArmed = armedId === baseId;
+  const pressRef = useRef<{
+    x: number;
+    y: number;
+    tid: number | null;
+    longPressTriggered: boolean;
+    suppressClick: boolean;
+  }>({
+    x: 0,
+    y: 0,
+    tid: null,
+    longPressTriggered: false,
+    suppressClick: false,
+  });
 
   const guestsRaw = (item as any).people ?? (item as any).guests;
   const guests = typeof guestsRaw === 'number' ? guestsRaw : Number(guestsRaw);
@@ -2468,35 +2249,31 @@ function ReservationBlock({
   const baseTitle = baseTitleParts.join(' / ');
   const titleText = baseTitle || undefined;
 
-  // ★ 武装中のみドラッグ有効化（リサイズは廃止）
-  const dragDisabled = !isArmed;
-  const { attributes, listeners, setNodeRef, transform } = useDraggable({ id: `move:${blockKey}`, disabled: dragDisabled });
-
   const stackIndex = Number((item as any)._stackIndex ?? 0);
   const layers = Math.max(1, Number(stackCount || 1));
   const rowH = Math.max(1, Number(rowHeightPx || 1));
   const perLayerH = Math.max(1, Math.floor(rowH / layers));
 
-  const tx = Math.round(transform?.x ?? 0);
-  const ty = Math.round(transform?.y ?? 0) + stackIndex * perLayerH;
-  const translate = (tx || ty) ? `translate3d(${tx}px, ${ty}px, 0)` : undefined;
+  const translateY = stackIndex * perLayerH;
+  const translate = translateY ? `translate3d(0, ${translateY}px, 0)` : undefined;
 
   const handleClick = useCallback((e: MouseEvent<HTMLDivElement>) => {
     e.stopPropagation();
-    // 武装中はエディタを開かない
-    if (isArmed) return;
+    if (pressRef.current.suppressClick) {
+      pressRef.current.suppressClick = false;
+      return;
+    }
     onClick?.();
-  }, [onClick, isArmed]);
+  }, [onClick]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
     if (!onClick) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       e.stopPropagation();
-      if (isArmed) return;
       onClick();
     }
-  }, [onClick, isArmed]);
+  }, [onClick]);
 
   const freshUntilRaw = (item as any).freshUntilMs;
   const freshUntil = Number.isFinite(Number(freshUntilRaw)) ? Number(freshUntilRaw) : undefined;
@@ -2505,7 +2282,6 @@ function ReservationBlock({
 
   return (
     <div
-      ref={setNodeRef}
       className="relative z-10 h-full w-full select-none pointer-events-auto"
       data-scroll-lock-ignore
       style={{
@@ -2519,15 +2295,19 @@ function ReservationBlock({
       }}
       title={titleText || undefined}
       onClick={handleClick}
-      // 長押しで「武装」→ドラッグ可能にする
+      // 長押しで卓番再割り当てモードを起動
       onPointerDown={(e) => {
         e.stopPropagation();
         try { if (pressRef.current.tid) window.clearTimeout(pressRef.current.tid as number); } catch {}
         pressRef.current.x = (e as any).clientX ?? 0;
         pressRef.current.y = (e as any).clientY ?? 0;
+        pressRef.current.longPressTriggered = false;
+        pressRef.current.suppressClick = false;
         pressRef.current.tid = window.setTimeout(() => {
-          setArmedId(baseId);
           pressRef.current.tid = null;
+          pressRef.current.longPressTriggered = true;
+          pressRef.current.suppressClick = true;
+          onLongPress?.();
           try { (navigator as any).vibrate?.(10); } catch {}
         }, LONG_PRESS_MS);
       }}
@@ -2543,6 +2323,13 @@ function ReservationBlock({
         if (pressRef.current.tid != null) {
           try { window.clearTimeout(pressRef.current.tid as number); } catch {}
           pressRef.current.tid = null;
+          pressRef.current.longPressTriggered = false;
+          pressRef.current.suppressClick = false;
+          return;
+        }
+        if (pressRef.current.longPressTriggered) {
+          pressRef.current.longPressTriggered = false;
+          // suppressClick stays true until click handler runs once
         }
       }}
       onPointerCancel={() => {
@@ -2550,6 +2337,8 @@ function ReservationBlock({
           try { window.clearTimeout(pressRef.current.tid as number); } catch {}
           pressRef.current.tid = null;
         }
+        pressRef.current.longPressTriggered = false;
+        pressRef.current.suppressClick = false;
       }}
       role="button"
       tabIndex={0}
@@ -2562,7 +2351,7 @@ function ReservationBlock({
         />
       )}
       <div
-        className={`relative flex h-full w-full flex-col justify-between rounded-[6px] shadow-[0_1px_2px_rgba(15,23,42,0.1)] ${bodyTextClass} ${isArmed ? 'ring-2 ring-sky-400' : ''} ${state === 'departed' ? 'opacity-80' : ''} overflow-hidden`}
+        className={`relative flex h-full w-full flex-col justify-between rounded-[6px] shadow-[0_1px_2px_rgba(15,23,42,0.1)] ${bodyTextClass} ${state === 'departed' ? 'opacity-80' : ''} overflow-hidden`}
         style={{
           margin: '0px',
           // バッジ分の余白を右側に確保（被り回避）
@@ -2571,8 +2360,6 @@ function ReservationBlock({
           backgroundColor: colors.left,
           backgroundImage: `linear-gradient(to right, ${colors.left} 0%, ${colors.left} 50%, ${colors.right} 50%, ${colors.right} 100%)`,
         }}
-        {...attributes}
-        {...listeners}
       >
         {/* Status dot removed from inside the card container */}
         <div className={`grid h-full grid-rows-[auto_1fr_auto] text-[12px] ${bodyTextClass} min-w-0`}>
