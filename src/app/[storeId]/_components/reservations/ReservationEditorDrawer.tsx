@@ -2,9 +2,10 @@
 
 import * as React from 'react';
 import { createPortal } from 'react-dom';
-import type { CourseDef, StoreSettingsValue } from '@/types/settings';
+import type { CourseDef, StoreSettingsValue, EatDrinkOption } from '@/types/settings';
+import { sanitizeEatDrinkOptions } from '@/types/settings';
 import type { Reservation } from '@/types/reservation';
-import { getCourseColorStyle, normalizeCourseColor } from '@/lib/courseColors';
+import { getCourseColorStyle, normalizeCourseColor, type CourseColorStyle } from '@/lib/courseColors';
 import { parseTimeToMinutes, formatMinutesToTime } from '@/lib/time';
 
 /**
@@ -52,9 +53,9 @@ type Props = {
   /** 選択可能なコース一覧（未指定ならテキスト入力にフォールバック） */
   coursesOptions?: CourseOption[];
   /** 食べ放題プラン候補 */
-  eatOptions?: string[];
+  eatOptions?: EatDrinkOption[];
   /** 飲み放題プラン候補 */
-  drinkOptions?: string[];
+  drinkOptions?: EatDrinkOption[];
   /** 店舗設定（コース統合用） */
   storeSettings?: StoreSettingsValue;
   /** スケジュール対象日の 00:00:00.000 (ローカル) 。未指定なら今日の 0:00 */
@@ -476,8 +477,27 @@ export default function ReservationEditorDrawer(props: Props) {
 
   const timeOptions = React.useMemo(() => buildTimeOptions(), []);
   const stayMinOptions = React.useMemo(() => buildStayMinOptions(30, 240, 5), []);
-  const availableDrinkOptions = React.useMemo(() => (Array.isArray(drinkOptionsProp) ? drinkOptionsProp.map(String) : []), [drinkOptionsProp]);
-  const availableEatOptions = React.useMemo(() => (Array.isArray(eatOptionsProp) ? eatOptionsProp.map(String) : []), [eatOptionsProp]);
+  const availableDrinkOptions = React.useMemo(() => sanitizeEatDrinkOptions(drinkOptionsProp), [drinkOptionsProp]);
+  const availableEatOptions = React.useMemo(() => sanitizeEatDrinkOptions(eatOptionsProp), [eatOptionsProp]);
+  const drinkOptionColorMap = React.useMemo(() => {
+    const map = new Map<string, CourseColorStyle>();
+    availableDrinkOptions.forEach((opt) => {
+      const key = normalizeCourseColor(opt.color);
+      if (!key) return;
+      map.set(opt.label, getCourseColorStyle(key));
+    });
+    return map;
+  }, [availableDrinkOptions]);
+  const eatOptionColorMap = React.useMemo(() => {
+    const map = new Map<string, CourseColorStyle>();
+    availableEatOptions.forEach((opt) => {
+      const key = normalizeCourseColor(opt.color);
+      if (!key) return;
+      map.set(opt.label, getCourseColorStyle(key));
+    });
+    return map;
+  }, [availableEatOptions]);
+  const SELECT_BORDER_COLOR = '#d1d5db';
   const normalizedTimeOptions = React.useMemo(() => {
     if (!time) return timeOptions;
     if (timeOptions.includes(time)) return timeOptions;
@@ -582,12 +602,12 @@ export default function ReservationEditorDrawer(props: Props) {
     setDrinkLabel(
       hasText(initial?.drinkLabel)
         ? toText(initial?.drinkLabel)
-        : (initial?.drinkAllYouCan ? (availableDrinkOptions[0] ?? '飲み放題') : '')
+        : (initial?.drinkAllYouCan ? (availableDrinkOptions[0]?.label ?? '飲み放題') : '')
     );
     setEatLabel(
       hasText(initial?.eatLabel)
         ? toText(initial?.eatLabel)
-        : (initial?.foodAllYouCan ? (availableEatOptions[0] ?? '食べ放題') : '')
+        : (initial?.foodAllYouCan ? (availableEatOptions[0]?.label ?? '食べ放題') : '')
     );
     setMemo(initial?.memo ?? '');
   }, [open, reservationId, initial?.startMs, initial?.tables, initial?.table, initial?.guests, initial?.name, initial?.courseName, initial?.durationMin, initial?.drinkAllYouCan, initial?.foodAllYouCan, initial?.drinkLabel, initial?.eatLabel, initial?.memo, day0, orderByOptions, availableDrinkOptions, availableEatOptions]);
@@ -603,8 +623,8 @@ export default function ReservationEditorDrawer(props: Props) {
       alert('人数を入力してください');
       return;
     }
-    const defaultDrinkLabel = availableDrinkOptions[0] ?? '飲み放題';
-    const defaultEatLabel = availableEatOptions[0] ?? '食べ放題';
+    const defaultDrinkLabel = availableDrinkOptions[0]?.label ?? '飲み放題';
+    const defaultEatLabel = availableEatOptions[0]?.label ?? '食べ放題';
     const drinkAllFinal = hasText(drinkLabel);
     const eatAllFinal   = hasText(eatLabel);
     const drinkLabelFinal = drinkAllFinal ? (safeTrim(drinkLabel) || defaultDrinkLabel) : '';
@@ -862,14 +882,13 @@ export default function ReservationEditorDrawer(props: Props) {
                   {mergedCourses && mergedCourses.length > 0 ? (
                 <select
                   className="flex-1 rounded border bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-emerald-300"
-                  style={
-                    selectedCourseColorKey
-                      ? {
-                          backgroundColor: selectedCourseColorStyle.background,
-                          color: selectedCourseColorStyle.text,
-                        }
-                      : undefined
-                  }
+                  style={selectedCourseColorKey
+                    ? {
+                        backgroundColor: selectedCourseColorStyle.background,
+                        color: selectedCourseColorStyle.text,
+                        borderColor: SELECT_BORDER_COLOR,
+                      }
+                    : { borderColor: SELECT_BORDER_COLOR }}
                   value={courseName}
                   onChange={(e) => setCourseName(e.currentTarget.value)}
                 >
@@ -898,16 +917,29 @@ export default function ReservationEditorDrawer(props: Props) {
             <div className="grid grid-cols-[auto_1fr_auto_1fr] items-center gap-1.5">
               <label className="whitespace-nowrap w-[4.2em] text-sm font-medium">飲み放題</label>
               {availableDrinkOptions.length > 0 ? (
-                <select
-                  className="min-w-0 w-full rounded border px-2 py-1.5 text-[14px]"
-                  value={drinkLabel}
-                  onChange={(e) => setDrinkLabel(e.currentTarget.value)}
-                >
-                  <option value="">未選択</option>
-                  {availableDrinkOptions.map((opt) => (
-                    <option key={opt} value={opt}>{opt}</option>
-                  ))}
-                </select>
+                (() => {
+                  const style = drinkLabel ? drinkOptionColorMap.get(drinkLabel) : undefined;
+                  const selectStyle = style
+                    ? {
+                        backgroundColor: style.background,
+                        color: style.text,
+                        borderColor: SELECT_BORDER_COLOR,
+                      }
+                    : { borderColor: SELECT_BORDER_COLOR };
+                  return (
+                    <select
+                      className="min-w-0 w-full rounded border px-2 py-1.5 text-[14px]"
+                      value={drinkLabel}
+                      onChange={(e) => setDrinkLabel(e.currentTarget.value)}
+                      style={selectStyle}
+                    >
+                      <option value="">未選択</option>
+                      {availableDrinkOptions.map((opt) => (
+                        <option key={opt.label} value={opt.label}>{opt.label}</option>
+                      ))}
+                    </select>
+                  );
+                })()
               ) : (
                 <input
                   type="text"
@@ -919,16 +951,29 @@ export default function ReservationEditorDrawer(props: Props) {
               )}
               <label className="whitespace-nowrap w-[4.2em] text-sm font-medium text-right pr-1">食べ放題</label>
               {availableEatOptions.length > 0 ? (
-                <select
-                  className="min-w-0 w-full rounded border px-2 py-1.5 text-[14px]"
-                  value={eatLabel}
-                  onChange={(e) => setEatLabel(e.currentTarget.value)}
-                >
-                  <option value="">未選択</option>
-                  {availableEatOptions.map((opt) => (
-                    <option key={opt} value={opt}>{opt}</option>
-                  ))}
-                </select>
+                (() => {
+                  const style = eatLabel ? eatOptionColorMap.get(eatLabel) : undefined;
+                  const selectStyle = style
+                    ? {
+                        backgroundColor: style.background,
+                        color: style.text,
+                        borderColor: SELECT_BORDER_COLOR,
+                      }
+                    : { borderColor: SELECT_BORDER_COLOR };
+                  return (
+                    <select
+                      className="min-w-0 w-full rounded border px-2 py-1.5 text-[14px]"
+                      value={eatLabel}
+                      onChange={(e) => setEatLabel(e.currentTarget.value)}
+                      style={selectStyle}
+                    >
+                      <option value="">未選択</option>
+                      {availableEatOptions.map((opt) => (
+                        <option key={opt.label} value={opt.label}>{opt.label}</option>
+                      ))}
+                    </select>
+                  );
+                })()
               ) : (
                 <input
                   type="text"

@@ -1,5 +1,7 @@
 // src/app/types.ts
 
+import type { EatDrinkOption } from '@/types/settings';
+
 // 並び順
 export type ResOrder = 'time' | 'table' | 'created';
 
@@ -73,8 +75,8 @@ export type StoreSettingsValue = {
   positions?: string[];                     // ポジション名一覧
   tables?: string[];                        // 卓番号（文字列）
   tasksByPosition?: Record<string, string[]>; // ポジション→表示タスク
-  eatOptions?: string[];                    // 食べ放題など
-  drinkOptions?: string[];                  // 飲み放題など
+  eatOptions?: EatDrinkOption[];            // 食べ放題など
+  drinkOptions?: EatDrinkOption[];          // 飲み放題など
   plans?: string[];                         // 任意のプラン名
   updatedAt?: unknown;                      // サーバ側で付与されることがある
   areas?: AreaDef[];                        // ★ 追加: エリア設定

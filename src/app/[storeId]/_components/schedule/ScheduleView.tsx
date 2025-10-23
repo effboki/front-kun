@@ -3,7 +3,8 @@
 import { useMemo, useState, useCallback, useEffect, useRef, useLayoutEffect } from 'react';
 import type { UIEvent, MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, CSSProperties } from 'react';
 import type { ScheduleItem } from '@/types/schedule';
-import type { StoreSettingsValue } from '@/types/settings';
+import type { EatDrinkOption, StoreSettingsValue } from '@/types/settings';
+import { sanitizeEatDrinkOptions } from '@/types/settings';
 import type { Reservation } from '@/types/reservation';
 import { SLOT_MS, snap5m } from '@/lib/schedule';
 import { startOfDayMs } from '@/lib/time';
@@ -73,8 +74,8 @@ type Props = {
   /** UI 選択肢（無ければテキスト入力にフォールバック） */
   tablesOptions?: string[];
   coursesOptions?: CourseOption[];
-  eatOptions?: string[];
-  drinkOptions?: string[];
+  eatOptions?: EatDrinkOption[];
+  drinkOptions?: EatDrinkOption[];
   storeSettings?: StoreSettingsValue;
   dayStartMs?: number; // 基準日の開始ms（外から渡す）
   reservations?: Reservation[];
@@ -1057,17 +1058,35 @@ export default function ScheduleView({
     return m;
   }, [tables]);
 
-  const eatOptionsList = useMemo<string[]>(() => {
-    if (eatOptions && eatOptions.length > 0) return eatOptions.map(String);
-    const fromSettings = storeSettings?.eatOptions;
-    return Array.isArray(fromSettings) ? fromSettings.map(String) : [];
+  const eatOptionDefs = useMemo<EatDrinkOption[]>(() => {
+    if (eatOptions && eatOptions.length > 0) return sanitizeEatDrinkOptions(eatOptions);
+    return sanitizeEatDrinkOptions(storeSettings?.eatOptions);
   }, [eatOptions, storeSettings?.eatOptions]);
 
-  const drinkOptionsList = useMemo<string[]>(() => {
-    if (drinkOptions && drinkOptions.length > 0) return drinkOptions.map(String);
-    const fromSettings = storeSettings?.drinkOptions;
-    return Array.isArray(fromSettings) ? fromSettings.map(String) : [];
+  const drinkOptionDefs = useMemo<EatDrinkOption[]>(() => {
+    if (drinkOptions && drinkOptions.length > 0) return sanitizeEatDrinkOptions(drinkOptions);
+    return sanitizeEatDrinkOptions(storeSettings?.drinkOptions);
   }, [drinkOptions, storeSettings?.drinkOptions]);
+
+  const eatOptionColorMap = useMemo(() => {
+    const map = new Map<string, CourseColorStyle>();
+    eatOptionDefs.forEach((opt) => {
+      const key = normalizeCourseColor(opt.color);
+      if (!key) return;
+      map.set(opt.label, getCourseColorStyle(key));
+    });
+    return map;
+  }, [eatOptionDefs]);
+
+  const drinkOptionColorMap = useMemo(() => {
+    const map = new Map<string, CourseColorStyle>();
+    drinkOptionDefs.forEach((opt) => {
+      const key = normalizeCourseColor(opt.color);
+      if (!key) return;
+      map.set(opt.label, getCourseColorStyle(key));
+    });
+    return map;
+  }, [drinkOptionDefs]);
 
   const tableCapacitiesMap = useMemo<Record<string, number>>(() => {
     const raw = storeSettings?.tableCapacities;
@@ -1776,6 +1795,8 @@ export default function ScheduleView({
                   stackCount={rowStackCount[String((it as any)._table ?? (it as any)._row)] ?? 1}
                   rowHeightPx={rowHeightsPx[(it as any)._row - 1] ?? effectiveRowH}
                   courseColorMap={courseColorMap}
+                  drinkOptionColorMap={drinkOptionColorMap}
+                  eatOptionColorMap={eatOptionColorMap}
                 />
               ))}
             </div>
@@ -1880,8 +1901,8 @@ export default function ScheduleView({
         initial={editing?.initial}
         tablesOptions={tablesOptions ?? tables}
         coursesOptions={coursesOptions}
-        eatOptions={eatOptionsList}
-        drinkOptions={drinkOptionsList}
+        eatOptions={eatOptionDefs}
+        drinkOptions={drinkOptionDefs}
         dayStartMs={day0} // ドロワーには当日0:00を渡す（表示範囲の開始時刻ではなく）
         onSave={onSave}
         onDelete={onDelete}
@@ -2124,6 +2145,8 @@ function ReservationBlock({
   stackCount,
   rowHeightPx,
   courseColorMap,
+  drinkOptionColorMap,
+  eatOptionColorMap,
 }: {
   item: ScheduleItem & { status?: 'normal' | 'warn'; _table?: string; _key?: string; _editedAllowed?: boolean };
   row: number;
@@ -2134,6 +2157,8 @@ function ReservationBlock({
   stackCount: number;
   rowHeightPx: number;
   courseColorMap: Map<string, CourseColorStyle>;
+  drinkOptionColorMap: Map<string, CourseColorStyle>;
+  eatOptionColorMap: Map<string, CourseColorStyle>;
 }) {
   const warn = item.status === 'warn';
   const raw = item as any;
@@ -2240,6 +2265,9 @@ function ReservationBlock({
       ?? (typeof raw?.meta?.eat === 'string' ? raw.meta.eat : undefined)
       ?? (typeof raw?.reservation?.eat === 'string' ? raw.reservation.eat : undefined)
   );
+
+  const drinkColorStyle = drinkLabel ? drinkOptionColorMap.get(drinkLabel) : undefined;
+  const eatColorStyle = eatLabel ? eatOptionColorMap.get(eatLabel) : undefined;
 
   const showDrink = Boolean(drinkLabel || raw?.drink || raw?.meta?.drink || raw?.reservation?.drink);
   const showEat = Boolean(eatLabel || raw?.eat || raw?.meta?.eat || raw?.reservation?.eat);
@@ -2371,8 +2399,22 @@ function ReservationBlock({
               </span>
             </div>
             <div className="flex gap-1 text-[11px] text-slate-500 shrink-0 overflow-hidden">
-              {showEat && <span className="rounded-sm border border-slate-400 px-1 leading-tight whitespace-nowrap">{eatLabel || '食放'}</span>}
-              {showDrink && <span className="rounded-sm border border-slate-400 px-1 leading-tight whitespace-nowrap">{drinkLabel || '飲放'}</span>}
+              {showEat && (
+                <span
+                  className="rounded-sm border px-1 leading-tight whitespace-nowrap"
+                  style={eatColorStyle ? { color: eatColorStyle.text, borderColor: eatColorStyle.border } : undefined}
+                >
+                  {eatLabel || '食放'}
+                </span>
+              )}
+              {showDrink && (
+                <span
+                  className="rounded-sm border px-1 leading-tight whitespace-nowrap"
+                  style={drinkColorStyle ? { color: drinkColorStyle.text, borderColor: drinkColorStyle.border } : undefined}
+                >
+                  {drinkLabel || '飲放'}
+                </span>
+              )}
             </div>
           </div>
           <div className={`flex items-center overflow-hidden text-[11px] ${secondaryTextClass} min-w-0`} />

@@ -5,7 +5,7 @@ import type { ReactNode, FC, MutableRefObject } from 'react';
 import type { CourseDef, TaskDef } from '@/types';
 import type { AreaDef } from '@/types';
 import { sanitizeTableCapacities } from '@/types/settings';
-import type { StoreSettingsValue } from '@/types/settings';
+import type { EatDrinkOption, StoreSettingsValue } from '@/types/settings';
 import {
   COURSE_COLOR_NONE_OPTION,
   COURSE_COLOR_OPTIONS,
@@ -190,8 +190,49 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     () => sanitizeTableCapacities(value.tableCapacities, presetTables),
     [value.tableCapacities, presetTables]
   );
-  const eatOptions = useMemo(() => (Array.isArray(value.eatOptions) ? value.eatOptions : []), [value.eatOptions]);
-  const drinkOptions = useMemo(() => (Array.isArray(value.drinkOptions) ? value.drinkOptions : []), [value.drinkOptions]);
+  const eatOptions = useMemo<EatDrinkOption[]>(() => {
+    if (!Array.isArray(value.eatOptions)) return [];
+    return value.eatOptions
+      .map((opt) => {
+        if (!opt) return null;
+        if (typeof opt === 'string') {
+          const label = opt.trim();
+          return label ? { label } : null;
+        }
+        const record = opt as Partial<EatDrinkOption> & Record<string, unknown>;
+        const label = typeof record.label === 'string' && record.label.trim()
+          ? record.label.trim()
+          : typeof record.name === 'string'
+            ? record.name.trim()
+            : '';
+        if (!label) return null;
+        const color = normalizeCourseColor(record.color);
+        return color ? { label, color } : { label };
+      })
+      .filter((opt): opt is EatDrinkOption => opt !== null);
+  }, [value.eatOptions]);
+
+  const drinkOptions = useMemo<EatDrinkOption[]>(() => {
+    if (!Array.isArray(value.drinkOptions)) return [];
+    return value.drinkOptions
+      .map((opt) => {
+        if (!opt) return null;
+        if (typeof opt === 'string') {
+          const label = opt.trim();
+          return label ? { label } : null;
+        }
+        const record = opt as Partial<EatDrinkOption> & Record<string, unknown>;
+        const label = typeof record.label === 'string' && record.label.trim()
+          ? record.label.trim()
+          : typeof record.name === 'string'
+            ? record.name.trim()
+            : '';
+        if (!label) return null;
+        const color = normalizeCourseColor(record.color);
+        return color ? { label, color } : { label };
+      })
+      .filter((opt): opt is EatDrinkOption => opt !== null);
+  }, [value.drinkOptions]);
   const tasksByPosition = useMemo(
     () =>
       value.tasksByPosition && typeof value.tasksByPosition === 'object'
@@ -403,11 +444,11 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     },
     [tableCapacities, applyTableCapacities]
   );
-  const setEatOptions = useCallback((next: string[]) => {
+  const setEatOptions = useCallback((next: EatDrinkOption[]) => {
     setLocalDirty(true);
     onChange({ eatOptions: next });
   }, [onChange]);
-  const setDrinkOptions = useCallback((next: string[]) => {
+  const setDrinkOptions = useCallback((next: EatDrinkOption[]) => {
     setLocalDirty(true);
     onChange({ drinkOptions: next });
   }, [onChange]);
@@ -435,21 +476,51 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   const [showScheduleInfo, setShowScheduleInfo] = useState(false);
 
   // 入力値の追加（ボタン／Enter 共通）
-  const addEatOption = useCallback((raw: string): boolean => {
+  const addEatOption = useCallback((raw: string, color: CourseColorKey | null): boolean => {
     const v = takeGraphemes(normalizeTiny(raw), 2);
     if (!v) return false;
-    if (eatOptions.includes(v)) return false;
-    setEatOptions([...eatOptions, v]);
+    if (eatOptions.some((opt) => normEq(opt.label, v))) return false;
+    const normalizedColor = color ? normalizeCourseColor(color) : undefined;
+    const nextOpt: EatDrinkOption = normalizedColor ? { label: v, color: normalizedColor } : { label: v };
+    setEatOptions([...eatOptions, nextOpt]);
     return true;
   }, [eatOptions, setEatOptions]);
 
-  const addDrinkOption = useCallback((raw: string): boolean => {
+  const addDrinkOption = useCallback((raw: string, color: CourseColorKey | null): boolean => {
     const v = takeGraphemes(normalizeTiny(raw), 2);
     if (!v) return false;
-    if (drinkOptions.includes(v)) return false;
-    setDrinkOptions([...drinkOptions, v]);
+    if (drinkOptions.some((opt) => normEq(opt.label, v))) return false;
+    const normalizedColor = color ? normalizeCourseColor(color) : undefined;
+    const nextOpt: EatDrinkOption = normalizedColor ? { label: v, color: normalizedColor } : { label: v };
+    setDrinkOptions([...drinkOptions, nextOpt]);
     return true;
   }, [drinkOptions, setDrinkOptions]);
+
+  const updateEatOptionColor = useCallback((label: string, colorKey: CourseColorKey | null) => {
+    setEatOptions((prev) => {
+      const idx = prev.findIndex((opt) => normEq(opt.label, label));
+      if (idx < 0) return prev;
+      const normalized = colorKey ? normalizeCourseColor(colorKey) : undefined;
+      const current = prev[idx];
+      if ((current.color ?? undefined) === (normalized ?? undefined)) return prev;
+      const next = [...prev];
+      next[idx] = normalized ? { label: current.label, color: normalized } : { label: current.label };
+      return next;
+    });
+  }, [setEatOptions]);
+
+  const updateDrinkOptionColor = useCallback((label: string, colorKey: CourseColorKey | null) => {
+    setDrinkOptions((prev) => {
+      const idx = prev.findIndex((opt) => normEq(opt.label, label));
+      if (idx < 0) return prev;
+      const normalized = colorKey ? normalizeCourseColor(colorKey) : undefined;
+      const current = prev[idx];
+      if ((current.color ?? undefined) === (normalized ?? undefined)) return prev;
+      const next = [...prev];
+      next[idx] = normalized ? { label: current.label, color: normalized } : { label: current.label };
+      return next;
+    });
+  }, [setDrinkOptions]);
 
   // ===== courses & tasks =====
 
@@ -2436,23 +2507,19 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
           <section className="rounded-lg border bg-white shadow-sm overflow-hidden">
             <header className="px-3 py-2 bg-gray-50/80 border-b font-semibold">食べ放題</header>
             <div className="p-3 space-y-3">
-              {/* 登録済みのチップ */}
-              <div className="flex flex-wrap gap-2">
-                {eatOptions.length > 0 ? (
-                  eatOptions.map((opt) => (
-                    <span key={opt} className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 bg-white shadow-sm">
-                      <span className="tabular-nums">{opt}</span>
-                      <button
-                        onClick={() => setEatOptions(eatOptions.filter((o) => o !== opt))}
-                        className="ml-0.5 inline-grid place-items-center h-6 w-6 rounded-full border border-red-200 bg-red-50 text-red-600 text-sm hover:bg-red-100 hover:text-red-700 active:scale-[.98]"
-                        aria-label={`${opt} を削除`}
-                        title="削除"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))
-                ) : (
+              {/* 登録済みのプラン */}
+              <div className="space-y-2">
+                {eatOptions.length > 0 ? eatOptions.map((opt) => (
+                  <EatDrinkOptionRow
+                    key={opt.label}
+                    option={opt}
+                    onRemove={(label) => {
+                      const next = eatOptions.filter((o) => !normEq(o.label, label));
+                      setEatOptions(next);
+                    }}
+                    onColorChange={updateEatOptionColor}
+                  />
+                )) : (
                   <span className="text-gray-500 text-xs">まだ登録がありません。下の入力欄から追加してください。</span>
                 )}
               </div>
@@ -2471,23 +2538,19 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
           <section className="rounded-lg border bg-white shadow-sm overflow-hidden">
             <header className="px-3 py-2 bg-gray-50/80 border-b font-semibold">飲み放題</header>
             <div className="p-3 space-y-3">
-              {/* 登録済みのチップ */}
-              <div className="flex flex-wrap gap-2">
-                {drinkOptions.length > 0 ? (
-                  drinkOptions.map((opt) => (
-                    <span key={opt} className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 bg-white shadow-sm">
-                      <span className="tabular-nums">{opt}</span>
-                      <button
-                        onClick={() => setDrinkOptions(drinkOptions.filter((o) => o !== opt))}
-                        className="ml-0.5 inline-grid place-items-center h-6 w-6 rounded-full border border-red-200 bg-red-50 text-red-600 text-sm hover:bg-red-100 hover:text-red-700 active:scale-[.98]"
-                        aria-label={`${opt} を削除`}
-                        title="削除"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))
-                ) : (
+              {/* 登録済みのプラン */}
+              <div className="space-y-2">
+                {drinkOptions.length > 0 ? drinkOptions.map((opt) => (
+                  <EatDrinkOptionRow
+                    key={opt.label}
+                    option={opt}
+                    onRemove={(label) => {
+                      const next = drinkOptions.filter((o) => !normEq(o.label, label));
+                      setDrinkOptions(next);
+                    }}
+                    onColorChange={updateDrinkOptionColor}
+                  />
+                )) : (
                   <span className="text-gray-500 text-xs">まだ登録がありません。下の入力欄から追加してください。</span>
                 )}
               </div>
@@ -2986,28 +3049,95 @@ const NewAreaForm = memo(function NewAreaForm({ onAdd }: NewAreaFormProps) {
 });
 
 type EatDrinkOptionFormProps = {
-  existing: string[];
-  onAdd: (raw: string) => boolean;
+  existing: EatDrinkOption[];
+  onAdd: (raw: string, color: CourseColorKey | null) => boolean;
   placeholder: string;
   describedById: string;
 };
+
+type EatDrinkOptionRowProps = {
+  option: EatDrinkOption;
+  onRemove: (label: string) => void;
+  onColorChange: (label: string, color: CourseColorKey | null) => void;
+};
+
+const EatDrinkOptionRow = memo(function EatDrinkOptionRow({
+  option,
+  onRemove,
+  onColorChange,
+}: EatDrinkOptionRowProps) {
+  const colorKey = normalizeCourseColor(option.color);
+  const hasCustomColor = Boolean(colorKey);
+  const colorStyle = getCourseColorStyle(colorKey ?? null);
+  const selectValue = colorKey ?? '';
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-md border border-gray-200 bg-white px-3 py-2 shadow-sm">
+      <span
+        className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm font-semibold shadow-sm"
+        style={{
+          backgroundColor: hasCustomColor ? colorStyle.background : '#ffffff',
+          color: hasCustomColor ? colorStyle.text : '#1f2937',
+          borderColor: hasCustomColor ? colorStyle.border : '#d1d5db',
+        }}
+      >
+        <span
+          aria-hidden="true"
+          className="inline-block h-3 w-3 rounded-full border border-white/80 shadow-sm"
+          style={{
+            backgroundColor: hasCustomColor ? colorStyle.text : '#cbd5f5',
+          }}
+        />
+        <span className="tabular-nums">{option.label}</span>
+      </span>
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs text-gray-500">色</span>
+        <select
+          value={selectValue}
+          onChange={(e) => onColorChange(option.label, e.currentTarget.value ? (e.currentTarget.value as CourseColorKey) : null)}
+          aria-label={`${option.label} の色`}
+          className="h-9 min-w-[7.5rem] rounded-md border border-gray-300 bg-white px-2 text-sm shadow-sm"
+        >
+          <option value="">標準</option>
+          {COURSE_COLOR_OPTIONS.map((opt) => (
+            <option key={opt.key} value={opt.key}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <button
+        type="button"
+        onClick={() => onRemove(option.label)}
+        className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-full border border-red-200 bg-red-50 text-red-600 text-sm font-semibold hover:bg-red-100 hover:text-red-700 active:scale-[.98]"
+        aria-label={`${option.label} を削除`}
+        title="削除"
+      >
+        ×
+      </button>
+    </div>
+  );
+});
 
 const EatDrinkOptionForm = memo(function EatDrinkOptionForm({ existing, onAdd, placeholder, describedById }: EatDrinkOptionFormProps) {
   const [draft, setDraft] = useState('');
   const [isComposing, setIsComposing] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const [color, setColor] = useState<string>('');
 
   const candidate = takeGraphemes(normalizeTiny(draft), 2);
-  const isDup = !!candidate && existing.includes(candidate);
+  const isDup = !!candidate && existing.some((opt) => normEq(opt.label, candidate));
   const canSubmit = !!candidate && !isDup && !isComposing;
 
   const submit = useCallback(() => {
     if (!canSubmit) return;
-    const ok = onAdd(draft);
+    const normalizedColor = color ? (normalizeCourseColor(color) ?? null) : null;
+    const ok = onAdd(draft, normalizedColor);
     if (!ok) return;
     setDraft('');
+    setColor('');
     requestAnimationFrame(() => inputRef.current?.focus());
-  }, [canSubmit, draft, onAdd]);
+  }, [canSubmit, draft, onAdd, color]);
 
   return (
     <div>
@@ -3034,6 +3164,19 @@ const EatDrinkOptionForm = memo(function EatDrinkOptionForm({ existing, onAdd, p
           aria-describedby={describedById}
           autoComplete="off"
         />
+        <select
+          value={color}
+          onChange={(e) => setColor(e.currentTarget.value)}
+          className="h-9 min-w-[7rem] rounded-md border border-gray-300 bg-white px-2 text-sm shadow-sm"
+          aria-label="追加するプランの色"
+        >
+          <option value="">標準</option>
+          {COURSE_COLOR_OPTIONS.map((opt) => (
+            <option key={`form-color-${opt.key}`} value={opt.key}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
         <button
           onClick={submit}
           disabled={!canSubmit}

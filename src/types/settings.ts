@@ -30,6 +30,11 @@ export type AreaDef = {
 
 export type TableCapacityMap = Record<string, number>;
 
+export type EatDrinkOption = {
+  label: string;
+  color?: CourseColorKey | null;
+};
+
 type UnknownRecord = Record<string, unknown>;
 
 export type ScheduleConfig = {
@@ -91,8 +96,8 @@ export type StoreSettingsValue = {
   areas?: AreaDef[];
   plans: string[];
   tasksByPosition?: Record<string, Record<string, string[]>>;
-  eatOptions?: string[];
-  drinkOptions?: string[];
+  eatOptions?: EatDrinkOption[];
+  drinkOptions?: EatDrinkOption[];
   miniTasksByPosition?: Record<string, MiniTaskTemplate[]>;
   wave?: WaveConfig;
   schedule?: ScheduleConfig;
@@ -199,6 +204,47 @@ const toStringList = (v: unknown): string[] => {
 };
 
 export const sanitizeStringList = (v: unknown): string[] => toStringList(v);
+
+const firstNonEmptyString = (...values: unknown[]): string => {
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return '';
+};
+
+export const sanitizeEatDrinkOptions = (input: unknown): EatDrinkOption[] => {
+  if (!Array.isArray(input)) return [];
+  const out: EatDrinkOption[] = [];
+  for (const raw of input as unknown[]) {
+    if (typeof raw === 'string') {
+      const label = raw.trim();
+      if (!label) continue;
+      out.push({ label });
+      continue;
+    }
+    if (!raw || typeof raw !== 'object') continue;
+    const record = raw as UnknownRecord;
+    const label = firstNonEmptyString(record.label, record.name, record.abbr, record.value);
+    if (!label) continue;
+    const color = normalizeCourseColor(record.color);
+    out.push(color ? { label, color } : { label });
+  }
+  const seen = new Set<string>();
+  return out.filter(({ label }) => {
+    if (seen.has(label)) return false;
+    seen.add(label);
+    return true;
+  });
+};
+
+export const serializeEatDrinkOptions = (options: EatDrinkOption[] | undefined): EatDrinkOption[] => {
+  if (!Array.isArray(options)) return [];
+  return sanitizeEatDrinkOptions(options).map((opt) =>
+    opt.color ? { label: opt.label, color: opt.color } : { label: opt.label }
+  );
+};
 
 const pruneUndefined = <T>(value: T): T => {
   if (Array.isArray(value)) {
@@ -407,8 +453,8 @@ export const toUISettings = (fs: StoreSettings): StoreSettingsValue => {
   const tables: string[] = sanitizeTables(fs?.tables);
   const tableCapacities = sanitizeTableCapacities(fs?.tableCapacities, tables);
   const plans: string[] = toStringList(fs?.plans);
-  const eatOptions: string[] = toStringList(fs?.eatOptions);
-  const drinkOptions: string[] = toStringList(fs?.drinkOptions);
+  const eatOptions: EatDrinkOption[] = sanitizeEatDrinkOptions(fs?.eatOptions);
+  const drinkOptions: EatDrinkOption[] = sanitizeEatDrinkOptions(fs?.drinkOptions);
 
   // tasksByPosition はオブジェクトならそのまま、無ければ {}
   const tasksByPosition: Record<string, Record<string, string[]>> =
@@ -454,8 +500,8 @@ export const toFirestorePayload = (ui: StoreSettingsValue): StoreSettings => {
   const tables = sanitizeTables(ui.tables);
   const tableCapacities = sanitizeTableCapacities(ui.tableCapacities, tables);
   const plans = toStringList(ui.plans);
-  const eatOptions = toStringList(ui.eatOptions);
-  const drinkOptions = toStringList(ui.drinkOptions);
+  const eatOptions = serializeEatDrinkOptions(ui.eatOptions);
+  const drinkOptions = serializeEatDrinkOptions(ui.drinkOptions);
 
   const tasksByPosition = sanitizeTasksByPosition(ui.tasksByPosition);
   const areas = sanitizeAreas(ui.areas);

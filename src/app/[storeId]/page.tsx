@@ -10,12 +10,12 @@ import { flushQueuedOps } from '@/lib/opsQueue';
 // 📌 ChatGPT からのテスト編集: 拡張機能連携確認済み
 // 📌 Policy: UI preview must NOT read/write r.pendingTable. Preview state lives only in pendingTables.
 
-import type { StoreSettings, StoreSettingsValue } from '@/types/settings';
+import type { EatDrinkOption, StoreSettings, StoreSettingsValue } from '@/types/settings';
 import {
   toUISettings,
   toFirestorePayload,
   sanitizeCourses as sanitizeStoreCourses,
-  sanitizeStringList,
+  sanitizeEatDrinkOptions,
   sanitizeTables,
   toPositionNames,
   sanitizeTasksByPosition,
@@ -58,6 +58,16 @@ import type { AreaDef } from '@/types';
 import { useReservationMutations } from '@/hooks/useReservationMutations';
 import dynamic from 'next/dynamic';
 import { TOGGLE_EVENT as SEAT_OPTIMIZER_TOGGLE_EVENT } from './_components/global/SeatOptimizerButton';
+
+const DEFAULT_EAT_OPTIONS: EatDrinkOption[] = [
+  { label: '⭐︎' },
+  { label: '⭐︎⭐︎' },
+];
+
+const DEFAULT_DRINK_OPTIONS: EatDrinkOption[] = [
+  { label: 'スタ' },
+  { label: 'プレ' },
+];
 type BottomTab = 'reservations' | 'schedule' | 'tasks' | 'courseStart';
 const TASK_OFFSET_MIN = -180;
 const TASK_OFFSET_MAX = 180;
@@ -662,12 +672,24 @@ const [baselineSettings, setBaselineSettings] =
         });
       }
       if ('eatOptions' in patch) {
-        const next = Array.isArray(patch.eatOptions) ? (patch.eatOptions as string[]) : [];
-        setEatOptions((prev) => (sameArrayShallow(prev, next) ? prev : [...next]));
+        const next = sanitizeEatDrinkOptions(patch.eatOptions);
+        setEatOptions((prev) => {
+          try {
+            return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+          } catch {
+            return next;
+          }
+        });
       }
       if ('drinkOptions' in patch) {
-        const next = Array.isArray(patch.drinkOptions) ? (patch.drinkOptions as string[]) : [];
-        setDrinkOptions((prev) => (sameArrayShallow(prev, next) ? prev : [...next]));
+        const next = sanitizeEatDrinkOptions(patch.drinkOptions);
+        setDrinkOptions((prev) => {
+          try {
+            return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+          } catch {
+            return next;
+          }
+        });
       }
     },
     []
@@ -941,11 +963,11 @@ const getTasks = (c: { tasks?: any }): TaskDef[] =>
   //
   // ───────── 食・飲 オプション ─────────
   //
-const [eatOptions, setEatOptions] = useState<string[]>(
-  () => nsGetJSON<string[]>('eatOptions', ['⭐︎', '⭐︎⭐︎'])
+const [eatOptions, setEatOptions] = useState<EatDrinkOption[]>(
+  () => sanitizeEatDrinkOptions(nsGetJSON<any>('eatOptions', DEFAULT_EAT_OPTIONS))
 );
-const [drinkOptions, setDrinkOptions] = useState<string[]>(
-  () => nsGetJSON<string[]>('drinkOptions', ['スタ', 'プレ'])
+const [drinkOptions, setDrinkOptions] = useState<EatDrinkOption[]>(
+  () => sanitizeEatDrinkOptions(nsGetJSON<any>('drinkOptions', DEFAULT_DRINK_OPTIONS))
 );
 // 保存用のuseEffect
 useEffect(() => {
@@ -995,9 +1017,9 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
       if (!cached || Object.keys(cached).length === 0) return;
 
       // 最低限 eat/drinkOptions / positions / tasksByPosition を復元
-      const cachedEat = sanitizeStringList(cached.eatOptions);
+      const cachedEat = sanitizeEatDrinkOptions(cached.eatOptions);
       setEatOptions(cachedEat);
-      const cachedDrink = sanitizeStringList(cached.drinkOptions);
+      const cachedDrink = sanitizeEatDrinkOptions(cached.drinkOptions);
       setDrinkOptions(cachedDrink);
       const cachedPositions = toPositionNames(cached.positions);
       if (cachedPositions.length > 0) setPositions(cachedPositions);
@@ -1029,11 +1051,11 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
         : (typeof rawUpdatedAt === 'number' ? rawUpdatedAt : 0);
     // ③ Firestore を常に真実として反映（キャッシュ新しさによるスキップを撤廃）
     // ④ Firestore を優先して UI & localStorage を更新
-    const eatOpts = sanitizeStringList(serverSettings.eatOptions);
+    const eatOpts = sanitizeEatDrinkOptions(serverSettings.eatOptions);
     setEatOptions(eatOpts);
     nsSetJSON('eatOptions', eatOpts);
 
-    const drinkOpts = sanitizeStringList(serverSettings.drinkOptions);
+    const drinkOpts = sanitizeEatDrinkOptions(serverSettings.drinkOptions);
     setDrinkOptions(drinkOpts);
     nsSetJSON('drinkOptions', drinkOpts);
 
@@ -1064,7 +1086,7 @@ const [pendingTables, setPendingTables] = useState<PendingTables>({});
 
     // ⑤ キャッシュ更新
     nsSetJSON('settings-cache', { cachedAt: Date.now(), data: cachePayload });
-  }, [serverSettings, settingsLoading, nsSetJSON, sanitizeCourses, sanitizeStringList, sanitizeTables, toPositionNames, sanitizeTasksByPosition]);
+  }, [serverSettings, settingsLoading, nsSetJSON, sanitizeCourses, sanitizeEatDrinkOptions, sanitizeTables, toPositionNames, sanitizeTasksByPosition]);
 
 // ── Areas: normalize + local table→areas map (derived from settingsDraft.areas) ──
 const usableAreas: AreaDef[] = useMemo<AreaDef[]>(() => {

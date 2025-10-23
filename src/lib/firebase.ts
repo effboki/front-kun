@@ -11,8 +11,14 @@ import type { StoreSettings } from '@/types/settings';
 
 // ── StoreSettings のデフォルト（Firestore / localStorage 双方で使い回す）──
 export const DEFAULT_STORE_SETTINGS: StoreSettings = {
-  eatOptions: ['⭐︎', '⭐︎⭐︎'],
-  drinkOptions: ['スタ', 'プレ'],
+  eatOptions: [
+    { label: '⭐︎' },
+    { label: '⭐︎⭐︎' },
+  ],
+  drinkOptions: [
+    { label: 'スタ' },
+    { label: 'プレ' },
+  ],
   courses: [],
   tables: [],
   positions: [],
@@ -136,28 +142,14 @@ export function saveReservations(arr: any[]): void {
 }
 
 /** 店舗設定（eatOptions / drinkOptions / courses / tables / positions / tasksByPosition）を取得 */
-export function getStoreSettings(): {
-  eatOptions: string[];
-  drinkOptions: string[];
-  courses: any[];
-  tables: any[];
-  positions: string[];
-  tasksByPosition: Record<string, Record<string, string[]>>;
-} {
+export function getStoreSettings(): StoreSettings {
   try {
     return JSON.parse(
       localStorage.getItem(STORE_KEY) ??
-        '{"eatOptions":["⭐︎","⭐︎⭐︎"],"drinkOptions":["スタ","プレ"],"courses":[],"tables":[],"positions":[],"tasksByPosition":{}}'
+        JSON.stringify(DEFAULT_STORE_SETTINGS)
     );
   } catch {
-    return {
-      eatOptions: ['⭐︎', '⭐︎⭐︎'],
-      drinkOptions: ['スタ', 'プレ'],
-      courses: [],
-      tables: [],
-      positions: [],
-      tasksByPosition: {},
-    };
+    return DEFAULT_STORE_SETTINGS;
   }
 }
 

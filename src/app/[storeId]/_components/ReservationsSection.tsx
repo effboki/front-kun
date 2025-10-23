@@ -1,8 +1,9 @@
 // src/app/[storeId]/_components/ReservationsSection.tsx
 import { memo, useEffect, useMemo, useRef, useState, useLayoutEffect, useCallback } from 'react';
-import type { FormEvent, Dispatch, SetStateAction } from 'react';
+import type { FormEvent, Dispatch, SetStateAction, CSSProperties } from 'react';
 import dynamic from 'next/dynamic';
 import type { CourseDef, ResOrder, Reservation, PendingTables } from '@/types';
+import type { EatDrinkOption } from '@/types/settings';
 import { parseTimeToMinutes } from '@/lib/time';
 import { useReservationMutations } from '@/hooks/useReservationMutations';
 import type { ImportedReservation } from '@/lib/clipboardImport';
@@ -406,8 +407,8 @@ type Props = {
   /** セレクトの選択肢 */
   timeOptions: string[];
   courses: CourseDef[];
-  eatOptions: string[];
-  drinkOptions: string[];
+  eatOptions: EatDrinkOption[];
+  drinkOptions: EatDrinkOption[];
 
   /** 追加入力用 state */
   newResTime: string;
@@ -518,14 +519,12 @@ const ReservationsSection = memo(function ReservationsSection({
   const [showImportModal, setShowImportModal] = useState(false);
   const { createReservation } = useReservationMutations(storeId, { dayStartMs });
   const defaultCourseStyle = useMemo(() => getCourseColorStyle(null), []);
-  const departedCourseStyle = useMemo<CourseColorStyle>(
-    () => ({
-      background: '#ffffff',
-      text: '#6b7280',
-      border: '#d1d5db',
-    }),
-    [],
-  );
+  const BASE_SELECT_BORDER = '#d1d5db';
+  const DEPARTED_SELECT_STYLE: CSSProperties = {
+    backgroundColor: '#ffffff',
+    color: '#9ca3af',
+    borderColor: BASE_SELECT_BORDER,
+  };
   const courseColorMap = useMemo(() => {
     const map = new Map<string, CourseColorStyle>();
     courses.forEach((course) => {
@@ -535,6 +534,24 @@ const ReservationsSection = memo(function ReservationsSection({
     map.set('未選択', defaultCourseStyle);
     return map;
   }, [courses, defaultCourseStyle]);
+  const eatOptionColorMap = useMemo(() => {
+    const map = new Map<string, CourseColorStyle>();
+    eatOptions.forEach((opt) => {
+      const colorKey = normalizeCourseColor(opt.color);
+      if (!colorKey) return;
+      map.set(opt.label, getCourseColorStyle(colorKey));
+    });
+    return map;
+  }, [eatOptions]);
+  const drinkOptionColorMap = useMemo(() => {
+    const map = new Map<string, CourseColorStyle>();
+    drinkOptions.forEach((opt) => {
+      const colorKey = normalizeCourseColor(opt.color);
+      if (!colorKey) return;
+      map.set(opt.label, getCourseColorStyle(colorKey));
+    });
+    return map;
+  }, [drinkOptions]);
   const newResTableTextClass = /\d{3}/.test(newResTable ?? '')
     ? 'text-[11px] sm:text-xs'
     : 'text-[13px] sm:text-sm';
@@ -1787,19 +1804,20 @@ const ReservationsSection = memo(function ReservationsSection({
                           if (next === selectValue) return;
                           updateReservationField(r.id, 'course', next);
                         };
-                        const courseStyle = isDeparted
-                          ? departedCourseStyle
-                          : courseColorMap.get(selectValue) ?? defaultCourseStyle;
+                        const courseStyle = courseColorMap.get(selectValue) ?? defaultCourseStyle;
+                        const selectStyle = isDeparted
+                          ? DEPARTED_SELECT_STYLE
+                          : {
+                              backgroundColor: courseStyle.background,
+                              color: courseStyle.text,
+                              borderColor: BASE_SELECT_BORDER,
+                            } as React.CSSProperties;
                         return (
                           <select
                             value={selectValue}
                             onChange={(e) => handleChange(e.target.value)}
                             className="border border-gray-300 px-1 py-0.5 rounded text-[13px] sm:text-sm transition-colors"
-                            style={{
-                              backgroundColor: courseStyle.background,
-                              color: courseStyle.text,
-                              borderColor: courseStyle.border,
-                            }}
+                            style={selectStyle}
                           >
                             <option value="未選択">未設定</option>
                             {courses.filter((c) => c.name !== '未選択').map((c) => (
@@ -1815,54 +1833,82 @@ const ReservationsSection = memo(function ReservationsSection({
                     {/* 食・飲 列 */}
                     {showEatCol && (
                       <td className="border px-1 py-0.5 text-center">
-                        <select
-                          value={eatCurrent}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setInlineEdits((prev) => ({ ...prev, [r.id]: { ...(prev[r.id] || {}), eat: v } }));
-                            updateReservationField(r.id, 'eat', v);
-                            updateReservationField(r.id, 'eatLabel', v as any);
-                            updateReservationField(r.id, 'foodAllYouCan', Boolean(v) as any);
-                          }}
-                          className="border px-1 py-0.5 w-14 text-xs rounded"
-                        >
-                          {/* 現在値が選択肢に無い場合でも表示できるよう補完 */}
-                          {!eatOptions.includes(eatCurrent) && eatCurrent && (
-                            <option value={eatCurrent}>{eatCurrent}</option>
-                          )}
-                          <option value=""></option>
-                          {eatOptions.map((opt) => (
-                            <option key={opt} value={opt}>
-                              {opt}
-                            </option>
-                          ))}
-                        </select>
+                        {(() => {
+                          const optionStyle = eatCurrent ? eatOptionColorMap.get(eatCurrent) : undefined;
+                          const style = isDeparted
+                            ? DEPARTED_SELECT_STYLE
+                            : optionStyle
+                              ? {
+                                  backgroundColor: optionStyle.background,
+                                  color: optionStyle.text,
+                                  borderColor: BASE_SELECT_BORDER,
+                                } as React.CSSProperties
+                              : { borderColor: BASE_SELECT_BORDER } as React.CSSProperties;
+                          return (
+                            <select
+                              value={eatCurrent}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setInlineEdits((prev) => ({ ...prev, [r.id]: { ...(prev[r.id] || {}), eat: v } }));
+                                updateReservationField(r.id, 'eat', v);
+                                updateReservationField(r.id, 'eatLabel', v as any);
+                                updateReservationField(r.id, 'foodAllYouCan', Boolean(v) as any);
+                              }}
+                              className="border px-1 py-0.5 w-14 text-xs rounded"
+                              style={style}
+                            >
+                              {!eatOptions.some((opt) => opt.label === eatCurrent) && eatCurrent && (
+                                <option value={eatCurrent}>{eatCurrent}</option>
+                              )}
+                              <option value=""></option>
+                              {eatOptions.map((opt) => (
+                                <option key={opt.label} value={opt.label}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          );
+                        })()}
                       </td>
                     )}
                     {showDrinkCol && (
                       <td className="border px-1 py-0.5 text-center">
-                        <select
-                          value={drinkCurrent}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setInlineEdits((prev) => ({ ...prev, [r.id]: { ...(prev[r.id] || {}), drink: v } }));
-                            updateReservationField(r.id, 'drink', v);
-                            updateReservationField(r.id, 'drinkLabel', v as any);
-                            updateReservationField(r.id, 'drinkAllYouCan', Boolean(v) as any);
-                          }}
-                          className="border px-1 py-0.5 w-14 text-xs rounded"
-                        >
-                          {/* 現在値が選択肢に無い場合でも表示できるよう補完 */}
-                          {!drinkOptions.includes(drinkCurrent) && drinkCurrent && (
-                            <option value={drinkCurrent}>{drinkCurrent}</option>
-                          )}
-                          <option value=""></option>
-                          {drinkOptions.map((opt) => (
-                            <option key={opt} value={opt}>
-                              {opt}
-                            </option>
-                          ))}
-                        </select>
+                        {(() => {
+                          const optionStyle = drinkCurrent ? drinkOptionColorMap.get(drinkCurrent) : undefined;
+                          const style = isDeparted
+                            ? DEPARTED_SELECT_STYLE
+                            : optionStyle
+                              ? {
+                                  backgroundColor: optionStyle.background,
+                                  color: optionStyle.text,
+                                  borderColor: BASE_SELECT_BORDER,
+                                } as React.CSSProperties
+                              : { borderColor: BASE_SELECT_BORDER } as React.CSSProperties;
+                          return (
+                            <select
+                              value={drinkCurrent}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setInlineEdits((prev) => ({ ...prev, [r.id]: { ...(prev[r.id] || {}), drink: v } }));
+                                updateReservationField(r.id, 'drink', v);
+                                updateReservationField(r.id, 'drinkLabel', v as any);
+                                updateReservationField(r.id, 'drinkAllYouCan', Boolean(v) as any);
+                              }}
+                              className="border px-1 py-0.5 w-14 text-xs rounded"
+                              style={style}
+                            >
+                              {!drinkOptions.some((opt) => opt.label === drinkCurrent) && drinkCurrent && (
+                                <option value={drinkCurrent}>{drinkCurrent}</option>
+                              )}
+                              <option value=""></option>
+                              {drinkOptions.map((opt) => (
+                                <option key={opt.label} value={opt.label}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          );
+                        })()}
                       </td>
                     )}
 
@@ -1923,7 +1969,7 @@ const ReservationsSection = memo(function ReservationsSection({
                         onClick={() => toggleArrivalChecked(r.id)}
                         className={`px-2 py-0.5 rounded text-[13px] sm:text-sm ${
                           isDeparted
-                            ? 'bg-gray-500 text-white'
+                            ? 'bg-white text-gray-500 border border-gray-300'
                             : isArrived
                             ? 'bg-green-500 text-white'
                             : 'bg-gray-200 text-black'
@@ -1939,7 +1985,7 @@ const ReservationsSection = memo(function ReservationsSection({
                         onClick={() => togglePaymentChecked(r.id)}
                         className={`px-2 py-0.5 rounded text-[13px] sm:text-sm ${
                           isDeparted
-                            ? 'bg-gray-500 text-white'
+                            ? 'bg-white text-gray-500 border border-gray-300'
                             : isPaymentChecked
                             ? 'bg-blue-500 text-white'
                             : 'bg-gray-200 text-black'
@@ -1954,7 +2000,7 @@ const ReservationsSection = memo(function ReservationsSection({
                       <button
                         onClick={() => toggleDepartureChecked(r.id)}
                         className={`px-2 py-0.5 rounded text-[13px] sm:text-sm ${
-                          isDeparted ? 'bg-gray-500 text-white' : 'bg-gray-200 text-black'
+                          isDeparted ? 'bg-white text-gray-500 border border-gray-300' : 'bg-gray-200 text-black'
                         }`}
                       >
                         退
@@ -1965,9 +2011,7 @@ const ReservationsSection = memo(function ReservationsSection({
                     <td className={`border px-1 ${padY}`}>
                       <button
                         onClick={() => deleteReservation(r.id)}
-                        className="w-7 h-7 inline-flex items-center justify-center rounded-md bg-red-500 text-white font-bold
-               shadow-sm ring-1 ring-red-300 hover:bg-red-600 active:bg-red-700
-               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+                        className="w-7 h-7 inline-flex items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 text-sm font-semibold shadow-sm hover:text-red-500 hover:border-red-400 hover:bg-white active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300"
                         aria-label="この行を削除"
                         title="この行を削除"
                       >
@@ -2057,38 +2101,64 @@ const ReservationsSection = memo(function ReservationsSection({
                 {/* 新規食べ放題セル */}
                 {showEatCol && (
                   <td className="border px-1 py-0.5">
-                    <select
-                      form="new-res-form"
-                      value={newResEat}
-                      onChange={(e) => setNewResEat(e.target.value)}
-                      className="border px-1 py-0.5 rounded w-full text-[13px] sm:text-sm"
-                    >
-                      <option value="">未選択</option>
-                      {eatOptions.map((o) => (
-                        <option key={o} value={o}>
-                          {o}
-                        </option>
-                      ))}
-                    </select>
+                    {(() => {
+                      const optionStyle = newResEat ? eatOptionColorMap.get(newResEat) : undefined;
+                      const style = optionStyle
+                        ? {
+                            backgroundColor: optionStyle.background,
+                            color: optionStyle.text,
+                            borderColor: BASE_SELECT_BORDER,
+                          } as React.CSSProperties
+                        : { borderColor: BASE_SELECT_BORDER } as React.CSSProperties;
+                      return (
+                        <select
+                          form="new-res-form"
+                          value={newResEat}
+                          onChange={(e) => setNewResEat(e.target.value)}
+                          className="border px-1 py-0.5 rounded w-full text-[13px] sm:text-sm"
+                          style={style}
+                        >
+                          <option value="">未選択</option>
+                          {eatOptions.map((opt) => (
+                            <option key={opt.label} value={opt.label}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      );
+                    })()}
                   </td>
                 )}
 
                 {/* 新規飲み放題セル */}
                 {showDrinkCol && (
                   <td className="border px-1 py-0.5">
-                    <select
-                      form="new-res-form"
-                      value={newResDrink}
-                      onChange={(e) => setNewResDrink(e.target.value)}
-                      className="border px-1 py-0.5 rounded w-full text-[13px] sm:text-sm"
-                    >
-                      <option value="">未選択</option>
-                      {drinkOptions.map((o) => (
-                        <option key={o} value={o}>
-                          {o}
-                        </option>
-                      ))}
-                    </select>
+                    {(() => {
+                      const optionStyle = newResDrink ? drinkOptionColorMap.get(newResDrink) : undefined;
+                      const style = optionStyle
+                        ? {
+                            backgroundColor: optionStyle.background,
+                            color: optionStyle.text,
+                            borderColor: BASE_SELECT_BORDER,
+                          } as React.CSSProperties
+                        : { borderColor: BASE_SELECT_BORDER } as React.CSSProperties;
+                      return (
+                        <select
+                          form="new-res-form"
+                          value={newResDrink}
+                          onChange={(e) => setNewResDrink(e.target.value)}
+                          className="border px-1 py-0.5 rounded w-full text-[13px] sm:text-sm"
+                          style={style}
+                        >
+                          <option value="">未選択</option>
+                          {drinkOptions.map((opt) => (
+                            <option key={opt.label} value={opt.label}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      );
+                    })()}
                   </td>
                 )}
 
