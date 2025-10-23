@@ -498,6 +498,7 @@ export default function ReservationEditorDrawer(props: Props) {
     return map;
   }, [availableEatOptions]);
   const SELECT_BORDER_COLOR = '#d1d5db';
+  const SELECT_TEXT_COLOR = '#111827';
   const normalizedTimeOptions = React.useMemo(() => {
     if (!time) return timeOptions;
     if (timeOptions.includes(time)) return timeOptions;
@@ -885,10 +886,10 @@ export default function ReservationEditorDrawer(props: Props) {
                   style={selectedCourseColorKey
                     ? {
                         backgroundColor: selectedCourseColorStyle.background,
-                        color: selectedCourseColorStyle.text,
+                        color: SELECT_TEXT_COLOR,
                         borderColor: SELECT_BORDER_COLOR,
                       }
-                    : { borderColor: SELECT_BORDER_COLOR }}
+                    : { borderColor: SELECT_BORDER_COLOR, color: SELECT_TEXT_COLOR }}
                   value={courseName}
                   onChange={(e) => setCourseName(e.currentTarget.value)}
                 >
@@ -922,10 +923,10 @@ export default function ReservationEditorDrawer(props: Props) {
                   const selectStyle = style
                     ? {
                         backgroundColor: style.background,
-                        color: style.text,
+                        color: SELECT_TEXT_COLOR,
                         borderColor: SELECT_BORDER_COLOR,
                       }
-                    : { borderColor: SELECT_BORDER_COLOR };
+                    : { borderColor: SELECT_BORDER_COLOR, color: SELECT_TEXT_COLOR };
                   return (
                     <select
                       className="min-w-0 w-full rounded border px-2 py-1.5 text-[14px]"
@@ -956,10 +957,10 @@ export default function ReservationEditorDrawer(props: Props) {
                   const selectStyle = style
                     ? {
                         backgroundColor: style.background,
-                        color: style.text,
+                        color: SELECT_TEXT_COLOR,
                         borderColor: SELECT_BORDER_COLOR,
                       }
-                    : { borderColor: SELECT_BORDER_COLOR };
+                    : { borderColor: SELECT_BORDER_COLOR, color: SELECT_TEXT_COLOR };
                   return (
                     <select
                       className="min-w-0 w-full rounded border px-2 py-1.5 text-[14px]"

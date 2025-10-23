@@ -520,6 +520,8 @@ const ReservationsSection = memo(function ReservationsSection({
   const { createReservation } = useReservationMutations(storeId, { dayStartMs });
   const defaultCourseStyle = useMemo(() => getCourseColorStyle(null), []);
   const BASE_SELECT_BORDER = '#d1d5db';
+  const SELECT_TEXT_COLOR = '#111827';
+  const FIRST_ROTATION_TEXT_COLOR = '#ef4444';
   const DEPARTED_SELECT_STYLE: CSSProperties = {
     backgroundColor: '#ffffff',
     color: '#9ca3af',
@@ -1703,6 +1705,10 @@ const ReservationsSection = memo(function ReservationsSection({
                 const isArrived = checkedArrivals.includes(r.id);
                 const isDeparted = checkedDepartures.includes(r.id);
                 const isPaymentChecked = checkedPayments.includes(r.id);
+                const isFirstRotation = firstRotatingId[displayTableStr] === r.id;
+                const rowSelectTextColor = isDeparted
+                  ? DEPARTED_SELECT_STYLE.color || SELECT_TEXT_COLOR
+                  : (isFirstRotation ? FIRST_ROTATION_TEXT_COLOR : SELECT_TEXT_COLOR);
 
                 return (
                   <tr
@@ -1712,7 +1718,7 @@ const ReservationsSection = memo(function ReservationsSection({
                     }${
                       isDeparted ? 'bg-gray-300 text-gray-400 ' : ''
                     }${borderClass} text-center ${
-                      firstRotatingId[displayTableStr] === r.id ? 'text-red-500' : ''
+                      !isDeparted && isFirstRotation ? 'text-red-500' : ''
                     }${editTableMode && tablesForMove.includes(r.id) ? 'bg-amber-50 ' : ''}`}
                   >
                     {/* 来店時刻セル */}
@@ -1809,7 +1815,7 @@ const ReservationsSection = memo(function ReservationsSection({
                           ? DEPARTED_SELECT_STYLE
                           : {
                               backgroundColor: courseStyle.background,
-                              color: courseStyle.text,
+                              color: rowSelectTextColor,
                               borderColor: BASE_SELECT_BORDER,
                             } as React.CSSProperties;
                         return (
@@ -1840,7 +1846,7 @@ const ReservationsSection = memo(function ReservationsSection({
                             : optionStyle
                               ? {
                                   backgroundColor: optionStyle.background,
-                                  color: optionStyle.text,
+                                  color: rowSelectTextColor,
                                   borderColor: BASE_SELECT_BORDER,
                                 } as React.CSSProperties
                               : { borderColor: BASE_SELECT_BORDER } as React.CSSProperties;
@@ -1880,7 +1886,7 @@ const ReservationsSection = memo(function ReservationsSection({
                             : optionStyle
                               ? {
                                   backgroundColor: optionStyle.background,
-                                  color: optionStyle.text,
+                                  color: rowSelectTextColor,
                                   borderColor: BASE_SELECT_BORDER,
                                 } as React.CSSProperties
                               : { borderColor: BASE_SELECT_BORDER } as React.CSSProperties;
@@ -2106,7 +2112,7 @@ const ReservationsSection = memo(function ReservationsSection({
                       const style = optionStyle
                         ? {
                             backgroundColor: optionStyle.background,
-                            color: optionStyle.text,
+                            color: SELECT_TEXT_COLOR,
                             borderColor: BASE_SELECT_BORDER,
                           } as React.CSSProperties
                         : { borderColor: BASE_SELECT_BORDER } as React.CSSProperties;
@@ -2138,7 +2144,7 @@ const ReservationsSection = memo(function ReservationsSection({
                       const style = optionStyle
                         ? {
                             backgroundColor: optionStyle.background,
-                            color: optionStyle.text,
+                            color: SELECT_TEXT_COLOR,
                             borderColor: BASE_SELECT_BORDER,
                           } as React.CSSProperties
                         : { borderColor: BASE_SELECT_BORDER } as React.CSSProperties;
