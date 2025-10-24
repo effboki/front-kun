@@ -457,30 +457,26 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
   }, [drinkOptions, setDrinkOptions]);
 
   const updateEatOptionColor = useCallback((label: string, colorKey: CourseColorKey | null) => {
-    setEatOptions((prev) => {
-      const idx = prev.findIndex((opt) => normEq(opt.label, label));
-      if (idx < 0) return prev;
-      const normalized = colorKey ? normalizeCourseColor(colorKey) : undefined;
-      const current = prev[idx];
-      if ((current.color ?? undefined) === (normalized ?? undefined)) return prev;
-      const next = [...prev];
-      next[idx] = normalized ? { label: current.label, color: normalized } : { label: current.label };
-      return next;
-    });
-  }, [setEatOptions]);
+    const idx = eatOptions.findIndex((opt) => normEq(opt.label, label));
+    if (idx < 0) return;
+    const normalized = colorKey ? normalizeCourseColor(colorKey) : undefined;
+    const current = eatOptions[idx];
+    if ((current.color ?? undefined) === (normalized ?? undefined)) return;
+    const next = [...eatOptions];
+    next[idx] = normalized ? { label: current.label, color: normalized } : { label: current.label };
+    setEatOptions(next);
+  }, [eatOptions, setEatOptions]);
 
   const updateDrinkOptionColor = useCallback((label: string, colorKey: CourseColorKey | null) => {
-    setDrinkOptions((prev) => {
-      const idx = prev.findIndex((opt) => normEq(opt.label, label));
-      if (idx < 0) return prev;
-      const normalized = colorKey ? normalizeCourseColor(colorKey) : undefined;
-      const current = prev[idx];
-      if ((current.color ?? undefined) === (normalized ?? undefined)) return prev;
-      const next = [...prev];
-      next[idx] = normalized ? { label: current.label, color: normalized } : { label: current.label };
-      return next;
-    });
-  }, [setDrinkOptions]);
+    const idx = drinkOptions.findIndex((opt) => normEq(opt.label, label));
+    if (idx < 0) return;
+    const normalized = colorKey ? normalizeCourseColor(colorKey) : undefined;
+    const current = drinkOptions[idx];
+    if ((current.color ?? undefined) === (normalized ?? undefined)) return;
+    const next = [...drinkOptions];
+    next[idx] = normalized ? { label: current.label, color: normalized } : { label: current.label };
+    setDrinkOptions(next);
+  }, [drinkOptions, setDrinkOptions]);
 
   // ===== courses & tasks =====
 
