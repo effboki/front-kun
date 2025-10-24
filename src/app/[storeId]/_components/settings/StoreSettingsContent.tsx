@@ -4,7 +4,7 @@ import { useMemo, useState, useCallback, useRef, useEffect, memo } from 'react';
 import type { ReactNode, FC, MutableRefObject } from 'react';
 import type { CourseDef, TaskDef } from '@/types';
 import type { AreaDef } from '@/types';
-import { sanitizeTableCapacities } from '@/types/settings';
+import { sanitizeTableCapacities, sanitizeEatDrinkOptions } from '@/types/settings';
 import type { EatDrinkOption, StoreSettingsValue } from '@/types/settings';
 import {
   COURSE_COLOR_NONE_OPTION,
@@ -190,49 +190,9 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     () => sanitizeTableCapacities(value.tableCapacities, presetTables),
     [value.tableCapacities, presetTables]
   );
-  const eatOptions = useMemo<EatDrinkOption[]>(() => {
-    if (!Array.isArray(value.eatOptions)) return [];
-    return value.eatOptions
-      .map((opt) => {
-        if (!opt) return null;
-        if (typeof opt === 'string') {
-          const label = opt.trim();
-          return label ? { label } : null;
-        }
-        const record = opt as Partial<EatDrinkOption> & Record<string, unknown>;
-        const label = typeof record.label === 'string' && record.label.trim()
-          ? record.label.trim()
-          : typeof record.name === 'string'
-            ? record.name.trim()
-            : '';
-        if (!label) return null;
-        const color = normalizeCourseColor(record.color);
-        return color ? { label, color } : { label };
-      })
-      .filter((opt): opt is EatDrinkOption => opt !== null);
-  }, [value.eatOptions]);
+  const eatOptions = useMemo<EatDrinkOption[]>(() => sanitizeEatDrinkOptions(value.eatOptions), [value.eatOptions]);
 
-  const drinkOptions = useMemo<EatDrinkOption[]>(() => {
-    if (!Array.isArray(value.drinkOptions)) return [];
-    return value.drinkOptions
-      .map((opt) => {
-        if (!opt) return null;
-        if (typeof opt === 'string') {
-          const label = opt.trim();
-          return label ? { label } : null;
-        }
-        const record = opt as Partial<EatDrinkOption> & Record<string, unknown>;
-        const label = typeof record.label === 'string' && record.label.trim()
-          ? record.label.trim()
-          : typeof record.name === 'string'
-            ? record.name.trim()
-            : '';
-        if (!label) return null;
-        const color = normalizeCourseColor(record.color);
-        return color ? { label, color } : { label };
-      })
-      .filter((opt): opt is EatDrinkOption => opt !== null);
-  }, [value.drinkOptions]);
+  const drinkOptions = useMemo<EatDrinkOption[]>(() => sanitizeEatDrinkOptions(value.drinkOptions), [value.drinkOptions]);
   const tasksByPosition = useMemo(
     () =>
       value.tasksByPosition && typeof value.tasksByPosition === 'object'
