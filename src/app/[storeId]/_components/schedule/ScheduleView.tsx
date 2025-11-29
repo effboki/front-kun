@@ -2271,7 +2271,7 @@ export default function ScheduleView({
                     const previewKey = previewForRow ? String((previewForRow.item as any)?._key ?? '') : '';
                     const layerIdx = previewKey ? (overlayStackInfo.idxByKey[previewKey] ?? 0) : 0;
                     const translateY = layerIdx * laneHeight;
-                    const guideFill = selected ? 'rgba(110,231,183,0.16)' : 'rgba(110,231,183,0.08)'; // 枠ではなく塗りで示す
+                    const guideFill = selected ? 'rgba(16,185,129,0.25)' : 'rgba(16,185,129,0.14)'; // 少し濃くした緑の塗り
                     const bg = guideFill;
                     return (
                       <div
@@ -2314,7 +2314,7 @@ export default function ScheduleView({
                     return (
                       <div
                         key={`ghost_${key}_${ghostIdx}`}
-                        className="z-[88]"
+                        className="z-[130]"
                         style={{
                           gridColumn: `${ghost.startCol} / span ${ghost.spanCols}`,
                           gridRow: `${ghost.row} / span 1`,
@@ -2339,7 +2339,7 @@ export default function ScheduleView({
                           courseColorMap={courseColorMap}
                           drinkOptionColorMap={drinkOptionColorMap}
                           eatOptionColorMap={eatOptionColorMap}
-                          onClick={isActiveSession ? () => toggleTableSelection(tableKey) : undefined}
+                          onClick={activeReassignId ? () => toggleTableSelection(tableKey) : undefined}
                           stopPropagation={false}
                           ghostTintColor={color.fill}
                           ghostBorderColor={color.outline}
@@ -2367,7 +2367,7 @@ export default function ScheduleView({
                     return (
                       <div
                         key={`${key}_${previewIdx}`}
-                        className="z-[90]"
+                        className="z-[132]"
                         style={{
                           gridColumn: `${preview.startCol} / span ${preview.spanCols}`,
                           gridRow: `${preview.row} / span 1`,
@@ -2392,7 +2392,7 @@ export default function ScheduleView({
                           courseColorMap={courseColorMap}
                           drinkOptionColorMap={drinkOptionColorMap}
                           eatOptionColorMap={eatOptionColorMap}
-                          onClick={isActiveSession ? () => toggleTableSelection(tableKey) : undefined}
+                          onClick={activeReassignId ? () => toggleTableSelection(tableKey) : undefined}
                           stopPropagation={false}
                           ghostTintColor={color.fill}
                           ghostBorderColor={color.outline}
