@@ -2499,25 +2499,33 @@ export default function ScheduleView({
                   <div className="mx-auto max-w-screen-sm flex flex-col gap-2 p-2 rounded-lg bg-white border shadow-lg pointer-events-auto">
                     <div className="hidden sm:flex flex-wrap gap-2 items-center">
                       {Object.entries(reassignSessions).map(([id, session]) => {
-                        const labelTime = fmtTime(session.base.startMs ?? 0);
-                        const baseTable = String(
-                          session.selected[0] ??
-                          (session.base as any)?._table ??
-                          (session.base as any)?.table ??
-                          '未指定'
-                        );
-                        const label = `${baseTable} / ${labelTime}`;
-                        const isActive = id === activeReassignId;
-                        return (
-                          <button
-                            key={id}
-                            type="button"
-                            onClick={() => setActiveReassignId(id)}
-                            className={`px-3 py-1 rounded-full border text-sm ${isActive ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-gray-50 border-gray-300 text-gray-700'}`}
-                            title="対象の予約を切り替え"
-                          >
-                            {label}
-                          </button>
+                    const labelTime = fmtTime(session.base.startMs ?? 0);
+                    const guestsRaw = (session.base as any)?.people ?? (session.base as any)?.guests;
+                    const guests = Number.isFinite(Number(guestsRaw)) ? Number(guestsRaw) : null;
+                    const guestsLabel = guests != null ? `${guests}名` : '';
+                    const label = `${labelTime}${guestsLabel ? ` / ${guestsLabel}` : ''}`;
+                    const isActive = id === activeReassignId;
+                    const palette = pickSessionColor(id);
+                    const baseBg = palette.fill || 'rgba(59,130,246,0.12)';
+                    const border = palette.outline || '#3b82f6';
+                    const text = palette.outline || '#1d4ed8';
+                    const activeBg = palette.fill ? palette.fill.replace(/0\.0*\d+/, '0.35') : 'rgba(59,130,246,0.22)';
+                    const activeText = '#111827';
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setActiveReassignId(id)}
+                        className={`px-3 py-1 rounded-full border text-sm transition-colors ${isActive ? 'shadow-sm' : ''}`}
+                        style={{
+                          backgroundColor: isActive ? activeBg : '#f8fafc',
+                          borderColor: border,
+                          color: isActive ? activeText : '#475569',
+                        }}
+                        title="対象の予約を切り替え"
+                      >
+                        {label}
+                      </button>
                         );
                       })}
                     </div>
