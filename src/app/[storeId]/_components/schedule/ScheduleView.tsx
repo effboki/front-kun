@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState, useCallback, useEffect, useRef, useLayoutEffect } from 'react';
-import type { UIEvent, MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, CSSProperties } from 'react';
+import type { UIEvent, MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, TouchEvent, CSSProperties } from 'react';
 import type { ScheduleItem } from '@/types/schedule';
 import type { EatDrinkOption, StoreSettingsValue } from '@/types/settings';
 import { sanitizeEatDrinkOptions } from '@/types/settings';
@@ -76,6 +76,14 @@ const DEFAULT_TOP_BAR_PX = 48;
 const DEFAULT_BOTTOM_BAR_PX = 70;
 // 新規予約作成時のスナップ間隔（分）
 const NEW_RESERVATION_STEP_MIN = 15;
+
+// 長押しコピーなどを防ぐため、スケジュールキャンバスのインタラクションを抑制
+const ROOT_TOUCHLESS_STYLE: CSSProperties = {
+  WebkitUserSelect: 'none',
+  userSelect: 'none',
+  WebkitTouchCallout: 'none',
+  WebkitTapHighlightColor: 'transparent',
+};
 
 type Props = {
   /** 表示開始/終了の“時”（0-24想定）。親から渡される（この子では既定値を持たない） */
@@ -1897,9 +1905,10 @@ export default function ScheduleView({
     };
   }, []);
 
-  const rootStyle = useMemo<CSSProperties | undefined>(() => {
+  const rootStyle = useMemo<CSSProperties>(() => {
     if (isTablet) {
-      return headerOffsetPx ? { marginTop: headerOffsetPx } : undefined;
+      const base: CSSProperties = headerOffsetPx > 0 ? { marginTop: headerOffsetPx } : {};
+      return { ...base, ...ROOT_TOUCHLESS_STYLE };
     }
     return {
       position: 'fixed',
@@ -1913,7 +1922,8 @@ export default function ScheduleView({
       display: 'flex',
       flexDirection: 'column',
       width: '100%',
-    } satisfies CSSProperties;
+      ...ROOT_TOUCHLESS_STYLE,
+    };
   }, [isTablet, headerOffsetPx, topInsetPx, bottomOffsetPx]);
 
   const scrollParentStyle = useMemo<CSSProperties>(() => {
@@ -1944,6 +1954,9 @@ export default function ScheduleView({
     <div
       className="relative w-full bg-transparent"
       style={rootStyle}
+      onContextMenu={(event: MouseEvent<HTMLDivElement>) => event.preventDefault()}
+      onMouseDown={(event: MouseEvent<HTMLDivElement>) => event.preventDefault()}
+      onTouchStart={(event: TouchEvent<HTMLDivElement>) => event.preventDefault()}
     >
       {/* Floating time header (smartphone only): fixed, above everything, tracks horizontal scroll */}
       {!isTablet && (
