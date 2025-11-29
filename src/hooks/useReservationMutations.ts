@@ -232,7 +232,7 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
   }
 
   // ---- set (upsert) ----
-  async function setReservation(id: string, input: ReservationCreateInput): Promise<void> {
+  async function setReservation(id: string, input: ReservationCreateInput): Promise<string> {
     let startMs: number | undefined;
     const startMsCandidate = toNum(input.startMs);
     if (Number.isFinite(startMsCandidate)) {
