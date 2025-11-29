@@ -2261,27 +2261,18 @@ export default function ScheduleView({
                       const row = idx + 1;
                       const selected = activeReassign.selected.includes(String(t));
                       const rowKey = String(t);
-                      const combinedStack = Math.max(
-                        rowStackCountVisible[rowKey] ?? 1,
-                        overlayStackInfo.maxByRow[rowKey] ?? 1
-                      );
-                      const baseRowH = rowHeightsPx[row - 1] ?? effectiveRowH;
-                      const perLayerH = Math.max(12, Math.floor(baseRowH / combinedStack));
-                      const previewForRow = reassignPreviewBlocks.find((p) => String(tables[p.row - 1] ?? p.row) === rowKey);
+                    const combinedStack = Math.max(
+                      rowStackCountVisible[rowKey] ?? 1,
+                      overlayStackInfo.maxByRow[rowKey] ?? 1
+                    );
+                    const baseRowH = rowHeightsPx[row - 1] ?? effectiveRowH;
+                    const laneHeight = Math.max(12, Math.floor(baseRowH / combinedStack));
+                    const previewForRow = reassignPreviewBlocks.find((p) => String(tables[p.row - 1] ?? p.row) === rowKey);
                     const previewKey = previewForRow ? String((previewForRow.item as any)?._key ?? '') : '';
                     const layerIdx = previewKey ? (overlayStackInfo.idxByKey[previewKey] ?? 0) : 0;
-                    const translateY = layerIdx * perLayerH;
-                    const color = pickSessionColor(
-                      previewForRow?.sessionId ??
-                      (previewForRow?.item as any)?.id ??
-                      (previewForRow?.item as any)?._key
-                    );
-                    const guideFill = 'rgba(110,231,183,0.1)'; // 全セッション共通の緑ガイド
-                    const guideOutline = 'rgba(5,150,105,0.6)';
+                    const translateY = layerIdx * laneHeight;
+                    const guideFill = selected ? 'rgba(110,231,183,0.16)' : 'rgba(110,231,183,0.08)'; // 枠ではなく塗りで示す
                     const bg = guideFill;
-                    const outline = selected
-                      ? `2px dashed ${guideOutline}`
-                      : `1px solid ${guideOutline}`;
                     return (
                       <div
                         key={t}
@@ -2290,20 +2281,15 @@ export default function ScheduleView({
                         style={{
                       gridColumn: `${activeReassign.base._startCol} / span ${activeReassign.base._spanCols}`,
                       gridRow: `${row} / span 1`,
-                      height: baseRowH,
+                      height: laneHeight,
                         transform: translateY ? `translateY(${translateY}px)` : undefined,
                             backgroundColor: bg,
-                            outline,
-                            outlineOffset: '-1px',
                             position: 'relative',
                           }}
                           aria-label={`row-${t}`}
                         >
-                          <div className="absolute inset-0 flex items-start justify-between px-2 py-1 text-[11px] leading-tight text-slate-700 pointer-events-none">
+                          <div className="absolute inset-0 flex items-start justify-start px-2 py-1 text-[11px] leading-tight text-slate-700 pointer-events-none gap-2">
                             <span className="font-semibold">卓 {t}</span>
-                            {selected && (
-                              <span className="text-blue-700 font-semibold">選択中</span>
-                            )}
                           </div>
                         </div>
                       );
@@ -2333,7 +2319,7 @@ export default function ScheduleView({
                           gridColumn: `${ghost.startCol} / span ${ghost.spanCols}`,
                           gridRow: `${ghost.row} / span 1`,
                           transform: translateY ? `translateY(${translateY}px)` : undefined,
-                          height: baseRowH,
+                          height: laneHeight,
                           pointerEvents: 'auto',
                           backgroundColor: color.fill,
                           outline: `2px dashed ${color.outline}`,
@@ -2347,7 +2333,9 @@ export default function ScheduleView({
                           startCol={ghost.startCol}
                           spanCols={ghost.spanCols}
                           stackCount={1}
-                          rowHeightPx={effectiveRowH}
+                          rowHeightPx={laneHeight}
+                          stackIndexOverride={0}
+                          hideWarningBadge
                           courseColorMap={courseColorMap}
                           drinkOptionColorMap={drinkOptionColorMap}
                           eatOptionColorMap={eatOptionColorMap}
@@ -2384,7 +2372,7 @@ export default function ScheduleView({
                           gridColumn: `${preview.startCol} / span ${preview.spanCols}`,
                           gridRow: `${preview.row} / span 1`,
                           transform: translateY ? `translateY(${translateY}px)` : undefined,
-                          height: baseRowH,
+                          height: laneHeight,
                           pointerEvents: 'auto',
                           backgroundColor: color.fill,
                           outline: `2px dashed ${color.outline}`,
@@ -2398,7 +2386,9 @@ export default function ScheduleView({
                           startCol={preview.startCol}
                           spanCols={preview.spanCols}
                           stackCount={1}
-                          rowHeightPx={effectiveRowH}
+                          rowHeightPx={laneHeight}
+                          stackIndexOverride={0}
+                          hideWarningBadge
                           courseColorMap={courseColorMap}
                           drinkOptionColorMap={drinkOptionColorMap}
                           eatOptionColorMap={eatOptionColorMap}
@@ -2870,6 +2860,7 @@ function ReservationBlock({
   ghostTintColor,
   ghostBorderColor,
   stackIndexOverride,
+  hideWarningBadge = false,
 }: {
   item: ScheduleItem & { status?: 'normal' | 'warn'; _table?: string; _key?: string; _editedAllowed?: boolean };
   row: number;
@@ -2888,6 +2879,7 @@ function ReservationBlock({
   ghostTintColor?: string;
   ghostBorderColor?: string;
   stackIndexOverride?: number;
+  hideWarningBadge?: boolean;
 }) {
   const warn = item.status === 'warn';
   const raw = item as any;
@@ -2936,6 +2928,7 @@ function ReservationBlock({
   const textAccent = warn ? '#7b3416' : colors.accent;
   const bodyTextClass = state === 'departed' ? 'text-slate-600' : 'text-slate-700';
   const secondaryTextClass = state === 'departed' ? 'text-slate-500' : 'text-slate-600';
+  const showWarn = warn && !hideWarningBadge;
 
   // 長押し判定
   const LONG_PRESS_MS = 600;
@@ -3167,7 +3160,7 @@ function ReservationBlock({
           </div>
         )}
 
-        {warn && (
+        {showWarn && (
           <div className="absolute right-2 top-2 inline-flex items-center rounded-full bg-amber-400 px-2 py-px text-[10px] font-semibold text-white">
             注意
           </div>
