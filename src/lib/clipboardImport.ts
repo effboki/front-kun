@@ -14,12 +14,12 @@ export type ColumnMapping = {
   startAt?: number;
   name?: number;
   people?: number;
-  table?: number;
+  table?: number | number[];
   course?: number;
   notes?: number[];
 };
 
-function normalizeNotesValue(value: any): number[] | undefined {
+function normalizeIndexArray(value: any): number[] | undefined {
   if (value == null) return undefined;
   const list = (Array.isArray(value) ? value : [value])
     .map((v) => Number(v))
@@ -37,15 +37,34 @@ function normalizeNotesValue(value: any): number[] | undefined {
   return unique;
 }
 
+function normalizeIndex(value: any): number | undefined {
+  if (value == null) return undefined;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return undefined;
+  return Math.trunc(num);
+}
+
 function normalizeMappingShape(mapping: any): ColumnMapping | null {
   if (!mapping) return null;
   const next: ColumnMapping = { ...mapping };
-  const notes = normalizeNotesValue((mapping as any).notes);
+  const notes = normalizeIndexArray((mapping as any).notes);
   if (notes && notes.length > 0) {
     next.notes = notes;
   } else {
     delete (next as any).notes;
   }
+
+  const table = Array.isArray((mapping as any).table)
+    ? normalizeIndexArray((mapping as any).table)
+    : normalizeIndex((mapping as any).table);
+  if (Array.isArray(table)) {
+    next.table = table;
+  } else if (typeof table === 'number') {
+    next.table = table;
+  } else {
+    delete (next as any).table;
+  }
+
   return next;
 }
 
@@ -163,6 +182,15 @@ export function saveMapping(storeId: string, mapping: ColumnMapping): void {
   }
 }
 
+export function clearMapping(storeId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(mappingKey(storeId));
+  } catch (error) {
+    console.warn('[clipboardImport] failed to clear mapping', error);
+  }
+}
+
 export function loadMapping(storeId: string): ColumnMapping | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -178,6 +206,18 @@ export function loadMapping(storeId: string): ColumnMapping | null {
 
 function mappingKey(storeId: string): string {
   return `frontkun-import-mapping:${storeId}`;
+}
+
+function normalizeNumericText(value: string): string {
+  const fullwidthToHalf = (s: string) =>
+    s.replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+  const normalized = fullwidthToHalf(value ?? '')
+    .replace(/[：﹕]/g, ':')
+    .replace(/[－—―ー〜～]/g, '-')
+    .replace(/[／]/g, '/')
+    .replace(/[，、]/g, ',')
+    .replace(/\s+/g, (m) => (m.includes('\u3000') ? ' ' : m)); // collapse mixed spaces
+  return normalized;
 }
 
 function splitLine(line: string, mode: 'tsv' | 'csv' | 'space'): string[] {
@@ -308,14 +348,93 @@ function toImportedReservation(
 }
 
 export function parseTimeFlexible(input: string, dayStartMs: number): number | null {
-  const value = (input ?? '').trim();
+  const value = normalizeNumericText((input ?? '').trim());
   if (!value) return null;
 
-  const isoMatch = value.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})\s+(\d{1,2}):(\d{2})$/);
-  if (isoMatch) {
-    const [, y, m, d, hh, mm] = isoMatch;
-    const dt = new Date(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), 0, 0);
+  const baseDate = new Date(dayStartMs);
+  const baseYear = baseDate.getFullYear();
+
+  const fullDateMatch = value.match(
+    /^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:[T\s]+|[^\d]+)(\d{1,2}):(\d{2})(?::(\d{2}))?$/
+  );
+  if (fullDateMatch) {
+    const [, y, m, d, hh, mm, ss] = fullDateMatch;
+    const dt = new Date(
+      Number(y),
+      Number(m) - 1,
+      Number(d),
+      Number(hh),
+      Number(mm),
+      Number(ss ?? 0),
+      0
+    );
     return dt.getTime();
+  }
+
+  const monthDayMatch = value.match(
+    /^(\d{1,2})[\/-](\d{1,2})(?:[^\d]+)?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/
+  );
+  if (monthDayMatch) {
+    const [, m, d, hh, mm, ss] = monthDayMatch;
+    const dt = new Date(
+      baseYear,
+      Number(m) - 1,
+      Number(d),
+      Number(hh),
+      Number(mm),
+      Number(ss ?? 0),
+      0
+    );
+    return dt.getTime();
+  }
+
+  const jpMonthDayMatch = value.match(
+    /^(\d{1,2})\s*月\s*(\d{1,2})\s*日?\s*(\d{1,2}):(\d{2})$/
+  );
+  if (jpMonthDayMatch) {
+    const [, m, d, hh, mm] = jpMonthDayMatch;
+    const dt = new Date(baseYear, Number(m) - 1, Number(d), Number(hh), Number(mm), 0, 0);
+    return dt.getTime();
+  }
+
+  const monthDayJpMatch = value.match(
+    /^(\d{1,2})\s*月\s*(\d{1,2})\s*日?\s*(\d{1,2})\s*時(?:\s*(\d{1,2})\s*分)?$/
+  );
+  if (monthDayJpMatch) {
+    const [, m, d, hh, mm] = monthDayJpMatch;
+    const dt = new Date(
+      baseYear,
+      Number(m) - 1,
+      Number(d),
+      Number(hh),
+      Number(mm ?? 0),
+      0,
+      0
+    );
+    return dt.getTime();
+  }
+
+  const monthDayJpSepMatch = value.match(
+    /^(\d{1,2})[\/-](\d{1,2})\s*(\d{1,2})\s*時(?:\s*(\d{1,2})\s*分)?$/
+  );
+  if (monthDayJpSepMatch) {
+    const [, m, d, hh, mm] = monthDayJpSepMatch;
+    const dt = new Date(
+      baseYear,
+      Number(m) - 1,
+      Number(d),
+      Number(hh),
+      Number(mm ?? 0),
+      0,
+      0
+    );
+    return dt.getTime();
+  }
+
+  const hmWithSeconds = value.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+  if (hmWithSeconds) {
+    const [, hh, mm] = hmWithSeconds;
+    return dayStartMs + (Number(hh) * 60 + Number(mm)) * 60_000;
   }
 
   const hmMatch = value.match(/^(\d{1,2}):(\d{2})$/);
@@ -351,7 +470,8 @@ export function parseTimeFlexible(input: string, dayStartMs: number): number | n
 }
 
 export function parsePeople(input: string): number | null {
-  const match = String(input ?? '').match(/(\d{1,3})/);
+  const normalized = normalizeNumericText(String(input ?? ''));
+  const match = normalized.match(/(\d{1,3})/);
   if (!match) return null;
   const value = Number(match[1]);
   if (!Number.isFinite(value)) return null;
@@ -359,11 +479,16 @@ export function parsePeople(input: string): number | null {
 }
 
 function parseTables(input: string): string[] {
-  const matches = String(input ?? '').match(/\d{1,3}/g);
-  if (!matches) return [];
+  const normalized = normalizeNumericText(String(input ?? ''));
+  // Split on non-digit to correctly handle「1-2」「1,2」「1 2」「1・2」
+  const tokens = normalized
+    .split(/[^0-9]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) return [];
   const seen = new Set<string>();
   const list: string[] = [];
-  for (const raw of matches) {
+  for (const raw of tokens) {
     const num = String(Number(raw));
     if (!num) continue;
     if (seen.has(num)) continue;

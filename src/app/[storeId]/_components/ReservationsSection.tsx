@@ -1314,23 +1314,22 @@ const ReservationsSection = memo(function ReservationsSection({
         <div className="sm:p-4 p-2 border-b border-gray-200 bg-white">
           <div className="flex flex-wrap items-center gap-3">
             {/* 表示：チップ（食・飲・氏名・備考） */}
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="text-gray-500 text-xs">表示：</span>
-              {ColumnToggleButton({
-                label: '食',
-                checked: showEatCol,
-                onToggle: () => setShowEatCol((p) => !p),
-                infoKey: 'eatInfo',
-                infoLabel: '食べ放題列の説明',
-              })}
-              {ColumnToggleButton({
-                label: '飲',
-                checked: showDrinkCol,
-                onToggle: () => setShowDrinkCol((p) => !p),
-                infoKey: 'drinkInfo',
-                infoLabel: '飲み放題列の説明',
-              })}
-              <div className="hidden sm:flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-gray-500 text-xs">表示：</span>
+                {ColumnToggleButton({
+                  label: '食',
+                  checked: showEatCol,
+                  onToggle: () => setShowEatCol((p) => !p),
+                  infoKey: 'eatInfo',
+                  infoLabel: '食べ放題列の説明',
+                })}
+                {ColumnToggleButton({
+                  label: '飲',
+                  checked: showDrinkCol,
+                  onToggle: () => setShowDrinkCol((p) => !p),
+                  infoKey: 'drinkInfo',
+                  infoLabel: '飲み放題列の説明',
+                })}
                 {ColumnToggleButton({
                   label: '氏名',
                   checked: showNameCol,
@@ -1338,14 +1337,13 @@ const ReservationsSection = memo(function ReservationsSection({
                   infoKey: 'nameInfo',
                   infoLabel: '氏名列の説明',
                 })}
-                {ColumnToggleButton({
+                <span className="hidden sm:inline-flex">{ColumnToggleButton({
                   label: '備考',
                   checked: showNotesCol,
                   onToggle: () => setShowNotesCol((p) => !p),
                   infoKey: 'notesInfo',
                   infoLabel: '備考列の説明',
-                })}
-              </div>
+                })}</span>
             </div>
             {openInfo === 'eatInfo' && (
               <div id="help-eat" className="w-full mt-2 text-[11px] leading-5 text-gray-800 bg-gray-50 border border-gray-200 rounded px-3 py-2">
@@ -1404,7 +1402,7 @@ const ReservationsSection = memo(function ReservationsSection({
                   列の使い方
                 </p>
                 <ul className="list-disc ml-5 space-y-0.5">
-                  <li>来店者の氏名を表示・編集できます（タブレット以上で表示）。</li>
+                  <li>来店者の氏名を表示・編集できます（スマホも表示可）。</li>
                   <li><span className="inline-flex items-center gap-1"><button type="button" disabled aria-hidden="true" className="px-1.5 py-[1px] text-[11px] leading-none rounded border bg-white text-gray-700 border-gray-300">氏名</button> をONにすると、氏名列が表に追加されます。</span></li>
                 </ul>
               </div>
@@ -1651,7 +1649,14 @@ const ReservationsSection = memo(function ReservationsSection({
               <tr>
                 <th className="border px-1 py-1 w-24">来店時刻</th>
                 <th className="border px-1 py-1 w-20">卓番</th>
-                {showNameCol && <th className="border px-1 py-1 w-24 hidden sm:table-cell">氏名</th>}
+                {showNameCol && (
+                  <th
+                    className="border px-1 py-1 min-w-[96px] text-left"
+                    aria-label="来店者名"
+                  >
+                    氏名
+                  </th>
+                )}
                 <th className="border px-1 py-1 w-24">コース</th>
                 {showEatCol && <th className="border px-1 py-0.5 w-14 text-center">食</th>}
                 {showDrinkCol && <th className="border px-1 py-0.5 w-14 text-center">飲</th>}
@@ -1786,16 +1791,16 @@ const ReservationsSection = memo(function ReservationsSection({
                       </div>
                     </td>
 
-                    {/* 氏名セル (タブレット表示) */}
+                    {/* 氏名セル */}
                     {showNameCol && (
-                      <td className={`border px-1 ${padY} hidden sm:table-cell`}>
+                      <td className={`border px-1 ${padY} min-w-[120px]`}>
                         <input
                           type="text"
                           value={rawName}
                           onChange={(e) => handleNameChange(r.id, e.target.value)}
                           onBlur={() => handleNameBlur(r.id)}
                           placeholder="氏名"
-                          className="border px-1 py-0.5 w-full rounded text-[13px] sm:text-sm text-center"
+                          className="border px-1 py-0.5 w-full rounded text-[13px] sm:text-sm text-left"
                         />
                       </td>
                     )}
@@ -2062,16 +2067,16 @@ const ReservationsSection = memo(function ReservationsSection({
                   />
                 </td>
 
-                {/* 新規氏名セル (タブレット表示) */}
+                {/* 新規氏名セル */}
                 {showNameCol && (
-                  <td className="border px-1 py-1 hidden sm:table-cell">
+                  <td className="border px-1 py-1 min-w-[96px]">
                     <input
                       form="new-res-form"
                       type="text"
                       value={newResName}
                       onChange={(e) => setNewResName(e.target.value)}
                       placeholder="氏名"
-                      className="border px-1 py-0.5 w-full rounded text-[13px] sm:text-sm text-center"
+                      className="border px-1 py-0.5 w-full rounded text-[13px] sm:text-sm text-left"
                     />
                   </td>
                 )}
@@ -2303,7 +2308,7 @@ const ReservationsSection = memo(function ReservationsSection({
                       <tr>
                         <th className={`border px-1 py-1 w-16 ${guideStep === 1 ? 'text-red-600' : ''}`}>来店</th>
                         <th className={`border px-1 py-1 w-12 ${guideStep === 2 ? 'text-red-600' : ''}`}>卓</th>
-                        <th className={`border px-1 py-1 w-16 hidden sm:table-cell ${guideStep === 4 ? 'text-red-600' : ''}`}>氏名</th>
+                        <th className={`border px-1 py-1 w-16 ${guideStep === 4 ? 'text-red-600' : ''}`}>氏名</th>
                         <th className={`border px-1 py-1 w-20 ${guideStep === 3 ? 'text-red-600' : ''}`}>コース</th>
                         <th className={`border px-1 py-1 w-10 ${guideStep === 4 ? 'text-red-600' : ''}`}>食</th>
                         <th className={`border px-1 py-1 w-10 ${guideStep === 4 ? 'text-red-600' : ''}`}>飲</th>

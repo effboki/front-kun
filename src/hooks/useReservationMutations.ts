@@ -296,6 +296,7 @@ export function useReservationMutations(storeId: string, options?: { dayStartMs?
       if (Number.isFinite(n)) data.durationMin = Math.trunc(n);
     }
     await addReservationFS(data as any);
+    return id;
   }
 
   // ---- delete ----

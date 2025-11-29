@@ -4073,9 +4073,9 @@ scheduleEndHour={scheduleEndHour}
       reservations={reservations}
       onSave={async (data, id) => {
         if (id) {
-          await updateReservationMut(id, data);
+          return await updateReservationMut(id, data);
         } else {
-          await createReservationMut(data);
+          return await createReservationMut(data);
         }
       }}
       onDelete={async (id) => {

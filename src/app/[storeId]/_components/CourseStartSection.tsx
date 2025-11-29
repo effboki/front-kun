@@ -46,7 +46,7 @@ const CourseStartSection = memo(function CourseStartSection(props: Props) {
     filterCourse,
     setFilterCourse,
     courses,
-    showGuestsAll = false,
+    showGuestsAll = true,
   } = props;
 
   const [highlightNow, setHighlightNow] = useState(() => Date.now());
@@ -67,6 +67,8 @@ const CourseStartSection = memo(function CourseStartSection(props: Props) {
   });
   const curStartSort: 'table' | 'guests' = props.startSort ?? innerStartSort;
   const onChangeStartSort = props.setStartSort ?? setInnerStartSort;
+  const guestsOnlyMode = showTableStart;
+  const showGuestCount = guestsOnlyMode || showGuestsAll;
 
   // small info popovers for control toggles
   const [openInfo, setOpenInfo] = useState<null | 'showTable' | 'applyPre'>(null);
@@ -168,7 +170,7 @@ const CourseStartSection = memo(function CourseStartSection(props: Props) {
               type="button"
               onClick={() => setShowTableStart((prev) => !prev)}
               aria-pressed={showTableStart}
-              aria-label="卓番号を表示"
+              aria-label="人数のみ表示"
               className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 ${
                 showTableStart ? 'bg-emerald-500' : 'bg-gray-300'
               }`}
@@ -179,12 +181,12 @@ const CourseStartSection = memo(function CourseStartSection(props: Props) {
                 }`}
               />
             </button>
-            <span className="text-xs md:text-sm text-gray-700">卓番号を表示</span>
+            <span className="text-xs md:text-sm text-gray-700">人数のみ表示</span>
             <button
               type="button"
               onClick={() => toggleInfo('showTable')}
               className="ml-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-gray-300 text-[10px] leading-4 text-gray-600 hover:bg-gray-50"
-              aria-label="『卓番号を表示』の説明"
+              aria-label="『人数のみ表示』の説明"
               aria-expanded={openInfo === 'showTable'}
               aria-controls="help-show-table"
             >
@@ -193,19 +195,15 @@ const CourseStartSection = memo(function CourseStartSection(props: Props) {
           </div>
           {openInfo === 'showTable' && (
             <div id="help-show-table" className="mt-1 ml-6 text-[11px] md:text-xs text-gray-600 space-y-1">
-              <p>
-                下のコース開始時間表で、<strong className="font-semibold">卓番号</strong>を表示するかどうかを切り替えられます。
-                左側が卓番号、右側の括弧が<strong className="font-semibold">人数</strong>です。
-              </p>
+              <p>下のコース開始時間表を<strong className="font-semibold">人数だけの表示</strong>に切り替えます。オンにすると人数のみ、オフにすると卓番号と人数を表示します。</p>
               <div className="flex items-center gap-1">
                 <span className="text-[10px] text-gray-500">例：</span>
                 <span className="inline-flex items-center rounded-md border border-gray-200 px-2 py-0.5 text-[12px] leading-tight text-gray-800 gap-1 bg-white md:px-2.5 md:py-1 md:text-sm">
-                  <span className="tabular-nums">2</span>
                   <span>（<span className="tabular-nums">4</span>）</span>
                 </span>
                 <span className="inline-flex items-center rounded-md border border-gray-200 px-2 py-0.5 text-[12px] leading-tight text-gray-800 gap-1 bg-white md:px-2.5 md:py-1 md:text-sm">
-                  <span className="tabular-nums">7</span>
-                  <span>（<span className="tabular-nums">6</span>）</span>
+                  <span className="tabular-nums">2</span>
+                  <span>（<span className="tabular-nums">4</span>）</span>
                 </span>
               </div>
             </div>
@@ -401,17 +399,21 @@ const CourseStartSection = memo(function CourseStartSection(props: Props) {
                                   className="absolute -left-1 -top-1 h-2 w-2 rounded-full border border-white bg-emerald-500 shadow-sm"
                                 />
                               )}
-                              {showTableStart ? (
+                              {guestsOnlyMode ? (
+                                showGuestCount ? (
+                                  <span className="text-black">
+                                    （<span className="tabular-nums">{guestsNum}</span>）
+                                  </span>
+                                ) : null
+                              ) : (
                                 <>
                                   <span className="tabular-nums">{tableStr}</span>
-                                  {showGuestsAll ? (
-                                    <span className="text-black">({guestsNum})</span>
-                                  ) : null}
+                                  {showGuestCount && (
+                                    <span className="text-black">
+                                      （<span className="tabular-nums">{guestsNum}</span>）
+                                    </span>
+                                  )}
                                 </>
-                              ) : (
-                                <span className="leading-none">
-                                  {r.name || (showGuestsAll ? `(${guestsNum})` : '')}
-                                </span>
                               )}
                             </span>
                           );

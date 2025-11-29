@@ -16,6 +16,7 @@ import {
   serverTimestamp,
   type DocumentData,
   type DocumentSnapshot,
+  type QueryConstraint,
 } from 'firebase/firestore';
 
 // ---------- Utils ----------
@@ -243,12 +244,13 @@ export function listenReservationsByDay(
     : (dayStartMs + 24 * 60 * 60 * 1000);
 
   const col = collection(db, 'stores', storeId, 'reservations');
-  const q = query(
-    col,
-    where('startMs', '>=', dayStartMs),
-    where('startMs', '<', dayEndMs),
-    orderBy('startMs', 'asc')
-  );
+  const constraints: QueryConstraint[] = [];
+  if (Number.isFinite(dayEndMs)) {
+    constraints.push(where('startMs', '<', dayEndMs));
+  }
+  constraints.push(orderBy('startMs', 'asc'));
+
+  const q = query(col, ...constraints);
   return onSnapshot(q, (snap) => {
     const rows = snap.docs.map((d) => fromSnapshot(d));
     cb(rows);

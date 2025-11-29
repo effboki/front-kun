@@ -1,5 +1,5 @@
-// src/lib/opsQueue.ts (hardened queue)
-
+import { type Reservation, type ReservationFieldValue } from '@/types';
+import { type StoreSettings } from '@/types/settings';
 import { getStoreId } from './firebase';
 
 // =========================
@@ -11,16 +11,87 @@ export const QUEUE_KEY = `${ns}-opsQueue`;
 // =========================
 // Op types (store-aware / dedupe-able)
 // =========================
+type ReservationPayload = Pick<Reservation, 'id'> & Record<string, unknown>;
+type UpdateValue = ReservationFieldValue | number;
+
 interface BaseOp {
   storeId: string;
-  dedupeKey?: string; // optional: replace same-key op
+  dedupeKey?: string;
+  /** enqueued timestamp (ms). Used to drop stale offline writes safely. */
+  queuedAt?: number;
 }
 
-export type Op =
-  | ({ type: 'add'; payload: any } & BaseOp)
-  | ({ type: 'update'; id: string; field: string; value: any } & BaseOp)
-  | ({ type: 'delete'; id: string } & BaseOp)
-  | ({ type: 'storeSettings'; payload: any } & BaseOp);
+type AddOp = { type: 'add'; payload: ReservationPayload } & BaseOp;
+type UpdateOp = { type: 'update'; id: string; field: string; value: UpdateValue } & BaseOp;
+type DeleteOp = { type: 'delete'; id: string } & BaseOp;
+type StoreSettingsOp = { type: 'storeSettings'; payload: Partial<StoreSettings> } & BaseOp;
+
+export type Op = AddOp | UpdateOp | DeleteOp | StoreSettingsOp;
+type EnqueueInput =
+  | Omit<AddOp, 'storeId'>
+  | Omit<UpdateOp, 'storeId'>
+  | Omit<DeleteOp, 'storeId'>
+  | Omit<StoreSettingsOp, 'storeId'>;
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null;
+
+const normalizeReservationPayload = (payload: unknown): ReservationPayload | null => {
+  if (!isRecord(payload)) return null;
+  const idValue = payload.id;
+  if (typeof idValue !== 'string' && typeof idValue !== 'number') return null;
+  return { ...payload, id: String(idValue) };
+};
+
+const normalizeOp = (op: unknown, fallbackStoreId: string): Op | null => {
+  if (!isRecord(op)) return null;
+  const dedupeKey = typeof op.dedupeKey === 'string' ? op.dedupeKey : undefined;
+  const queuedAtRaw = Number((op as any).queuedAt ?? (op as any).ts);
+  const queuedAt = Number.isFinite(queuedAtRaw) ? Math.trunc(queuedAtRaw) : undefined;
+  const storeId =
+    typeof op.storeId === 'string' && op.storeId.length > 0 ? op.storeId : fallbackStoreId;
+
+  switch (op.type) {
+    case 'add': {
+      const payload = normalizeReservationPayload(op.payload);
+      if (!payload) return null;
+      return { type: 'add', payload, storeId, dedupeKey, queuedAt };
+    }
+    case 'update': {
+      const idValue = op.id;
+      if (typeof idValue !== 'string' && typeof idValue !== 'number') return null;
+      const fieldValue = typeof op.field === 'string' ? op.field : '';
+      if (!fieldValue) return null;
+      const field = fieldValue === 'updateTime' ? 'updatedAt' : fieldValue;
+      return {
+        type: 'update',
+        id: String(idValue),
+        field,
+        value: op.value as UpdateValue,
+        storeId,
+        dedupeKey,
+        queuedAt,
+      };
+    }
+    case 'delete': {
+      const idValue = op.id;
+      if (typeof idValue !== 'string' && typeof idValue !== 'number') return null;
+      return { type: 'delete', id: String(idValue), storeId, dedupeKey, queuedAt };
+    }
+    case 'storeSettings': {
+      if (!isRecord(op.payload)) return null;
+      return {
+        type: 'storeSettings',
+        payload: op.payload as Partial<StoreSettings>,
+        storeId,
+        dedupeKey,
+        queuedAt,
+      };
+    }
+    default:
+      return null;
+  }
+};
 
 // =========================
 // Helpers: load/save queue
@@ -29,10 +100,12 @@ function loadQueue(): Op[] {
   try {
     if (typeof localStorage === 'undefined') return [];
     const raw = localStorage.getItem(QUEUE_KEY);
-    const arr: any[] = raw ? JSON.parse(raw) : [];
-    // 旧フォーマットのマイグレーション（storeId がない場合は現在の storeId を付与）
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    if (!Array.isArray(parsed)) return [];
     const sid = getStoreId();
-    return arr.map((op) => ({ storeId: sid, ...op })) as Op[];
+    return parsed
+      .map((item) => normalizeOp(item, sid))
+      .filter((op): op is Op => Boolean(op));
   } catch {
     return [];
   }
@@ -51,34 +124,16 @@ function saveQueue(queue: Op[]) {
 // =========================
 // Enqueue
 // =========================
-// Overload signatures (make TS happy at call sites)
-export function enqueueOp(op: { type: 'add'; payload: any; storeId?: string; dedupeKey?: string }): void;
-export function enqueueOp(op: { type: 'update'; id: string; field: string; value: any; storeId?: string; dedupeKey?: string }): void;
-export function enqueueOp(op: { type: 'delete'; id: string; storeId?: string; dedupeKey?: string }): void;
-export function enqueueOp(op: { type: 'storeSettings'; payload: any; storeId?: string; dedupeKey?: string }): void;
-
-// Implementation
-export function enqueueOp(op: any): void {
-  const storeId = op.storeId || getStoreId();
-  let normalized: Op;
-
-  // ---- フィールド名マイグレーション ----
-  if (op?.type === 'update' && op.field === 'updateTime') {
-    op = { ...op, field: 'updatedAt' };
+export function enqueueOp(op: EnqueueInput): void {
+  const normalized = normalizeOp(op, getStoreId());
+  if (!normalized) {
+    console.warn('[enqueueOp] dropped invalid op', op);
+    return;
   }
-
-  // ---- ID を文字列に統一 ----
-  if (op?.type === 'update') {
-    op.id = String(op.id);
+  // Stamp enqueue time (legacy entries may not have it)
+  if (!Number.isFinite(Number((normalized as any).queuedAt))) {
+    (normalized as any).queuedAt = Date.now();
   }
-  if (op?.type === 'delete') {
-    op.id = String(op.id);
-  }
-  if (op?.type === 'add') {
-    op.payload = { ...(op.payload || {}), id: String(op.payload?.id ?? '') };
-  }
-
-  normalized = { ...(op as any), storeId } as Op;
 
   // 既存キューを読み取り
   const queue = loadQueue();
@@ -132,6 +187,27 @@ export async function flushQueuedOps(): Promise<void> {
       return;
     }
 
+    // Drop obviously stale operations (例: 前日のオフライン編集を今日反映しない)
+    const now = Date.now();
+    const STALE_MS = 36 * 60 * 60 * 1000; // 36h safety window to allow overnight work
+    const freshOps: Op[] = [];
+    let dropped = 0;
+    toProcess.forEach((op) => {
+      const ts = Number((op as any).queuedAt ?? (op as any).ts);
+      if (Number.isFinite(ts) && now - ts > STALE_MS) {
+        dropped += 1;
+        return;
+      }
+      if (!Number.isFinite(ts)) {
+        // legacy entry: keep but stamp to avoid future indefinite retries
+        (op as any).queuedAt = now;
+      }
+      freshOps.push(op);
+    });
+    if (dropped > 0) {
+      console.warn(`[flushQueuedOps] dropped ${dropped} stale queued ops (older than ${STALE_MS / 3600000}h)`);
+    }
+
     // Firestore helpers
     const { saveStoreSettingsTx } = await import('./firebase');
     const {
@@ -143,7 +219,7 @@ export async function flushQueuedOps(): Promise<void> {
 
     const failed: Op[] = [];
 
-    for (const op of toProcess) {
+    for (const op of freshOps) {
       try {
         switch (op.type) {
           case 'storeSettings':

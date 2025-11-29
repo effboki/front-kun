@@ -5,6 +5,7 @@ import {
   parseClipboardText,
   saveMapping,
   loadMapping,
+  clearMapping,
   type ColumnMapping,
   type ImportedReservation,
 } from '@/lib/clipboardImport';
@@ -36,13 +37,24 @@ export default function ReservationImportModal({ storeId, dayStartMs, onClose, o
   const [inputValue, setInputValue] = useState('');
   const [previewText, setPreviewText] = useState('');
   const [mapping, setMapping] = useState<ColumnMapping | null>(() => loadMapping(storeId));
+  const [hasSavedMapping, setHasSavedMapping] = useState(() => Boolean(loadMapping(storeId)));
   const [savePreference, setSavePreference] = useState(true);
   const [forceMapping, setForceMapping] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
 
   useEffect(() => {
-    setMapping(loadMapping(storeId));
+    const loaded = loadMapping(storeId);
+    setMapping(loaded);
+    setHasSavedMapping(Boolean(loaded));
   }, [storeId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setPreviewText(inputValue);
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [inputValue]);
 
   const result = useMemo(() => {
     return parseClipboardText(previewText, {
@@ -59,6 +71,12 @@ export default function ReservationImportModal({ storeId, dayStartMs, onClose, o
       setMapping(result.mappingUsed);
     }
   }, [previewText, mapping, result.mappingUsed]);
+
+  useEffect(() => {
+    if (applyError) {
+      setApplyError(null);
+    }
+  }, [previewText, mapping, applyError]);
 
   const hasPreview = previewText.trim().length > 0;
   const colCount = useMemo(() => {
@@ -78,22 +96,54 @@ export default function ReservationImportModal({ storeId, dayStartMs, onClose, o
     if (!canApply) return;
     try {
       setApplying(true);
+      setApplyError(null);
       if (savePreference && mappingComplete && mapping) {
         saveMapping(storeId, mapping);
+        setHasSavedMapping(true);
       }
       await onApply(result.rows);
       onClose();
     } catch (error) {
       console.error('[ReservationImportModal] apply failed', error);
+      const message = error instanceof Error ? error.message : '不明なエラーが発生しました';
+      setApplyError(`適用に失敗しました: ${message}`);
     } finally {
       setApplying(false);
     }
+  };
+
+  const handleClearMapping = () => {
+    clearMapping(storeId);
+    setMapping(null);
+    setHasSavedMapping(false);
+    setForceMapping(true);
+    setPreviewText(inputValue);
   };
 
   const headerNames = useMemo(() => {
     if (result.headers && result.headers.length > 0) return result.headers;
     return Array.from({ length: colCount }).map((_, index) => `列${index + 1}`);
   }, [result.headers, colCount]);
+
+  const mappingSummary = useMemo(() => {
+    if (!mapping) return null;
+    const labelFor = (value?: number | number[]) => {
+      if (value == null) return '未設定';
+      if (Array.isArray(value)) {
+        const labels = value.map((idx) => headerNames[idx] ?? `列${idx + 1}`).filter(Boolean);
+        return labels.length > 0 ? labels.join(' / ') : '未設定';
+      }
+      return headerNames[value] ?? `列${value + 1}`;
+    };
+
+    const parts = FIELD_ORDER.map((field) => {
+      const rawValue = (mapping as any)[field] as number | number[] | undefined;
+      const label = FIELD_LABEL[field];
+      const formatted = labelFor(rawValue);
+      return `${label}: ${formatted}`;
+    });
+    return parts.join(' / ');
+  }, [mapping, headerNames]);
 
   const previewRows = hasPreview ? result.previewRows : [];
 
@@ -110,6 +160,15 @@ export default function ReservationImportModal({ storeId, dayStartMs, onClose, o
           value={inputValue}
           onChange={(event) => setInputValue(event.target.value)}
         />
+
+        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
+          <span>貼り付けると自動でプレビューが更新されます。</span>
+          {hasSavedMapping && (
+            <span className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700">
+              保存済みの対応付けを使用中
+            </span>
+          )}
+        </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -138,11 +197,22 @@ export default function ReservationImportModal({ storeId, dayStartMs, onClose, o
           </button>
         </div>
 
+        {applyError && (
+          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {applyError}
+          </div>
+        )}
+
         {hasPreview && (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
               <span>読み取り: {result.rows.length} 件</span>
               <span>除外: {result.skipped} 件</span>
+              {mappingSummary && (
+                <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700 text-xs sm:text-sm">
+                  {mappingSummary}
+                </span>
+              )}
               {result.needMapping && (
                 <span className="text-red-600">必須列（開始・名前・人数）が未設定です</span>
               )}
@@ -164,19 +234,34 @@ export default function ReservationImportModal({ storeId, dayStartMs, onClose, o
 
             {(showMappingUi || !mappingComplete) && (
               <div className="rounded border border-gray-200 bg-gray-50 p-3 space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-sm font-medium text-gray-700">
                     列の対応付け（必須: 開始 / 名前 / 人数）
                   </span>
-                  {forceMapping && (
+                  <div className="flex items-center gap-2">
+                    {hasSavedMapping && (
+                      <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[12px] text-emerald-700">
+                        保存済みの対応付け
+                      </span>
+                    )}
                     <button
                       type="button"
-                      className="text-xs text-gray-500 hover:underline"
-                      onClick={() => setForceMapping(false)}
+                      className="text-xs text-gray-600 hover:underline disabled:opacity-60 disabled:cursor-not-allowed"
+                      onClick={handleClearMapping}
+                      disabled={!mapping && !hasSavedMapping}
                     >
-                      閉じる
+                      リセット
                     </button>
-                  )}
+                    {forceMapping && (
+                      <button
+                        type="button"
+                        className="text-xs text-gray-500 hover:underline"
+                        onClick={() => setForceMapping(false)}
+                      >
+                        閉じる
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {FIELD_ORDER.map((field) => {
@@ -261,12 +346,99 @@ export default function ReservationImportModal({ storeId, dayStartMs, onClose, o
                       );
                     }
 
+                    if (field === 'table') {
+                      const selectedTables = Array.isArray(mapping?.table)
+                        ? mapping.table
+                        : typeof mapping?.table === 'number'
+                          ? [mapping.table]
+                          : [];
+                      const toggleTable = (index: number) => {
+                        setMapping((prev) => {
+                          const next: ColumnMapping = { ...(prev ?? {}) };
+                          const prevList = Array.isArray(next.table)
+                            ? [...next.table]
+                            : typeof next.table === 'number'
+                              ? [next.table]
+                              : [];
+                          const pos = prevList.indexOf(index);
+                          if (pos >= 0) {
+                            prevList.splice(pos, 1);
+                          } else {
+                            prevList.push(index);
+                          }
+                          prevList.sort((a, b) => a - b);
+                          if (prevList.length === 0) {
+                            delete (next as any).table;
+                          } else if (prevList.length === 1) {
+                            next.table = prevList[0];
+                          } else {
+                            next.table = prevList;
+                          }
+                          return next;
+                        });
+                      };
+                      const clearTables = () => setMapping((prev) => {
+                        if (!prev) return prev;
+                        const next: ColumnMapping = { ...prev };
+                        delete (next as any).table;
+                        return next;
+                      });
+
+                      const missingRequired = isRequired && selectedTables.length === 0;
+
+                      return (
+                        <div key={field} className="flex items-start gap-2 text-sm text-gray-700">
+                          <span className={`w-28 mt-1 ${missingRequired ? 'text-red-600 font-semibold' : 'text-gray-500'}`}>
+                            {FIELD_LABEL[field]}
+                            {isRequired && <span className="text-red-500">*</span>}
+                          </span>
+                          <div className="flex-1 space-y-2">
+                            <div className="flex flex-wrap gap-2">
+                              {Array.from({ length: colCount }).map((_, index) => {
+                                const label = headerNames[index] ?? `列${index + 1}`;
+                                const active = selectedTables.includes(index);
+                                return (
+                                  <label
+                                    key={index}
+                                    className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-xs cursor-pointer select-none transition-colors ${
+                                      active
+                                        ? 'border-emerald-400 bg-emerald-50 text-emerald-700'
+                                        : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="sr-only"
+                                      checked={active}
+                                      onChange={() => toggleTable(index)}
+                                    />
+                                    <span>{label}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
+                              <button
+                                type="button"
+                                onClick={clearTables}
+                                className="text-blue-600 hover:underline"
+                              >
+                                クリア
+                              </button>
+                              <span>複数列から卓番を拾えます（「卓1」「卓2」など分かれている場合向け）</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
+
                     const current = mapping?.[field] as number | undefined;
                     const selectValue = current != null ? String(current) : '';
+                    const missingRequired = isRequired && (current == null);
 
                     return (
                       <label key={field} className="flex items-center gap-2 text-sm text-gray-700">
-                        <span className="w-28 text-gray-500">
+                        <span className={`w-28 ${missingRequired ? 'text-red-600 font-semibold' : 'text-gray-500'}`}>
                           {FIELD_LABEL[field]}
                           {isRequired && <span className="text-red-500">*</span>}
                         </span>

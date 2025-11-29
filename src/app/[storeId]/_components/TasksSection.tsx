@@ -890,6 +890,13 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                   適用
                                 </button>
                                 <button
+                                  onClick={() => setSelectedForComplete(defaultShiftTargetIds)}
+                                  className="px-2 py-0.5 rounded text-sm md:px-2.5 md:py-1 md:text-[0.9rem] border border-gray-300 bg-white hover:bg-gray-50 text-gray-800"
+                                  aria-label="完了対象を全て選択"
+                                >
+                                  全選択
+                                </button>
+                                <button
                                   onClick={() =>
                                     setSelectionModeTask((prev) =>
                                       prev === keyForTask ? null : keyForTask
@@ -1193,6 +1200,13 @@ const TasksSection = memo(function TasksSection(props: TasksSectionProps) {
                                 }`}
                               >
                                 適用
+                              </button>
+                              <button
+                                onClick={() => setSelectedForComplete(defaultShiftTargetIds)}
+                                className="px-2 py-0.5 rounded text-sm md:px-2.5 md:py-1 md:text-[0.9rem] border border-gray-300 bg-white hover:bg-gray-50 text-gray-800"
+                                aria-label="完了対象を全て選択"
+                              >
+                                全選択
                               </button>
                               <button
                                 onClick={() =>

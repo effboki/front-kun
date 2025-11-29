@@ -6,8 +6,12 @@ import type { ScheduleItem } from '@/types/schedule';
 export const SLOT_MIN = 5;
 export const SLOT_MS = SLOT_MIN * 60 * 1000;
 
+/** 任意分単位にスナップ（四捨五入） */
+export const snapMinutes = (ms: number, minutes = SLOT_MIN) =>
+  Math.round(ms / (minutes * 60 * 1000)) * minutes * 60 * 1000;
+
 /** ミリ秒を5分単位にスナップ（四捨五入） */
-export const snap5m = (ms: number) => Math.round(ms / SLOT_MS) * SLOT_MS;
+export const snap5m = (ms: number) => snapMinutes(ms, SLOT_MIN);
 
 /** 5分あたりのpx（UI側で調整してOK） */
 export const colPx = 12;

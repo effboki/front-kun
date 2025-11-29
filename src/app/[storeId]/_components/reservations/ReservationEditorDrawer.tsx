@@ -91,6 +91,8 @@ type Props = {
   }>;
   /** デフォルト滞在分（コース未選択時のフォールバック）。未指定は60分 */
   defaultStayMinutes?: number;
+  /** 新規作成でIDが発行された際に通知 */
+  onReservationIdChange?: (id: string) => void;
 };
 
 const toStartOfDayLocal = (ms?: number) => {
@@ -108,7 +110,7 @@ const msToTimeHHmm = (ms: number) => {
 function buildTimeOptions(): string[] {
   const out: string[] = [];
   for (let hour = 0; hour < 48; hour++) {
-    for (let minute = 0; minute < 60; minute += 5) {
+    for (let minute = 0; minute < 60; minute += TIME_STEP_MINUTES) {
       out.push(`${String(hour).padStart(2, '0')}:${pad2(minute)}`);
     }
   }
@@ -142,6 +144,9 @@ const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 
 const MINUTE_MS = 60 * 1000;
 const MEMO_MIN_HEIGHT = 80;
+const TIME_STEP_MINUTES = 15;
+const AUTO_SAVE_DELAY_MS = 600;
+const MIN_GUESTS = 1;
 
 // 滞在分の候補（5分刻み）。既定は 30〜240分
 const buildStayMinOptions = (min = 30, max = 240, step = 5) => {
@@ -248,6 +253,7 @@ export default function ReservationEditorDrawer(props: Props) {
     reservationsSnapshot,
     defaultStayMinutes,
     storeSettings,
+    onReservationIdChange,
   } = props;
 
   const day0 = React.useMemo(() => dayStartMs ?? toStartOfDayLocal(), [dayStartMs]);
@@ -259,7 +265,10 @@ export default function ReservationEditorDrawer(props: Props) {
     setActiveTab('reservation');
   }, [open, reservationId]);
 
-  const statusAvailable = Boolean(reservationId && statusControls);
+  const [draftReservationId, setDraftReservationId] = React.useState<string | null>(reservationId ?? null);
+  const effectiveReservationId = draftReservationId ?? reservationId ?? null;
+
+  const statusAvailable = Boolean(effectiveReservationId && statusControls);
   const [statusFlags, setStatusFlags] = React.useState(() => ({
     arrived: Boolean(statusControls?.flags.arrived),
     paid: Boolean(statusControls?.flags.paid),
@@ -281,7 +290,7 @@ export default function ReservationEditorDrawer(props: Props) {
     statusControls?.flags.arrived,
     statusControls?.flags.paid,
     statusControls?.flags.departed,
-    reservationId,
+    effectiveReservationId,
     open,
   ]);
 
@@ -304,6 +313,17 @@ export default function ReservationEditorDrawer(props: Props) {
       return next;
     });
   }, [statusControls]);
+
+  const [lastSavedSignature, setLastSavedSignature] = React.useState<string | null>(null);
+  const autoSaveTimerRef = React.useRef<number | null>(null);
+  const autoSaveInFlightRef = React.useRef(false);
+  const autoSavePendingRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (open) return;
+    setDraftReservationId(reservationId ?? null);
+    setLastSavedSignature(null);
+  }, [reservationId, open]);
 
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => { setMounted(true); }, []);
@@ -556,13 +576,13 @@ export default function ReservationEditorDrawer(props: Props) {
     const selected = new Set(tables.map(String));
 
     const list = reservationsSnapshot.filter((r) => {
-      if (reservationId && r.id === reservationId) return false; // 自分は除外
+      if (effectiveReservationId && r.id === effectiveReservationId) return false; // 自分は除外
       const rEnd = computeEndMsForSnapshot(r, mergedCourses, defaultStayMinutes);
       const shared = (r.tables || []).some((t) => selected.has(String(t)));
       return shared && rangesOverlap(start, end, r.startMs, rEnd);
     });
     setConflicts(list);
-  }, [open, reservationsSnapshot, tables, time, day0, reservationId, defaultStayMinutes, mergedCoursesKey, selectedStayMinutes, mergedCourses]);
+  }, [open, reservationsSnapshot, tables, time, day0, effectiveReservationId, defaultStayMinutes, mergedCoursesKey, selectedStayMinutes, mergedCourses]);
 
   // --- Handlers ---
   const orderByOptions = React.useCallback((arr: string[]) => {
@@ -588,30 +608,165 @@ export default function ReservationEditorDrawer(props: Props) {
   // Drawerを開いたタイミングで initial からフォーム値をリセット（既存予約にも対応）
   React.useEffect(() => {
     if (!open) return;
+    const nextTime = initial?.startMs != null ? msToHHmmFromDay(initial.startMs, day0) : msToTimeHHmm(Date.now());
     // time
-    setTime(initial?.startMs != null ? msToHHmmFromDay(initial.startMs, day0) : msToTimeHHmm(Date.now()));
+    setTime(nextTime);
     // tables（optionsの順に正規化）
     const nextTables = (initial?.tables && initial.tables.length > 0)
       ? orderByOptions(initial.tables)
       : (initial?.table ? orderByOptions([initial.table]) : []);
     setTables(nextTables);
     // other fields
-    setGuests(initial?.guests ?? 2);
-    setName(initial?.name ?? '');
-    setCourseName(initial?.courseName ?? '');
-    setStayMinutes(initial?.durationMin ?? null);
-    setDrinkLabel(
+    const nextGuests = initial?.guests ?? 2;
+    setGuests(nextGuests);
+    const nextName = initial?.name ?? '';
+    setName(nextName);
+    const nextCourse = initial?.courseName ?? '';
+    setCourseName(nextCourse);
+    const nextStay = initial?.durationMin ?? null;
+    setStayMinutes(nextStay);
+    const nextDrink = (
       hasText(initial?.drinkLabel)
         ? toText(initial?.drinkLabel)
         : (initial?.drinkAllYouCan ? (availableDrinkOptions[0]?.label ?? '飲み放題') : '')
     );
-    setEatLabel(
+    setDrinkLabel(nextDrink);
+    const nextEat = (
       hasText(initial?.eatLabel)
         ? toText(initial?.eatLabel)
         : (initial?.foodAllYouCan ? (availableEatOptions[0]?.label ?? '食べ放題') : '')
     );
-    setMemo(initial?.memo ?? '');
+    setEatLabel(nextEat);
+    const nextMemo = initial?.memo ?? '';
+    setMemo(nextMemo);
+
+    // 既存予約は初期値でサインを入れて無駄な自動保存を避ける
+    if (reservationId) {
+      const defaultDrinkLabel = availableDrinkOptions[0]?.label ?? '飲み放題';
+      const defaultEatLabel = availableEatOptions[0]?.label ?? '食べ放題';
+      const drinkAllFinal = hasText(nextDrink);
+      const eatAllFinal = hasText(nextEat);
+      const drinkLabelFinal = drinkAllFinal ? (safeTrim(nextDrink) || defaultDrinkLabel) : '';
+      const eatLabelFinal = eatAllFinal ? (safeTrim(nextEat) || defaultEatLabel) : '';
+      const durationForSave = nextStay != null ? Math.max(5, nextStay) : undefined;
+      const startMs = hhmmToMsFromDay(nextTime, day0);
+      const payload: ReservationInput = {
+        startMs,
+        tables: nextTables,
+        guests: Number.isFinite(nextGuests) ? nextGuests : 0,
+        name: nextName.trim() || undefined,
+        courseName: nextCourse || undefined,
+        drinkAllYouCan: drinkAllFinal,
+        foodAllYouCan: eatAllFinal,
+        drinkLabel: drinkLabelFinal,
+        eatLabel: eatLabelFinal,
+        memo: nextMemo.trim() || undefined,
+        durationMin: durationForSave,
+      };
+      setDraftReservationId(reservationId);
+      setLastSavedSignature(JSON.stringify({ ...payload, id: reservationId }));
+    } else {
+      setDraftReservationId(null);
+      setLastSavedSignature(null);
+    }
   }, [open, reservationId, initial?.startMs, initial?.tables, initial?.table, initial?.guests, initial?.name, initial?.courseName, initial?.durationMin, initial?.drinkAllYouCan, initial?.foodAllYouCan, initial?.drinkLabel, initial?.eatLabel, initial?.memo, day0, orderByOptions, availableDrinkOptions, availableEatOptions]);
+
+  React.useEffect(() => {
+    if (!open || activeTab !== 'reservation') return;
+    if (!onSave) return;
+    // 新規（ID未確定）は自動保存しない。保存ボタン押下で作成。
+    if (!effectiveReservationId) return;
+
+    const selectedTables = (tables.length > 0 ? tables : (initial?.table ? [initial.table] : []));
+    const guestsNum = Number.isFinite(guests) ? guests : 0;
+    if (!selectedTables || selectedTables.length === 0) return;
+    if (guestsNum < MIN_GUESTS) return;
+
+    const startMs = hhmmToMsFromDay(time, day0);
+    if (!Number.isFinite(startMs)) return;
+
+    const defaultDrinkLabel = availableDrinkOptions[0]?.label ?? '飲み放題';
+    const defaultEatLabel = availableEatOptions[0]?.label ?? '食べ放題';
+    const drinkAllFinal = hasText(drinkLabel);
+    const eatAllFinal   = hasText(eatLabel);
+    const drinkLabelFinal = drinkAllFinal ? (safeTrim(drinkLabel) || defaultDrinkLabel) : '';
+    const eatLabelFinal   = eatAllFinal   ? (safeTrim(eatLabel)   || defaultEatLabel)   : '';
+    const durationForSave = stayMinutes != null ? Math.max(5, stayMinutes) : undefined;
+
+    const payload: ReservationInput = {
+      startMs,
+      tables: selectedTables,
+      guests: guestsNum,
+      name: name.trim() || undefined,
+      courseName: courseName || undefined,
+      drinkAllYouCan: drinkAllFinal,
+      foodAllYouCan: eatAllFinal,
+      drinkLabel: drinkLabelFinal,
+      eatLabel: eatLabelFinal,
+      memo: memo.trim() || undefined,
+      durationMin: durationForSave,
+    };
+
+    const signature = JSON.stringify({ ...payload, id: effectiveReservationId ?? '' });
+    if (signature === lastSavedSignature) return;
+
+    if (autoSaveTimerRef.current) {
+      window.clearTimeout(autoSaveTimerRef.current);
+    }
+
+    autoSaveTimerRef.current = window.setTimeout(async () => {
+      if (autoSaveInFlightRef.current) {
+        autoSavePendingRef.current = true;
+        return;
+      }
+      autoSaveInFlightRef.current = true;
+      try {
+        const result = await onSave(payload, effectiveReservationId ?? undefined);
+        const resolvedId = effectiveReservationId ?? (typeof result === 'string' ? result : null);
+        if (!effectiveReservationId && resolvedId) {
+          setDraftReservationId(resolvedId);
+          onReservationIdChange?.(resolvedId);
+        }
+        const resolvedSignature = JSON.stringify({ ...payload, id: resolvedId ?? effectiveReservationId ?? '' });
+        setLastSavedSignature(resolvedSignature);
+      } catch (err) {
+        console.error('[ReservationEditorDrawer] auto save failed', err);
+      } finally {
+        autoSaveInFlightRef.current = false;
+        if (autoSavePendingRef.current) {
+          autoSavePendingRef.current = false;
+          setLastSavedSignature(null);
+        }
+      }
+    }, AUTO_SAVE_DELAY_MS);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        window.clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [
+    open,
+    activeTab,
+    onSave,
+    tables,
+    initial?.table,
+    guests,
+    time,
+    day0,
+    drinkLabel,
+    eatLabel,
+    stayMinutes,
+    name,
+    courseName,
+    memo,
+    availableDrinkOptions,
+    availableEatOptions,
+    effectiveReservationId,
+    lastSavedSignature,
+    onReservationIdChange,
+  ]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -649,7 +804,12 @@ export default function ReservationEditorDrawer(props: Props) {
 
     try {
       if (onSave) {
-        await onSave(input, reservationId ?? undefined);
+        const result = await onSave(input, effectiveReservationId ?? undefined);
+        const resolvedId = effectiveReservationId ?? (typeof result === 'string' ? result : null);
+        if (!effectiveReservationId && resolvedId) {
+          setDraftReservationId(resolvedId);
+          onReservationIdChange?.(resolvedId);
+        }
       } else {
         console.warn('[ReservationEditorDrawer] onSave が未指定です');
       }
@@ -661,11 +821,12 @@ export default function ReservationEditorDrawer(props: Props) {
   };
 
   const handleDelete = async () => {
-    if (!reservationId) return;
+    const targetId = effectiveReservationId;
+    if (!targetId) return;
     if (!onDelete) return;
     if (!confirm('この予約を削除しますか？')) return;
     try {
-      await onDelete(reservationId);
+      await onDelete(targetId);
       onClose();
     } catch (err) {
       console.error(err);
@@ -674,7 +835,7 @@ export default function ReservationEditorDrawer(props: Props) {
   };
 
   const canEditTasks = Boolean(
-    reservationId &&
+    effectiveReservationId &&
       reservationDetail &&
       typeof onUpdateReservationField === 'function' &&
       typeof onAdjustTaskTime === 'function'
@@ -734,7 +895,7 @@ export default function ReservationEditorDrawer(props: Props) {
                   : 'bg-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              {reservationId ? '予約を編集' : '予約を追加'}
+              {effectiveReservationId ? '予約を編集' : '予約を追加'}
             </button>
             <button
               type="button"
@@ -1098,7 +1259,7 @@ export default function ReservationEditorDrawer(props: Props) {
         </div>
 
         <div className="px-4 py-3 border-t flex items-center justify-between gap-3 bg-slate-50">
-          {reservationId ? (
+          {effectiveReservationId ? (
             <button
               type="button"
               onClick={handleDelete}

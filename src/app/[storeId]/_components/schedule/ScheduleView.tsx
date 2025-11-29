@@ -6,7 +6,7 @@ import type { ScheduleItem } from '@/types/schedule';
 import type { EatDrinkOption, StoreSettingsValue } from '@/types/settings';
 import { sanitizeEatDrinkOptions } from '@/types/settings';
 import type { Reservation } from '@/types/reservation';
-import { SLOT_MS, snap5m } from '@/lib/schedule';
+import { SLOT_MS, snap5m, snapMinutes } from '@/lib/schedule';
 import { startOfDayMs } from '@/lib/time';
 import { getCourseColorStyle, normalizeCourseColor, type CourseColorStyle } from '@/lib/courseColors';
 import ReservationEditorDrawer, { type ReservationInput, type CourseOption } from '../reservations/ReservationEditorDrawer';
@@ -53,10 +53,29 @@ function patchSatisfiedByItem(item: UnknownRecord | undefined | null, patch: Opt
   return true;
 }
 
+const normalizeTableId = (value?: unknown): string => {
+  if (value == null) return '';
+  return String(value).trim();
+};
+
+const normalizeTableList = (values?: readonly unknown[]): string[] => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values ?? []) {
+    const normalized = normalizeTableId(value);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+};
+
 // アプリ上部バー（安全領域含む）のフォールバック高さ(px)。実端末では後で実測する。
 const DEFAULT_TOP_BAR_PX = 48;
 // 画面下部のタブバー（フッター）高さ(px)。実端末では後で実測する。
 const DEFAULT_BOTTOM_BAR_PX = 70;
+// 新規予約作成時のスナップ間隔（分）
+const NEW_RESERVATION_STEP_MIN = 15;
 
 type Props = {
   /** 表示開始/終了の“時”（0-24想定）。親から渡される（この子では既定値を持たない） */
@@ -234,34 +253,37 @@ export default function ScheduleView({
   });
 
   // Apply current geometry to the floating header (called via rAF)
-  const applyFloatingHeaderLayout = useCallback(() => {
+  const applyFloatingHeaderLayout = useCallback((opts?: { measure?: boolean }) => {
     const el = scrollParentRef.current;
     const hdr = floatHeaderRef.current;
     const rail = floatRailRef.current;
     const content = floatContentRef.current;
     if (!el || !hdr || !rail || !content) return;
 
-    const rect = el.getBoundingClientRect();
-    const left = snapPx(rect.left);
-    const width = snapPx(rect.width);
+    const shouldMeasure = opts?.measure !== false;
+    if (shouldMeasure) {
+      const rect = el.getBoundingClientRect();
+      const left = snapPx(rect.left);
+      const width = snapPx(rect.width);
+      const railW = snapPx(leftColW);
+
+      if (lastFloatRef.current.left !== left) {
+        hdr.style.left = `${left}px`;
+        lastFloatRef.current.left = left;
+      }
+      if (lastFloatRef.current.width !== width) {
+        hdr.style.width = `${width}px`;
+        lastFloatRef.current.width = width;
+      }
+      if (lastFloatRef.current.rail !== railW) {
+        rail.style.width = `${railW}px`;
+        lastFloatRef.current.rail = railW;
+      }
+      rail.style.borderRight = '1px solid #e5e7eb';
+    }
+
     const scrollLeft = snapPx(el.scrollLeft);
-
-    const railW = snapPx(leftColW);
     const contentShift = snapPx(-scrollLeft);
-
-    if (lastFloatRef.current.left !== left) {
-      hdr.style.left = `${left}px`;
-      lastFloatRef.current.left = left;
-    }
-    if (lastFloatRef.current.width !== width) {
-      hdr.style.width = `${width}px`;
-      lastFloatRef.current.width = width;
-    }
-    if (lastFloatRef.current.rail !== railW) {
-      rail.style.width = `${railW}px`;
-      lastFloatRef.current.rail = railW;
-    }
-    rail.style.borderRight = '1px solid #e5e7eb';
     if (lastFloatRef.current.contentShift !== contentShift) {
       content.style.transform = `translate3d(${contentShift}px,0,0)`;
       lastFloatRef.current.contentShift = contentShift;
@@ -269,11 +291,11 @@ export default function ScheduleView({
   }, [leftColW, snapPx]);
 
   // rAF-scheduled updater to coalesce scroll events
-  const scheduleFloatingUpdate = useCallback(() => {
+  const scheduleFloatingUpdate = useCallback((opts?: { measure?: boolean }) => {
     if (rafRef.current != null) return;
     rafRef.current = window.requestAnimationFrame(() => {
       rafRef.current = null;
-      applyFloatingHeaderLayout();
+      applyFloatingHeaderLayout(opts);
     });
   }, [applyFloatingHeaderLayout]);
   // ===== Scroll container axis-lock (screen-level) =====
@@ -291,6 +313,9 @@ export default function ScheduleView({
   const LOCK_SLACK_PX = 18;
   const scrollIdleTimerRef = useRef<number | null>(null);
   const scrollPosRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
+  const programmaticScrollRef = useRef(0); // suppress user-scroll side effects while we push scroll positions
+  const userAdjustedScrollRef = useRef(false);
+  const overlayPressRef = useRef<Record<string, { tid: number | null; x: number; y: number; fired: boolean }>>({});
   const initialScrollOffsetsRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
   const resetScrollScheduleRef = useRef<{ raf: number | null; timeout: number | null }>({ raf: null, timeout: null });
 
@@ -352,9 +377,22 @@ export default function ScheduleView({
   const effectiveRowH = Math.max(rowHeightPx, autoRowH);
 
   const [pendingMutations, setPendingMutations] = useState<Record<string, OptimisticPatch>>({});
-  // 卓番再割り当てモード
-  const [reassign, setReassign] = useState<{ base: ScheduleItem & { _startCol: number; _spanCols: number; _row?: number; _table?: string; _key?: string }; selected: string[]; original: string[] } | null>(null);
+  type ReassignSession = {
+    base: ScheduleItem & { _startCol: number; _spanCols: number; _row?: number; _table?: string; _key?: string };
+    selected: string[];
+    original: string[];
+  };
+  // 卓番再割り当てモード（複数同時）
+  const [reassignSessions, setReassignSessions] = useState<Record<string, ReassignSession>>({});
+  const [activeReassignId, setActiveReassignId] = useState<string | null>(null);
+  const activeReassign = activeReassignId ? reassignSessions[activeReassignId] ?? null : null;
   const [editingStatusOverride, setEditingStatusOverride] = useState<{ arrived: boolean; paid: boolean; departed: boolean } | null>(null);
+
+  useEffect(() => {
+    if (activeReassignId) return;
+    const nextId = Object.keys(reassignSessions)[0];
+    if (nextId) setActiveReassignId(nextId);
+  }, [activeReassignId, reassignSessions]);
   // Axis-lock for DnD (x or y). Decided per drag and reset on end.
 
   const applyScrollLock = useCallback((axis: 'x' | 'y' | null) => {
@@ -404,7 +442,7 @@ export default function ScheduleView({
   }, [applyScrollLock]);
 
   useEffect(() => {
-    if (!reassign) return;
+    if (!activeReassign) return;
     const el = scrollParentRef.current;
     const pointerId = pointerStateRef.current.pointerId;
     if (el && typeof el.releasePointerCapture === 'function' && pointerId != null) {
@@ -420,7 +458,7 @@ export default function ScheduleView({
     clearScrollIdleTimer();
     releaseScrollAxisLock();
     applyScrollLock(null);
-  }, [reassign, clearScrollIdleTimer, releaseScrollAxisLock, applyScrollLock]);
+  }, [activeReassign, clearScrollIdleTimer, releaseScrollAxisLock, applyScrollLock]);
 
   const handleScroll = useCallback((e: UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -428,12 +466,13 @@ export default function ScheduleView({
     const prev = scrollPosRef.current;
     const currentLeft = el.scrollLeft;
     const currentTop = el.scrollTop;
+    const fromProgrammatic = programmaticScrollRef.current > 0;
 
     if (!axis) {
       const dx = Math.abs(currentLeft - prev.left);
       const dy = Math.abs(currentTop - prev.top);
 
-      if (pointerStateRef.current.active && (dx >= AXIS_LOCK_THRESHOLD_PX || dy >= AXIS_LOCK_THRESHOLD_PX)) {
+      if (!fromProgrammatic && pointerStateRef.current.active && (dx >= AXIS_LOCK_THRESHOLD_PX || dy >= AXIS_LOCK_THRESHOLD_PX)) {
         const origin = lockOriginRef.current;
         const nextAxis: 'x' | 'y' = dx > dy + 4 ? 'x' : 'y';
         lockScrollAxis(nextAxis, 'pointer', el, origin);
@@ -483,10 +522,12 @@ export default function ScheduleView({
     }
     // keep floating header aligned with horizontal scroll (smartphone) via rAF
     if (!isTablet) {
-      applyFloatingHeaderLayout();
+      scheduleFloatingUpdate({ measure: false });
     }
-    scheduleFloatingUpdate();
-  }, [lockScrollAxis, scheduleScrollIdleReset, scheduleFloatingUpdate, applyFloatingHeaderLayout, snapPx, isTablet]);
+    if (!fromProgrammatic) {
+      userAdjustedScrollRef.current = true;
+    }
+  }, [lockScrollAxis, scheduleScrollIdleReset, scheduleFloatingUpdate, snapPx, isTablet]);
   useLayoutEffect(() => {
     applyFloatingHeaderLayout();
     const onWin = () => applyFloatingHeaderLayout();
@@ -801,17 +842,26 @@ export default function ScheduleView({
   }, [windowHours, SLOT_MS]);
 
   const resetScrollOffsets = useCallback(
-    (opts?: { left?: number; top?: number; updateInitial?: boolean }) => {
+    (opts?: { left?: number; top?: number; updateInitial?: boolean; preserveCurrent?: boolean; force?: boolean }) => {
       const container = scrollParentRef.current;
       if (!container) return;
+
+      const preserveCurrent = Boolean(opts?.preserveCurrent);
+      const hasExplicitTarget = typeof opts?.left === 'number' || typeof opts?.top === 'number' || opts?.updateInitial;
+      const shouldForce = Boolean(opts?.force || hasExplicitTarget);
+      // Avoid fighting with user scroll once they started moving, unless explicitly forced or we preserve current offsets
+      if (userAdjustedScrollRef.current && !shouldForce && !preserveCurrent) return;
 
       const normalise = (value: number | undefined, fallback: number) => {
         if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
         return value < 0 ? 0 : value;
       };
 
-      const nextLeft = normalise(opts?.left, initialScrollOffsetsRef.current.left);
-      const nextTop = normalise(opts?.top, initialScrollOffsetsRef.current.top);
+      const baseLeft = preserveCurrent ? container.scrollLeft : initialScrollOffsetsRef.current.left;
+      const baseTop = preserveCurrent ? container.scrollTop : initialScrollOffsetsRef.current.top;
+
+      const nextLeft = normalise(opts?.left, baseLeft);
+      const nextTop = normalise(opts?.top, baseTop);
 
       if (opts?.updateInitial) {
         initialScrollOffsetsRef.current = { left: nextLeft, top: nextTop };
@@ -831,8 +881,12 @@ export default function ScheduleView({
       const apply = () => {
         const target = scrollParentRef.current;
         if (!target) return;
+        programmaticScrollRef.current += 1;
         if (target.scrollTop !== nextTop) target.scrollTop = nextTop;
         if (target.scrollLeft !== nextLeft) target.scrollLeft = nextLeft;
+        window.setTimeout(() => {
+          programmaticScrollRef.current = Math.max(0, programmaticScrollRef.current - 1);
+        }, 24);
       };
 
       cancelPending();
@@ -900,7 +954,7 @@ export default function ScheduleView({
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
         requestAnimationFrame(() => {
           recomputeColWidth();
-          resetScrollOffsets();
+          resetScrollOffsets({ preserveCurrent: true });
         });
       }
     };
@@ -955,7 +1009,7 @@ export default function ScheduleView({
       entries.forEach((entry) => {
         if (entry.isIntersecting) {
           requestAnimationFrame(() => {
-            resetScrollOffsets();
+            resetScrollOffsets({ preserveCurrent: true });
             ensureHeaderNotUnderAppBar();
           });
         }
@@ -991,6 +1045,7 @@ export default function ScheduleView({
   useEffect(() => {
     initialScrollOffsetsRef.current = { left: 0, top: 0 };
     didAutoCenterRef.current = false;
+    userAdjustedScrollRef.current = false;
   }, [anchorStartMs, rangeEndMs, nCols, colWpx, leftColW]);
 
   useEffect(() => {
@@ -1043,12 +1098,19 @@ export default function ScheduleView({
   // 4) 行（卓）の決定：tablesProp > tablesOptions > data から抽出。
   const tables = useMemo<string[]>(() => {
     // 優先順位: 1) 明示テーブル 2) 店舗設定の卓順 3) 予約から抽出
-    // すべて string 化してキーの不一致を防ぐ
-    if (tablesProp && tablesProp.length > 0) return tablesProp.map(String);
-    if (tablesOptions && tablesOptions.length > 0) return tablesOptions.map(String);
-    const set = new Set<string>();
-    for (const it of data) for (const t of it.tables) set.add(String(t));
-    return Array.from(set);
+    if (tablesProp && tablesProp.length > 0) return normalizeTableList(tablesProp);
+    if (tablesOptions && tablesOptions.length > 0) return normalizeTableList(tablesOptions);
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const it of data) {
+      for (const t of it.tables) {
+        const normalized = normalizeTableId(t);
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+        list.push(normalized);
+      }
+    }
+    return list;
   }, [tablesProp, tablesOptions, data]);
 
   const tableIndex = useMemo<Record<string, number>>(() => {
@@ -1148,19 +1210,53 @@ export default function ScheduleView({
     editingReservation?.departed,
   ]);
 
+  const handleReservationIdChange = useCallback((id: string) => {
+    const next = String(id ?? '').trim();
+    if (!next) return;
+    setEditing((prev) => (prev ? { ...prev, id: next } : prev));
+  }, []);
+
 
   // 卓番再割り当ての保存
+  const clearReassignSession = useCallback((id: string) => {
+    setReassignSessions(prev => {
+      const next = { ...prev };
+      delete next[id];
+      const remaining = Object.keys(next);
+      setActiveReassignId((current) => {
+        if (current && current !== id) return current;
+        return remaining[0] ?? null;
+      });
+      return next;
+    });
+  }, []);
+
   const confirmReassign = useCallback(() => {
-    if (!reassign) return;
-    const base = reassign.base as any;
+    const session = activeReassign;
+    if (!session) return;
+    const base = session.base as any;
     const baseId = String(base.id ?? base._key ?? '');
-    if (!baseId) { setReassign(null); return; }
-    const picked = Array.from(new Set((reassign.selected ?? []).map(String))).filter(Boolean);
-    if (picked.length === 0) { setReassign(null); return; }
+    if (!baseId) { clearReassignSession(baseId); return; }
+    const picked = Array.from(new Set((session.selected ?? []).map(normalizeTableId))).filter(Boolean);
+    if (picked.length === 0) { clearReassignSession(baseId); return; }
     const patch: any = { tables: picked, table: picked[0] };
     runSave(baseId, patch, { tables: picked, table: picked[0], editedUntilMs: Date.now() + 15000 });
-    setReassign(null);
-  }, [reassign, runSave]);
+    clearReassignSession(baseId);
+  }, [activeReassign, clearReassignSession, runSave]);
+
+  const confirmAllReassign = useCallback(async () => {
+    const entries = Object.entries(reassignSessions);
+    for (const [id, session] of entries) {
+      const base = session.base as any;
+      const baseId = String(base.id ?? base._key ?? id);
+      const picked = Array.from(new Set((session.selected ?? []).map(normalizeTableId))).filter(Boolean);
+      if (!baseId || picked.length === 0) continue;
+      const patch: any = { tables: picked, table: picked[0] };
+      await runSave(baseId, patch, { tables: picked, table: picked[0], editedUntilMs: Date.now() + 15000 });
+    }
+    setReassignSessions({});
+    setActiveReassignId(null);
+  }, [reassignSessions, runSave]);
 
   const toggleReservationStatus = useCallback((
     reservationId: string,
@@ -1267,19 +1363,56 @@ export default function ScheduleView({
 
   const startReassignForItem = useCallback((target: (ScheduleItem & { _startCol?: number; _spanCols?: number; _row?: number; _table?: string; _key?: string }) | null) => {
     if (!target) return;
-    const selected = Array.isArray((target as any)?.tables)
-      ? (target as any).tables.map((t: unknown) => String(t))
+    const baseId = String((target as any).id ?? (target as any)._key ?? '');
+    if (!baseId) return;
+    const useTables = Array.isArray((target as any)?.tables)
+      ? (target as any).tables.map(normalizeTableId).filter(Boolean)
       : [];
-    setReassign({
-      base: {
-        ...(target as any),
-        _startCol: Number((target as any)._startCol ?? 1),
-        _spanCols: Number((target as any)._spanCols ?? 1),
-      },
-      selected,
-      original: selected,
+    const focusTableValue = normalizeTableId((target as any)?._table ?? (target as any)?.table ?? '');
+    const focusTable = focusTableValue || undefined;
+    const initialSelected = focusTable ? [focusTable] : useTables;
+
+    setReassignSessions((prev) => {
+      const existing = prev[baseId];
+      if (existing) {
+        if (!focusTable) return prev;
+        const normalizedSet = new Set(existing.selected.map(normalizeTableId).filter(Boolean));
+        if (normalizedSet.has(focusTable)) return prev;
+        normalizedSet.add(focusTable);
+        return {
+          ...prev,
+          [baseId]: { ...existing, selected: Array.from(normalizedSet) },
+        };
+      }
+      return {
+        ...prev,
+        [baseId]: {
+          base: {
+            ...(target as any),
+            _startCol: Number((target as any)._startCol ?? 1),
+            _spanCols: Number((target as any)._spanCols ?? 1),
+          },
+          selected: initialSelected,
+          original: initialSelected,
+        },
+      };
     });
-  }, [setReassign]);
+    setActiveReassignId(baseId);
+  }, []);
+
+  const toggleTableSelection = useCallback((tableId: string) => {
+    const tkey = normalizeTableId(tableId);
+    if (!tkey || !activeReassignId) return;
+    setReassignSessions(prev => {
+      const activeId = activeReassignId;
+      if (!activeId) return prev;
+      const session = prev[activeId];
+      if (!session) return prev;
+      const normalizedSet = new Set(session.selected.map(normalizeTableId).filter(Boolean));
+      if (normalizedSet.has(tkey)) normalizedSet.delete(tkey); else normalizedSet.add(tkey);
+      return { ...prev, [activeId]: { ...session, selected: Array.from(normalizedSet) } };
+    });
+  }, [activeReassignId]);
 
   const drawerStatusControls = useMemo(() => {
     if (!editing?.id) return undefined;
@@ -1317,7 +1450,8 @@ export default function ScheduleView({
       const spanCols = Math.max(1, Math.ceil((e - s) / SLOT_MS));
       // 複数卓 → 各卓に同じブロックを描画（行スパン風）
       for (const t of it.tables) {
-        const tStr = String(t);
+        const tStr = normalizeTableId(t);
+        if (!tStr) continue;
         const row = tableIndex[tStr];
         if (row == null) continue; // row=1 を falsy 判定で落とさない
         const warn = conflictSet.has(`${tStr}::${it._key}`);
@@ -1367,21 +1501,288 @@ export default function ScheduleView({
     return out;
   }, [clipped, computeEndMsFor]);
 
-  const rowStackCount = useMemo(() => {
+  // 再割り当て選択によって非表示になるカードを除外した“見える”スタックを再計算
+  const visibleStacked = useMemo(() => {
+    const byRow: Record<string, any[]> = {};
+    (stacked as any[]).forEach((it) => {
+      const tableId = normalizeTableId(
+        (it as any)._table ?? tables[(Number((it as any)._row ?? 1) - 1)] ?? '',
+      );
+      const rowKey = tableId || String((it as any)._row ?? '');
+      const id = String((it as any)?.id ?? (it as any)?._key ?? '');
+      if (!rowKey) return;
+      const session = id ? reassignSessions[id] : undefined;
+      if (session && Array.isArray(session.selected) && session.selected.length > 0) {
+        const normalizedSet = new Set(
+          session.selected.map(normalizeTableId).filter(Boolean),
+        );
+        if (tableId && normalizedSet.size > 0 && !normalizedSet.has(tableId)) return; // この卓での表示を隠す
+      }
+      (byRow[rowKey] ??= []).push(it);
+    });
+
+    const out: any[] = [];
+    Object.entries(byRow).forEach(([rowKey, arr]) => {
+      arr.sort((a, b) => (a.startMs - b.startMs) || (computeEndMsFor(a) - computeEndMsFor(b)));
+      const active: { end: number; idx: number }[] = [];
+      arr.forEach((it) => {
+        const end = computeEndMsFor(it);
+        for (let i = active.length - 1; i >= 0; i--) {
+          if (active[i].end <= it.startMs) active.splice(i, 1);
+        }
+        const used = new Set(active.map(a => a.idx));
+        let idx = 0;
+        while (used.has(idx)) idx++;
+        const copy = { ...it, _stackIndex: idx, _rowKeyView: rowKey };
+        active.push({ end, idx });
+        out.push(copy);
+      });
+    });
+    return out;
+  }, [stacked, reassignSessions, tables, computeEndMsFor]);
+
+  const rowStackCountVisible = useMemo(() => {
     const m: Record<string, number> = {};
-    for (const it of stacked as any[]) {
-      const key = String((it as any)._table ?? (it as any)._row);
+    for (const it of visibleStacked as any[]) {
+      const key = normalizeTableId((it as any)._table ?? (it as any)._rowKeyView ?? (it as any)._row);
+      if (!key) continue;
       const idx = Number((it as any)._stackIndex ?? 0);
       const next = Math.max(1, idx + 1);
       m[key] = Math.max(m[key] ?? 1, next);
     }
     return m;
-  }, [stacked]);
+  }, [visibleStacked]);
 
-  // 各卓の行高：重なり数に応じて高さを増やす
+  // 卓番再割り当てプレビュー用に、各セッションの選択先卓へゴーストカードを描画するデータを作成
+  const reassignPreviewBlocks = useMemo(() => {
+    if (!reassignSessions || Object.keys(reassignSessions).length === 0) return [];
+
+    const rowsByItemId = new Map<string, Set<string>>();
+    visibleStacked.forEach((it: any) => {
+      const id = String(it?.id ?? it?._key ?? '');
+      const rowKey = normalizeTableId(it?._table ?? it?._row ?? '');
+      if (!id || !rowKey) return;
+      const set = rowsByItemId.get(id) ?? new Set<string>();
+      set.add(rowKey);
+      rowsByItemId.set(id, set);
+    });
+
+    const blocks: Array<{ row: number; startCol: number; spanCols: number; stackCount: number; item: any; sessionId: string }> = [];
+
+    Object.entries(reassignSessions).forEach(([sessionId, session]) => {
+      const base = session?.base as any;
+      if (!base) return;
+      const selected = Array.isArray(session?.selected)
+        ? Array.from(new Set(session.selected.map(normalizeTableId).filter(Boolean)))
+        : [];
+      if (selected.length === 0) return;
+
+      const baseId = String((base?.id ?? base?._key ?? sessionId) || sessionId);
+      const baseTableSet = new Set<string>();
+      if (Array.isArray(base?.tables)) {
+        base.tables.forEach((t: any) => {
+          const v = normalizeTableId(t);
+          if (v) baseTableSet.add(v);
+        });
+      }
+      const baseMain = normalizeTableId(base?._table ?? base?.table ?? '');
+      if (baseMain) baseTableSet.add(baseMain);
+      const rowsWithBase = rowsByItemId.get(baseId) ?? new Set<string>();
+
+      const visStart = Math.max(Number(base?.startMs ?? 0), anchorStartMs);
+      const visEnd = Math.min(computeEndMsFor(base), rangeEndMs);
+      if (!Number.isFinite(visStart) || !Number.isFinite(visEnd) || visEnd <= visStart) return;
+
+      const startSnap = snap5m(visStart);
+      const endSnap = snap5m(visEnd);
+      const startCol = Math.max(1, Math.floor((startSnap - anchorStartMs) / SLOT_MS) + 1);
+      const spanCols = Math.max(1, Math.ceil((endSnap - startSnap) / SLOT_MS));
+
+      selected.forEach((tbl) => {
+        const key = tbl;
+        if (baseTableSet.has(key)) return;
+        const row = tableIndex[key];
+        if (row == null) return;
+        // 既に元のカードが同じ卓に存在している場合は二重表示しない（キーは卓ID基準で判定）
+        if (rowsWithBase.has(key)) return;
+        blocks.push({
+          row,
+          startCol,
+          spanCols,
+          stackCount: rowStackCountVisible[key] ?? 1,
+          sessionId,
+          item: {
+            ...base,
+            _key: `${baseId}__preview__${sessionId}__${key}`,
+            _table: key,
+            table: key,
+            tables: [key],
+          },
+        });
+      });
+    });
+
+    return blocks;
+  }, [reassignSessions, anchorStartMs, rangeEndMs, tableIndex, rowStackCountVisible, computeEndMsFor, visibleStacked, snap5m]);
+
+  // セッションごとの色（ゴースト表示用）
+  const sessionPalette = useMemo(() => [
+    { fill: 'rgba(37,99,235,0.08)', outline: 'rgba(37,99,235,0.45)' },   // 1: blue
+    { fill: 'rgba(239,68,68,0.08)', outline: 'rgba(239,68,68,0.45)' },   // 2: red
+    { fill: 'rgba(139,92,246,0.08)', outline: 'rgba(139,92,246,0.45)' }, // 3: purple
+    { fill: 'rgba(249,115,22,0.08)', outline: 'rgba(249,115,22,0.45)' }, // 4: orange
+    { fill: 'rgba(139,92,246,0.08)', outline: 'rgba(139,92,246,0.45)' }, // 5: purple (repeat)
+    { fill: 'rgba(146,64,14,0.08)', outline: 'rgba(146,64,14,0.45)' },   // 6: brown
+    { fill: 'rgba(236,72,153,0.08)', outline: 'rgba(236,72,153,0.45)' }, // 7: pink
+    { fill: 'rgba(234,179,8,0.08)', outline: 'rgba(234,179,8,0.45)' },   // 8: yellow
+    { fill: 'rgba(6,182,212,0.08)', outline: 'rgba(6,182,212,0.45)' },   // 9: light blue
+  ], []);
+  const sessionOrder = useMemo(() => Object.keys(reassignSessions), [reassignSessions]);
+  const pickSessionColor = useCallback((sid?: string | null) => {
+    const target = sid ? String(sid) : '';
+    const idx = target ? sessionOrder.indexOf(target) : -1;
+    return sessionPalette[idx >= 0 ? (idx % sessionPalette.length) : 0];
+  }, [sessionOrder, sessionPalette]);
+
+  // プレビューと既存予約の両方を含めてスタック位置を計算（重なりを上下にずらす）
+  const overlayStackInfo = useMemo(() => {
+    if (!activeReassign && (!reassignSessions || Object.keys(reassignSessions).length === 0) && reassignPreviewBlocks.length === 0) {
+      return { idxByKey: {}, maxByRow: {} } as { idxByKey: Record<string, number>; maxByRow: Record<string, number> };
+    }
+    const idxByKey: Record<string, number> = {};
+    const maxByRow: Record<string, number> = {};
+    const byRow: Record<string, Array<{ start: number; end: number; key: string; fixedIdx?: number }>> = {};
+
+    // 既存予約（固定スタック番号を優先しつつ、重なり時は隣のレーンに逃がす）
+    (visibleStacked as any[]).forEach((it) => {
+      const rowKey = normalizeTableId(
+        (it as any)._table ??
+        tables[(Number((it as any)._row ?? 1) - 1)] ??
+        (it as any)._row ??
+        ''
+      );
+      const start = Number((it as any).startMs ?? 0);
+      const end = computeEndMsFor(it);
+      if (!rowKey || !Number.isFinite(start) || !Number.isFinite(end)) return;
+      const fixedIdx = Number((it as any)._stackIndex ?? 0);
+      (byRow[rowKey] ??= []).push({
+        start,
+        end,
+        key: String((it as any)._key ?? (it as any).id ?? `${rowKey}_${start}_${end}`),
+        fixedIdx,
+      });
+      maxByRow[rowKey] = Math.max(maxByRow[rowKey] ?? 1, fixedIdx + 1);
+    });
+
+    // プレビュー（スタック番号を新規に割り当て）
+    reassignPreviewBlocks.forEach((p) => {
+      const rowKey = normalizeTableId(
+        tables[(Number(p.row) - 1)] ??
+        p.row
+      );
+      const start = Number((p.item as any)?.startMs ?? 0);
+      const end = computeEndMsFor((p.item as any));
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+      const key = String((p.item as any)?._key ?? `preview_${rowKey}_${start}`);
+      (byRow[rowKey] ??= []).push({ start, end, key });
+    });
+
+    Object.entries(byRow).forEach(([row, arr]) => {
+      arr.sort((a, b) => {
+        if (a.start === b.start) return a.end - b.end;
+        // 開始が同じ場合でも元予約とゴーストをずらせるよう key で安定化
+        return a.start - b.start || a.key.localeCompare(b.key);
+      });
+      const active: { idx: number; end: number }[] = [];
+      arr.forEach((entry) => {
+        for (let i = active.length - 1; i >= 0; i--) {
+          if (active[i].end <= entry.start) active.splice(i, 1);
+        }
+        const used = new Set(active.map((a) => a.idx));
+        const desired = typeof entry.fixedIdx === 'number' && entry.fixedIdx >= 0 ? entry.fixedIdx : null;
+        let idx: number;
+        if (desired != null && !used.has(desired)) {
+          idx = desired;
+        } else {
+          idx = 0;
+          while (used.has(idx)) idx++;
+        }
+        idxByKey[entry.key] = idx;
+        active.push({ idx, end: entry.end });
+        maxByRow[row] = Math.max(maxByRow[row] ?? 1, idx + 1);
+      });
+    });
+
+    return { idxByKey, maxByRow };
+  }, [activeReassign, reassignPreviewBlocks, reassignSessions, visibleStacked, computeEndMsFor, tables]);
+
+  // セッションごとに、元のカードを選択卓で色付けするゴースト（アクティブでなくても表示）
+  const existingOverlayBlocks = useMemo(() => {
+    const blocks: Array<{
+      row: number;
+      startCol: number;
+      spanCols: number;
+      tableId: string;
+      item: any;
+      sessionId: string;
+    }> = [];
+
+    Object.entries(reassignSessions).forEach(([sessionId, session]) => {
+      if (!session) return;
+      const baseId = String((session.base as any)?.id ?? (session.base as any)?._key ?? sessionId);
+      if (!baseId) return;
+      const normalizedSelection = Array.from(
+        new Set((session.selected ?? []).map(normalizeTableId).filter(Boolean)),
+      );
+      if (normalizedSelection.length === 0) return;
+      const selectedRows = new Set<number>(
+        normalizedSelection
+          .map((t) => tableIndex[t])
+          .filter((n): n is number => Number.isFinite(n)),
+      );
+      if (selectedRows.size === 0) return;
+      const selectionSet = new Set(normalizedSelection);
+
+      (visibleStacked as any[])
+        .filter((it) => {
+          const id = String((it as any)?.id ?? (it as any)?._key ?? '');
+          if (baseId && id !== baseId) return false;
+          const row = Number((it as any)._row ?? 0);
+          if (!selectedRows.has(row)) return false;
+          const tableId = normalizeTableId(
+            (it as any)._table ?? tables[(row - 1)] ?? '',
+          );
+          if (!tableId) return false;
+          if (!selectionSet.has(tableId)) return false;
+          return true;
+        })
+        .forEach((it) => {
+          blocks.push({
+            row: Number((it as any)._row ?? 1),
+            startCol: Number((it as any)._startCol ?? 1),
+            spanCols: Number((it as any)._spanCols ?? 1),
+            tableId: normalizeTableId(
+              (it as any)._table ?? tables[(Number((it as any)._row ?? 1) - 1)] ?? '',
+            ),
+            item: it,
+            sessionId,
+          });
+        });
+    });
+
+    return blocks;
+  }, [reassignSessions, visibleStacked, tableIndex, tables]);
+
+  // 各卓の行高：既存 + プレビューの最大スタックに応じて高さを増やす
   const rowHeightsPx = useMemo(() => {
-    return tables.map((t) => (rowStackCount[String(t)] ?? 1) * effectiveRowH);
-  }, [tables, rowStackCount, effectiveRowH]);
+    return tables.map((t) => {
+      const tableId = String(t);
+      const stackExisting = rowStackCountVisible[tableId] ?? 1;
+      const stackOverlay = overlayStackInfo.maxByRow[tableId] ?? 1;
+      const maxStack = Math.max(stackExisting, stackOverlay);
+      return Math.max(1, maxStack) * effectiveRowH;
+    });
+  }, [tables, rowStackCountVisible, overlayStackInfo.maxByRow, effectiveRowH]);
 
 
   // 空きマスクリックで新規予約を作成
@@ -1392,10 +1793,6 @@ export default function ScheduleView({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // 列（1-based）
-    let col = Math.floor(x / colWpx) + 1;
-    col = Math.max(1, Math.min(nCols, col));
-
     // 行（1-based）：可変行高に対応
     let acc = 0;
     let row = 1;
@@ -1405,9 +1802,12 @@ export default function ScheduleView({
       if (i === rowHeightsPx.length - 1) row = rowHeightsPx.length;
     }
 
-    // 開始時刻（5分スナップ）
-    const startMsRaw = anchorStartMs + (col - 1) * SLOT_MS;
-    const startMs = snap5m(startMsRaw);
+    // 開始時刻（15分スナップ、クリック位置から最近値へ丸め）
+    const rawMs = anchorStartMs + (x / colWpx) * SLOT_MS;
+    const clampedMs = Math.max(anchorStartMs, Math.min(rangeEndMs, rawMs));
+    const snappedMs = snapMinutes(clampedMs, NEW_RESERVATION_STEP_MIN);
+    const maxStart = Math.max(anchorStartMs, rangeEndMs - NEW_RESERVATION_STEP_MIN * 60_000);
+    const startMs = Math.min(snappedMs, maxStart);
 
     // 卓（Shiftキー押下で隣卓も連結）
     const mainTable = tables[row - 1];
@@ -1422,7 +1822,7 @@ export default function ScheduleView({
       initial: { startMs, tables: joined, table: mainTable, guests: 0, name: '' },
     });
     setDrawerOpen(true);
-  }, [nCols, anchorStartMs, tables, colWpx, rowHeightsPx]);
+  }, [anchorStartMs, tables, colWpx, rowHeightsPx, rangeEndMs]);
 
   // Pointer-based axis decision (touch/pen/mouse drag on the scroll area)
   const handleScrollPointerDown = useCallback((e: PointerEvent<HTMLDivElement>) => {
@@ -1783,7 +2183,27 @@ export default function ScheduleView({
               />
 
               {/* 予約ブロック */}
-              {stacked.map((it) => (
+              {visibleStacked.map((it) => {
+                const itemId = String((it as any).id ?? (it as any)._key ?? '');
+                const session = itemId ? reassignSessions[itemId] : undefined;
+                const tableId = normalizeTableId((it as any)._table ?? tables[(Number((it as any)._row ?? 1) - 1)] ?? '');
+                if (session && Array.isArray(session.selected) && session.selected.length > 0 && tableId) {
+                  const selectedSet = new Set(session.selected.map(normalizeTableId).filter(Boolean));
+                  if (!selectedSet.has(tableId)) {
+                    return null; // 再割り当て中は選択された卓以外では元カードを非表示にする
+                  }
+                }
+              const rowIdx = Number((it as any)._row ?? 1) - 1;
+              const maxStackForRow = Math.max(
+                overlayStackInfo.maxByRow[tableId] ?? 1,
+                rowStackCountVisible[tableId] ?? 1,
+              );
+              const rowHeightForCard = rowHeightsPx[rowIdx] ?? effectiveRowH;
+              const overlayKey =
+                String((it as any)._key ?? it.id ?? '') ||
+                `${tableId}_${(it as any).startMs ?? ''}_${computeEndMsFor(it)}`;
+              const overlayIdx = activeReassign ? overlayStackInfo.idxByKey[overlayKey] : undefined;
+              return (
                 <ReservationBlock
                   key={`${it.id}_${it._row}`}
                   item={it}
@@ -1792,17 +2212,19 @@ export default function ScheduleView({
                   spanCols={it._spanCols}
                   onClick={() => openEditorFor(it)}
                   onLongPress={() => startReassignForItem(it)}
-                  stackCount={rowStackCount[String((it as any)._table ?? (it as any)._row)] ?? 1}
-                  rowHeightPx={rowHeightsPx[(it as any)._row - 1] ?? effectiveRowH}
+                  stackCount={maxStackForRow}
+                  rowHeightPx={rowHeightForCard}
+                  stackIndexOverride={overlayIdx}
                   courseColorMap={courseColorMap}
                   drinkOptionColorMap={drinkOptionColorMap}
                   eatOptionColorMap={eatOptionColorMap}
                 />
-              ))}
+              );
+              })}
             </div>
           </div>
           {/* 卓番再割り当てオーバーレイ */}
-          {reassign && (
+          {activeReassign && (
             <div className="absolute inset-0 z-[80] bg-black/10" data-scroll-lock-ignore>
               <div
                 className="absolute"
@@ -1820,32 +2242,245 @@ export default function ScheduleView({
                     gridTemplateRows: rowHeightsPx.map(h => `${h}px`).join(' '),
                   }}
                 >
-                  {/* 対象予約の時間幅を全卓に灰色で敷き、選択した卓は青で強調 */}
-                  {tables.map((t, idx) => {
-                    const row = idx + 1;
-                    const selected = reassign.selected.includes(String(t));
+                  {/* 対象予約の時間幅を全卓に灰色で敷き、セッションごとに色分けして表示 */}
+                  {(() => {
+                    return tables.map((t, idx) => {
+                      const row = idx + 1;
+                      const selected = activeReassign.selected.includes(String(t));
+                      const rowKey = String(t);
+                      const combinedStack = Math.max(
+                        rowStackCountVisible[rowKey] ?? 1,
+                        overlayStackInfo.maxByRow[rowKey] ?? 1
+                      );
+                      const baseRowH = rowHeightsPx[row - 1] ?? effectiveRowH;
+                      const perLayerH = Math.max(12, Math.floor(baseRowH / combinedStack));
+                      const previewForRow = reassignPreviewBlocks.find((p) => String(tables[p.row - 1] ?? p.row) === rowKey);
+                    const previewKey = previewForRow ? String((previewForRow.item as any)?._key ?? '') : '';
+                    const layerIdx = previewKey ? (overlayStackInfo.idxByKey[previewKey] ?? 0) : 0;
+                    const translateY = layerIdx * perLayerH;
+                    const color = pickSessionColor(
+                      previewForRow?.sessionId ??
+                      (previewForRow?.item as any)?.id ??
+                      (previewForRow?.item as any)?._key
+                    );
+                    const guideFill = 'rgba(110,231,183,0.1)'; // 全セッション共通の緑ガイド
+                    const guideOutline = 'rgba(5,150,105,0.6)';
+                    const bg = guideFill;
+                    const outline = selected
+                      ? `2px dashed ${guideOutline}`
+                      : `1px solid ${guideOutline}`;
                     return (
                       <div
                         key={t}
-                        onClick={() => {
-                          setReassign(prev => {
-                            if (!prev) return prev;
-                            const s = new Set(prev.selected.map(String));
-                            const key = String(t);
-                            if (s.has(key)) s.delete(key); else s.add(key);
-                            return { ...prev, selected: Array.from(s) };
-                          });
-                        }}
+                        onClick={() => toggleTableSelection(String(t))}
                         className="cursor-pointer"
                         style={{
-                          gridColumn: `${reassign.base._startCol} / span ${reassign.base._spanCols}`,
-                          gridRow: `${row} / span 1`,
-                          // 色調整: 未選択は薄いエメラルド、選択は従来どおり薄いブルー
-                          backgroundColor: selected ? 'rgba(59,130,246,0.18)' : 'rgba(110,231,183,0.18)',
-                          outline: selected ? '2px dashed #2563eb' : '1px solid rgba(5,150,105,0.45)',
-                          outlineOffset: '-1px',
+                      gridColumn: `${activeReassign.base._startCol} / span ${activeReassign.base._spanCols}`,
+                      gridRow: `${row} / span 1`,
+                      height: baseRowH,
+                        transform: translateY ? `translateY(${translateY}px)` : undefined,
+                            backgroundColor: bg,
+                            outline,
+                            outlineOffset: '-1px',
+                            position: 'relative',
+                          }}
+                          aria-label={`row-${t}`}
+                        >
+                          <div className="absolute inset-0 flex items-start justify-between px-2 py-1 text-[11px] leading-tight text-slate-700 pointer-events-none">
+                            <span className="font-semibold">卓 {t}</span>
+                            {selected && (
+                              <span className="text-blue-700 font-semibold">選択中</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+
+                  {/* 既存予約のゴースト（選択中の卓のみ表示） */}
+                  {existingOverlayBlocks.map((ghost, ghostIdx) => {
+                    const tableKey = normalizeTableId((ghost.item as any)?._table ?? ghost.tableId ?? tables[ghost.row - 1] ?? ghost.row);
+                    const rowKey = tableKey || String(ghost.row);
+                    const key = String((ghost.item as any)?._key ?? `${ghost.item?.id}_${ghost.row}`);
+                    const baseRowH = rowHeightsPx[ghost.row - 1] ?? effectiveRowH;
+                    const combinedStack = Math.max(
+                      rowStackCountVisible[rowKey] ?? 1,
+                      overlayStackInfo.maxByRow[rowKey] ?? 1
+                    );
+                    const laneHeight = Math.max(12, Math.floor(baseRowH / Math.max(1, combinedStack)));
+                    const idx = Math.max(0, overlayStackInfo.idxByKey[key] ?? 0);
+                    const translateY = idx * laneHeight;
+                    const color = pickSessionColor(ghost.sessionId ?? (ghost.item as any)?.id ?? (ghost.item as any)?._key ?? null);
+                    const isActiveSession = activeReassignId && ghost.sessionId === activeReassignId;
+                    return (
+                      <div
+                        key={`ghost_${key}_${ghostIdx}`}
+                        className="z-[88]"
+                        style={{
+                          gridColumn: `${ghost.startCol} / span ${ghost.spanCols}`,
+                          gridRow: `${ghost.row} / span 1`,
+                          transform: translateY ? `translateY(${translateY}px)` : undefined,
+                          height: baseRowH,
+                          pointerEvents: 'auto',
+                          backgroundColor: color.fill,
+                          outline: `2px dashed ${color.outline}`,
+                          outlineOffset: '-2px',
+                          borderRadius: 6,
                         }}
-                        aria-label={`row-${t}`}
+                      >
+                        <ReservationBlock
+                          item={ghost.item}
+                          row={ghost.row}
+                          startCol={ghost.startCol}
+                          spanCols={ghost.spanCols}
+                          stackCount={1}
+                          rowHeightPx={effectiveRowH}
+                          courseColorMap={courseColorMap}
+                          drinkOptionColorMap={drinkOptionColorMap}
+                          eatOptionColorMap={eatOptionColorMap}
+                          onClick={isActiveSession ? () => toggleTableSelection(tableKey) : undefined}
+                          stopPropagation={false}
+                          ghostTintColor={color.fill}
+                          ghostBorderColor={color.outline}
+                          onLongPress={() => startReassignForItem(ghost.item)}
+                        />
+                      </div>
+                    );
+                  })}
+
+                  {/* プレビュー用のゴースト予約カード（選択先の卓にも同じカードを重ねて表示） */}
+                  {reassignPreviewBlocks.map((preview, previewIdx) => {
+                    const tableKey = normalizeTableId((preview.item as any)?._table ?? (preview.item as any)?.table ?? tables[preview.row - 1] ?? preview.row);
+                    const rowKey = tableKey || String(preview.row);
+                    const key = String((preview.item as any)?._key ?? `${preview.item?.id}_${preview.row}`);
+                    const baseRowH = rowHeightsPx[preview.row - 1] ?? effectiveRowH;
+                    const combinedStack = Math.max(
+                      rowStackCountVisible[rowKey] ?? 1,
+                      overlayStackInfo.maxByRow[rowKey] ?? 1
+                    );
+                    const laneHeight = Math.max(12, Math.floor(baseRowH / Math.max(1, combinedStack)));
+                    const idx = Math.max(0, overlayStackInfo.idxByKey[key] ?? 0);
+                    const translateY = idx * laneHeight;
+                    const isActiveSession = preview.sessionId === activeReassignId;
+                    const color = pickSessionColor(preview.sessionId ?? (preview.item as any)?.id ?? (preview.item as any)?._key);
+                    return (
+                      <div
+                        key={`${key}_${previewIdx}`}
+                        className="z-[90]"
+                        style={{
+                          gridColumn: `${preview.startCol} / span ${preview.spanCols}`,
+                          gridRow: `${preview.row} / span 1`,
+                          transform: translateY ? `translateY(${translateY}px)` : undefined,
+                          height: baseRowH,
+                          pointerEvents: 'auto',
+                          backgroundColor: color.fill,
+                          outline: `2px dashed ${color.outline}`,
+                          outlineOffset: '-2px',
+                          borderRadius: 6,
+                        }}
+                      >
+                        <ReservationBlock
+                          item={preview.item}
+                          row={preview.row}
+                          startCol={preview.startCol}
+                          spanCols={preview.spanCols}
+                          stackCount={1}
+                          rowHeightPx={effectiveRowH}
+                          courseColorMap={courseColorMap}
+                          drinkOptionColorMap={drinkOptionColorMap}
+                          eatOptionColorMap={eatOptionColorMap}
+                          onClick={isActiveSession ? () => toggleTableSelection(tableKey) : undefined}
+                          stopPropagation={false}
+                          ghostTintColor={color.fill}
+                          ghostBorderColor={color.outline}
+                          onLongPress={() => startReassignForItem(preview.item)}
+                        />
+                      </div>
+                    );
+                  })}
+
+                  {/* 他の予約カードも長押しで卓番変更セッションに切り替えられるようにする透明ヒットエリア */}
+                  {visibleStacked.map((it) => {
+                    const key = String((it as any).id ?? (it as any)._key ?? '');
+                    if (!key) return null;
+                    const row = Number((it as any)._row ?? 1);
+                    const startCol = Number((it as any)._startCol ?? 1);
+                    const spanCols = Math.max(1, Number((it as any)._spanCols ?? 1));
+                    const LONG_MS = 600;
+                    const MOVE_TOL = 10;
+
+                    const handleDown = (e: any) => {
+                      const x = Number(e?.clientX ?? 0);
+                      const y = Number(e?.clientY ?? 0);
+                      const store = overlayPressRef.current;
+                      const state = (store[key] = store[key] || { tid: null, x: 0, y: 0, fired: false });
+                      state.x = x;
+                      state.y = y;
+                      state.fired = false;
+                      if (state.tid != null) {
+                        window.clearTimeout(state.tid);
+                      }
+                      state.tid = window.setTimeout(() => {
+                        state.tid = null;
+                        state.fired = true;
+                        startReassignForItem(it as any);
+                      }, LONG_MS) as unknown as number;
+                    };
+
+                    const clearTimer = () => {
+                      const state = overlayPressRef.current[key];
+                      if (state?.tid != null) {
+                        window.clearTimeout(state.tid);
+                        state.tid = null;
+                      }
+                    };
+
+                    const handleMove = (e: any) => {
+                      const state = overlayPressRef.current[key];
+                      if (!state || state.tid == null) return;
+                      const dx = Math.abs(Number(e?.clientX ?? 0) - state.x);
+                      const dy = Math.abs(Number(e?.clientY ?? 0) - state.y);
+                      if (dx > MOVE_TOL || dy > MOVE_TOL) {
+                        clearTimer();
+                      }
+                    };
+
+                    const handleUp = () => clearTimer();
+                    const handleCancel = () => clearTimer();
+
+                    const handleClick = () => {
+                      const state = overlayPressRef.current[key];
+                      if (state?.fired) return; // long press already handled
+                      const tableId = normalizeTableId((it as any)._table ?? tables[row - 1] ?? '');
+                      if (!tableId || !activeReassignId) return;
+                      setReassignSessions(prev => {
+                        const activeId = activeReassignId;
+                        if (!activeId) return prev;
+                        const session = prev[activeId];
+                        if (!session) return prev;
+                        const normalizedSet = new Set(session.selected.map(normalizeTableId).filter(Boolean));
+                        if (normalizedSet.has(tableId)) normalizedSet.delete(tableId); else normalizedSet.add(tableId);
+                        return { ...prev, [activeId]: { ...session, selected: Array.from(normalizedSet) } };
+                      });
+                    };
+
+                    return (
+                      <div
+                        key={`hit_${key}_${row}`}
+                        className="cursor-pointer w-full h-full"
+                        style={{
+                          gridColumn: `${startCol} / span ${spanCols}`,
+                          gridRow: `${row} / span 1`,
+                          zIndex: 110,
+                          backgroundColor: 'transparent',
+                        }}
+                        onPointerDown={handleDown}
+                        onPointerMove={handleMove}
+                        onPointerUp={handleUp}
+                        onPointerCancel={handleCancel}
+                        onPointerLeave={handleCancel}
+                        onClick={handleClick}
+                        aria-label="reservation-reassign-hit"
                       />
                     );
                   })}
@@ -1858,34 +2493,102 @@ export default function ScheduleView({
                     bottom: bottomOffsetPx,
                   }}
                 >
-                  <div className="mx-auto max-w-screen-sm flex items-center justify-between gap-2 p-2 rounded-lg bg-white border shadow-lg pointer-events-auto">
-                    <button
-                      type="button"
-                      onClick={() => setReassign(prev => prev ? { ...prev, selected: [...prev.original] } : prev)}
-                      className="px-3 py-2 rounded bg-white border shadow-sm text-gray-700"
-                    >
-                      元に戻す
-                    </button>
+                  <div className="mx-auto max-w-screen-sm flex flex-col gap-2 p-2 rounded-lg bg-white border shadow-lg pointer-events-auto">
+                    <div className="hidden sm:flex flex-wrap gap-2 items-center">
+                      {Object.entries(reassignSessions).map(([id, session]) => {
+                        const labelTime = fmtTime(session.base.startMs ?? 0);
+                        const baseTable = String(
+                          session.selected[0] ??
+                          (session.base as any)?._table ??
+                          (session.base as any)?.table ??
+                          '未指定'
+                        );
+                        const label = `${baseTable} / ${labelTime}`;
+                        const isActive = id === activeReassignId;
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => setActiveReassignId(id)}
+                            className={`px-3 py-1 rounded-full border text-sm ${isActive ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-gray-50 border-gray-300 text-gray-700'}`}
+                            title="対象の予約を切り替え"
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                    <div className="flex-1" />
+                    {activeReassign && (
+                      <div className="hidden sm:flex flex-wrap gap-2 max-h-24 overflow-y-auto">
+                        {tables.map((t) => {
+                          const selected = activeReassign.selected.includes(String(t));
+                          return (
+                            <button
+                              key={t}
+                              type="button"
+                              onClick={() => setReassignSessions(prev => {
+                                const activeId = activeReassignId;
+                                if (!activeId) return prev;
+                                const session = prev[activeId];
+                                if (!session) return prev;
+                                const set = new Set(session.selected.map(String));
+                                const key = String(t);
+                                if (set.has(key)) set.delete(key); else set.add(key);
+                                return { ...prev, [activeId]: { ...session, selected: Array.from(set) } };
+                              })}
+                              className={`px-3 py-1 rounded border text-sm ${selected ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300'}`}
+                            >
+                              {t}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setReassign(null);
-                      }}
-                      className="px-3 py-2 rounded bg-white border shadow-sm text-gray-700"
-                    >
-                      キャンセル
-                    </button>
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setReassignSessions(prev => {
+                          const activeId = activeReassignId;
+                          if (!activeId) return prev;
+                          const session = prev[activeId];
+                          if (!session) return prev;
+                          return { ...prev, [activeId]: { ...session, selected: [...session.original] } };
+                        })}
+                        className="px-3 py-2 rounded bg-white border shadow-sm text-gray-700"
+                      >
+                        元に戻す
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={confirmReassign}
-                      className="px-4 py-2 rounded bg-sky-600 text-white shadow"
-                    >
-                      決定
-                    </button>
+                      <div className="flex-1" />
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (activeReassignId) clearReassignSession(activeReassignId);
+                        }}
+                        className="px-3 py-2 rounded bg-white border shadow-sm text-gray-700"
+                      >
+                        キャンセル
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={confirmReassign}
+                        className="px-4 py-2 rounded bg-sky-600 text-white shadow"
+                      >
+                        決定
+                      </button>
+                      <button
+                        type="button"
+                        onClick={confirmAllReassign}
+                        className="px-4 py-2 rounded bg-indigo-600 text-white shadow"
+                        disabled={Object.keys(reassignSessions).length === 0}
+                      >
+                        全て適用
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1906,6 +2609,7 @@ export default function ScheduleView({
         dayStartMs={day0} // ドロワーには当日0:00を渡す（表示範囲の開始時刻ではなく）
         onSave={onSave}
         onDelete={onDelete}
+        onReservationIdChange={handleReservationIdChange}
         reservationDetail={editingReservation}
         statusControls={drawerStatusControls}
         onUpdateReservationField={onUpdateReservationField}
@@ -2147,6 +2851,12 @@ function ReservationBlock({
   courseColorMap,
   drinkOptionColorMap,
   eatOptionColorMap,
+  hideContent = false,
+  stopPropagation = true,
+  ghostOpacity = 1,
+  ghostTintColor,
+  ghostBorderColor,
+  stackIndexOverride,
 }: {
   item: ScheduleItem & { status?: 'normal' | 'warn'; _table?: string; _key?: string; _editedAllowed?: boolean };
   row: number;
@@ -2159,6 +2869,12 @@ function ReservationBlock({
   courseColorMap: Map<string, CourseColorStyle>;
   drinkOptionColorMap: Map<string, CourseColorStyle>;
   eatOptionColorMap: Map<string, CourseColorStyle>;
+  hideContent?: boolean;
+  stopPropagation?: boolean;
+  ghostOpacity?: number;
+  ghostTintColor?: string;
+  ghostBorderColor?: string;
+  stackIndexOverride?: number;
 }) {
   const warn = item.status === 'warn';
   const raw = item as any;
@@ -2277,7 +2993,9 @@ function ReservationBlock({
   const baseTitle = baseTitleParts.join(' / ');
   const titleText = baseTitle || undefined;
 
-  const stackIndex = Number((item as any)._stackIndex ?? 0);
+  const stackIndex = typeof stackIndexOverride === 'number'
+    ? stackIndexOverride
+    : Number((item as any)._stackIndex ?? 0);
   const layers = Math.max(1, Number(stackCount || 1));
   const rowH = Math.max(1, Number(rowHeightPx || 1));
   const perLayerH = Math.max(1, Math.floor(rowH / layers));
@@ -2286,13 +3004,13 @@ function ReservationBlock({
   const translate = translateY ? `translate3d(0, ${translateY}px, 0)` : undefined;
 
   const handleClick = useCallback((e: MouseEvent<HTMLDivElement>) => {
-    e.stopPropagation();
+    if (stopPropagation !== false) e.stopPropagation();
     if (pressRef.current.suppressClick) {
       pressRef.current.suppressClick = false;
       return;
     }
     onClick?.();
-  }, [onClick]);
+  }, [onClick, stopPropagation]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
     if (!onClick) return;
@@ -2320,8 +3038,9 @@ function ReservationBlock({
         paddingBottom: 3,
         height: perLayerH,
         touchAction: 'pan-x pan-y',
+        opacity: ghostOpacity,
       }}
-      title={titleText || undefined}
+      title={hideContent ? undefined : titleText || undefined}
       onClick={handleClick}
       // 長押しで卓番再割り当てモードを起動
       onPointerDown={(e) => {
@@ -2381,53 +3100,59 @@ function ReservationBlock({
       <div
         className={`relative flex h-full w-full flex-col justify-between rounded-[6px] shadow-[0_1px_2px_rgba(15,23,42,0.1)] ${bodyTextClass} ${state === 'departed' ? 'opacity-80' : ''} overflow-hidden`}
         style={{
-          margin: '0px',
-          // バッジ分の余白を右側に確保（被り回避）
-          padding: warn ? '6px 44px 6px 10px' : '6px 10px 6px',
-          border: `3px solid ${borderColor}`,
-          backgroundColor: colors.left,
-          backgroundImage: `linear-gradient(to right, ${colors.left} 0%, ${colors.left} 50%, ${colors.right} 50%, ${colors.right} 100%)`,
-        }}
-      >
+        margin: '0px',
+        // バッジ分の余白を右側に確保（被り回避）
+        padding: warn ? '6px 44px 6px 10px' : '6px 10px 6px',
+        border: `3px solid ${ghostBorderColor ?? borderColor}`,
+        backgroundColor: ghostTintColor ?? colors.left,
+        backgroundImage: ghostTintColor
+          ? 'none'
+          : `linear-gradient(to right, ${colors.left} 0%, ${colors.left} 50%, ${colors.right} 50%, ${colors.right} 100%)`,
+      }}
+    >
         {/* Status dot removed from inside the card container */}
-        <div className={`grid h-full grid-rows-[auto_1fr_auto] text-[12px] ${bodyTextClass} min-w-0`}>
-          <div className="flex items-center justify-between text-[12px] font-semibold min-w-0 pb-0.5" style={{ color: textAccent }}>
-            <div className="flex items-center gap-2 min-w-0 whitespace-nowrap">
-              <span className="font-mono text-[13px] tracking-tight leading-none shrink-0">{startLabel}</span>
-              <span className="font-mono text-[13px] tracking-tight leading-none shrink-0" aria-label="人数">
-                {guestsLabel || '―'}
+        {hideContent ? (
+          <div className="h-full w-full" aria-hidden />
+        ) : (
+          <div className={`grid h-full grid-rows-[auto_1fr_auto] text-[12px] ${bodyTextClass} min-w-0`}>
+            <div className="flex items-center justify-between text-[12px] font-semibold min-w-0 pb-0.5" style={{ color: textAccent }}>
+              <div className="flex items-center gap-2 min-w-0 whitespace-nowrap">
+                <span className="font-mono text-[13px] tracking-tight leading-none shrink-0">{startLabel}</span>
+                <span className="font-mono text-[13px] tracking-tight leading-none shrink-0" aria-label="人数">
+                  {guestsLabel || '―'}
+                </span>
+              </div>
+              <div className="flex gap-1 text-[11px] text-slate-500 shrink-0 overflow-hidden">
+                {showEat && (
+                  <span
+                    className="rounded-sm border px-1 leading-tight whitespace-nowrap"
+                    style={eatColorStyle ? { color: eatColorStyle.text, borderColor: eatColorStyle.border } : undefined}
+                  >
+                    {eatLabel || '食放'}
+                  </span>
+                )}
+                {showDrink && (
+                  <span
+                    className="rounded-sm border px-1 leading-tight whitespace-nowrap"
+                    style={drinkColorStyle ? { color: drinkColorStyle.text, borderColor: drinkColorStyle.border } : undefined}
+                  >
+                    {drinkLabel || '飲放'}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className={`flex items-center overflow-hidden text-[11px] ${secondaryTextClass} min-w-0`} />
+            <div className={`flex items-end justify-between text-[11px] ${secondaryTextClass} min-w-0 pt-0.5`}>
+              <span className="font-medium truncate max-w-[60%]" aria-label="氏名">{name}</span>
+              <span
+                className={`truncate text-right text-[11px] ${secondaryTextClass}`}
+                style={courseTextStyle}
+              >
+                {course}
               </span>
             </div>
-            <div className="flex gap-1 text-[11px] text-slate-500 shrink-0 overflow-hidden">
-              {showEat && (
-                <span
-                  className="rounded-sm border px-1 leading-tight whitespace-nowrap"
-                  style={eatColorStyle ? { color: eatColorStyle.text, borderColor: eatColorStyle.border } : undefined}
-                >
-                  {eatLabel || '食放'}
-                </span>
-              )}
-              {showDrink && (
-                <span
-                  className="rounded-sm border px-1 leading-tight whitespace-nowrap"
-                  style={drinkColorStyle ? { color: drinkColorStyle.text, borderColor: drinkColorStyle.border } : undefined}
-                >
-                  {drinkLabel || '飲放'}
-                </span>
-              )}
-            </div>
           </div>
-          <div className={`flex items-center overflow-hidden text-[11px] ${secondaryTextClass} min-w-0`} />
-          <div className={`flex items-end justify-between text-[11px] ${secondaryTextClass} min-w-0 pt-0.5`}>
-            <span className="font-medium truncate max-w-[60%]" aria-label="氏名">{name}</span>
-            <span
-              className={`truncate text-right text-[11px] ${secondaryTextClass}`}
-              style={courseTextStyle}
-            >
-              {course}
-            </span>
-          </div>
-        </div>
+        )}
 
         {warn && (
           <div className="absolute right-2 top-2 inline-flex items-center rounded-full bg-amber-400 px-2 py-px text-[10px] font-semibold text-white">
