@@ -72,6 +72,8 @@ export type StoreSettings = {
   positions?: unknown;
   tables?: unknown;
   tableCapacities?: unknown;
+  floorLayoutBase?: unknown;
+  floorLayoutDaily?: unknown;
   plans?: unknown;
   tasksByPosition?: unknown;
   eatOptions?: unknown;
@@ -93,6 +95,8 @@ export type StoreSettingsValue = {
   positions: string[];
   tables: string[];
   tableCapacities?: TableCapacityMap;
+  floorLayoutBase?: Record<string, unknown>;
+  floorLayoutDaily?: Record<string, Record<string, unknown>>;
   areas?: AreaDef[];
   plans: string[];
   tasksByPosition?: Record<string, Record<string, string[]>>;
@@ -452,6 +456,12 @@ export const toUISettings = (fs: StoreSettings): StoreSettingsValue => {
   // tables/plans/eatOptions/drinkOptions は文字列配列化
   const tables: string[] = sanitizeTables(fs?.tables);
   const tableCapacities = sanitizeTableCapacities(fs?.tableCapacities, tables);
+  const floorLayoutBase = (fs && typeof (fs as any).floorLayoutBase === 'object')
+    ? ((fs as any).floorLayoutBase as Record<string, unknown>)
+    : undefined;
+  const floorLayoutDaily = (fs && typeof (fs as any).floorLayoutDaily === 'object')
+    ? ((fs as any).floorLayoutDaily as Record<string, Record<string, unknown>>)
+    : undefined;
   const plans: string[] = toStringList(fs?.plans);
   const eatOptions: EatDrinkOption[] = sanitizeEatDrinkOptions(fs?.eatOptions);
   const drinkOptions: EatDrinkOption[] = sanitizeEatDrinkOptions(fs?.drinkOptions);
@@ -480,6 +490,8 @@ export const toUISettings = (fs: StoreSettings): StoreSettingsValue => {
     tasksByPosition,
     eatOptions,
     drinkOptions,
+    floorLayoutBase,
+    floorLayoutDaily,
     areas,
     miniTasksByPosition,
     wave: waveCfg,
@@ -499,6 +511,8 @@ export const toFirestorePayload = (ui: StoreSettingsValue): StoreSettings => {
   const positions = toPositionNames(ui.positions);
   const tables = sanitizeTables(ui.tables);
   const tableCapacities = sanitizeTableCapacities(ui.tableCapacities, tables);
+  const floorLayoutBase = ui.floorLayoutBase;
+  const floorLayoutDaily = ui.floorLayoutDaily;
   const plans = toStringList(ui.plans);
   const eatOptions = serializeEatDrinkOptions(ui.eatOptions);
   const drinkOptions = serializeEatDrinkOptions(ui.drinkOptions);
@@ -516,6 +530,8 @@ export const toFirestorePayload = (ui: StoreSettingsValue): StoreSettings => {
     positions,
     tables,
     tableCapacities: Object.keys(tableCapacities).length > 0 ? tableCapacities : undefined,
+    floorLayoutBase: floorLayoutBase && typeof floorLayoutBase === 'object' ? floorLayoutBase : undefined,
+    floorLayoutDaily: floorLayoutDaily && typeof floorLayoutDaily === 'object' ? floorLayoutDaily : undefined,
     plans,
     eatOptions,
     drinkOptions,

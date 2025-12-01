@@ -36,6 +36,7 @@ import { normalizeCourseColor } from '@/lib/courseColors';
 import LoadingSpinner from './_components/LoadingSpinner';
 import ReservationsSection from './_components/ReservationsSection';
 import CourseStartSection from './_components/CourseStartSection';
+import FloorManagementView from './_components/floor/FloorManagementView';
 import type {
   ResOrder,
   Reservation,
@@ -68,7 +69,7 @@ const DEFAULT_DRINK_OPTIONS: EatDrinkOption[] = [
   { label: 'スタ' },
   { label: 'プレ' },
 ];
-type BottomTab = 'reservations' | 'schedule' | 'tasks' | 'courseStart';
+type BottomTab = 'reservations' | 'schedule' | 'floor' | 'tasks' | 'courseStart';
 const TASK_OFFSET_MIN = -180;
 const TASK_OFFSET_MAX = 180;
 const clampTaskOffset = (offset: number) =>
@@ -545,7 +546,7 @@ function HomeBody() {
   useEffect(() => {
     try {
       const t = search?.get('tab');
-      if (t === 'reservations' || t === 'tasks' || t === 'courseStart' || t === 'schedule') {
+      if (t === 'reservations' || t === 'tasks' || t === 'courseStart' || t === 'schedule' || t === 'floor') {
         setBottomTab(t as BottomTab);
       }
     } catch {
@@ -987,6 +988,80 @@ useEffect(() => {
     error: reservationsError,
     scheduleItems, // ← 追加：スケジュール用アイテム
   } = useReservationsData(id as string, { dayStartMs }); // pass dayStartMs to ensure absolute-ms mapping
+
+  const persistFloorLayout = useCallback(async (kind: 'base' | 'day', layout: Record<string, unknown>, dayKey: string) => {
+    setSettingsDraft((prev) => {
+      const nextDaily = kind === 'day' ? { ...(prev.floorLayoutDaily ?? {}), [dayKey]: layout } : (prev.floorLayoutDaily ?? {});
+      const nextBase = kind === 'base' ? layout : (prev.floorLayoutBase as any);
+      return { ...prev, floorLayoutBase: nextBase, floorLayoutDaily: nextDaily };
+    });
+    setBaselineSettings((prev) => {
+      if (!prev) return prev;
+      const nextDaily = kind === 'day' ? { ...(prev.floorLayoutDaily ?? {}), [dayKey]: layout } : prev.floorLayoutDaily;
+      const nextBase = kind === 'base' ? layout : prev.floorLayoutBase;
+      return { ...prev, floorLayoutBase: nextBase, floorLayoutDaily: nextDaily };
+    });
+    try {
+      await saveSettings({
+        ...(serverSettings as any),
+        floorLayoutBase: kind === 'base' ? layout : (serverSettings as any)?.floorLayoutBase,
+        floorLayoutDaily: kind === 'day'
+          ? { ...(serverSettings as any)?.floorLayoutDaily, [dayKey]: layout }
+          : (serverSettings as any)?.floorLayoutDaily,
+      } as any);
+    } catch {
+      /* ignore */
+    }
+  }, [saveSettings, serverSettings]);
+
+  const persistTables = useCallback(async (nextTables: string[], nextAreas: AreaDef[]) => {
+    patchSettings({ tables: nextTables, areas: nextAreas });
+    try {
+      await saveSettings({
+        ...(serverSettings as any),
+        tables: nextTables,
+        areas: nextAreas,
+      } as any);
+    } catch {
+      /* ignore */
+    }
+  }, [patchSettings, saveSettings, serverSettings]);
+
+  const replaceTableIdEverywhere = useCallback(async (fromId: string, toId: string) => {
+    const from = String(fromId ?? '').trim();
+    const to = String(toId ?? '').trim();
+    if (!from || !to || from === to) return;
+
+    const changed: { id: string; table: string; tables: string[] }[] = [];
+    setReservations((prev) => {
+      let dirty = false;
+      const next = prev.map((r) => {
+        const updatedTable = r.table === from ? to : r.table;
+        const updatedTables = Array.isArray(r.tables) ? r.tables.map((t) => (t === from ? to : t)) : [];
+        const tablesNormalized = updatedTables.length > 0 ? updatedTables : (updatedTable ? [updatedTable] : []);
+        const changedThis = updatedTable !== r.table || JSON.stringify(updatedTables) !== JSON.stringify(r.tables);
+        if (changedThis) {
+          dirty = true;
+          changed.push({ id: r.id, table: updatedTable || tablesNormalized[0] || to, tables: tablesNormalized });
+          return { ...r, table: updatedTable || tablesNormalized[0] || to, tables: tablesNormalized };
+        }
+        return r;
+      });
+      if (dirty) {
+        persistReservations(next);
+        writeReservationsCache(next);
+      }
+      return next;
+    });
+
+    for (const item of changed) {
+      try {
+        await updateReservationMut(item.id, { table: item.table, tables: item.tables });
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [persistReservations, writeReservationsCache, updateReservationMut]);
 
   // ── Early loading guard ───────────────────────────────
   const loading = settingsLoading === true;
@@ -4090,6 +4165,43 @@ scheduleEndHour={scheduleEndHour}
     />
   </div>
 )}
+{/* ───────────── フロア管理（新規タブ） ───────────── */}
+{!isSettings && bottomTab === 'floor' && (
+  <div className="relative">
+    <FloorManagementView
+      storeId={id as string}
+      reservations={reservations}
+      scheduleItems={scheduleItems}
+      tables={presetTablesView}
+      areas={usableAreas}
+      floorLayoutBase={settingsDraft.floorLayoutBase as any}
+      floorLayoutDaily={settingsDraft.floorLayoutDaily as any}
+      onPersistLayout={persistFloorLayout}
+      onUpdateTables={persistTables}
+      onReplaceTableId={replaceTableIdEverywhere}
+      coursesOptions={courses}
+      storeSettings={settingsDraft}
+      eatOptions={eatOptions}
+      drinkOptions={drinkOptions}
+      dayStartMs={startOfDayMs(dayStartMs)}
+      onSave={async (data, id) => {
+        if (id) {
+          return await updateReservationMut(id, data);
+        } else {
+          return await createReservationMut(data);
+        }
+      }}
+      onDelete={async (id) => {
+        await deleteReservationMut(id);
+      }}
+      onUpdateReservationField={updateReservationFieldCb}
+      onAdjustTaskTime={adjustTaskTime}
+      onToggleArrival={toggleArrivalChecked}
+      onTogglePayment={togglePaymentChecked}
+      onToggleDeparture={toggleDepartureChecked}
+    />
+  </div>
+)}
 {/* ───────────── タスク表セクション（外部コンポーネント） start ───────────── */}
 {!isSettings && bottomTab === 'tasks' && (
   <div className="">
@@ -4184,7 +4296,7 @@ scheduleEndHour={scheduleEndHour}
   style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
   aria-hidden={sidebarOpen}
 >
-  <div className="max-w-6xl mx-auto grid grid-cols-4">
+  <div className="max-w-6xl mx-auto grid grid-cols-5">
     <button
       type="button"
       onClick={() => handleBottomTabClick('reservations')}
@@ -4204,7 +4316,7 @@ scheduleEndHour={scheduleEndHour}
       type="button"
       onClick={() => handleBottomTabClick('schedule')}
       className={[
-        'py-3 text-sm font-medium border-l border-r',
+        'py-3 text-sm font-medium border-l',
         bottomTab === 'schedule' ? 'text-blue-600' : 'text-gray-600 hover:bg-gray-50',
       ].join(' ')}
       aria-pressed={bottomTab === 'schedule'}
@@ -4214,9 +4326,23 @@ scheduleEndHour={scheduleEndHour}
     </button>
     <button
       type="button"
+      onClick={() => handleBottomTabClick('floor')}
+      className={[
+        'py-3 text-sm font-medium border-l',
+        bottomTab === 'floor'
+          ? 'text-blue-600'
+          : 'text-gray-600 hover:bg-gray-50'
+      ].join(' ')}
+      aria-pressed={bottomTab === 'floor'}
+      tabIndex={sidebarOpen ? -1 : 0}
+    >
+      フロア管理
+    </button>
+    <button
+      type="button"
       onClick={() => handleBottomTabClick('tasks')}
       className={[
-        'py-3 text-sm font-medium border-l border-r',
+        'py-3 text-sm font-medium border-l',
         bottomTab === 'tasks'
           ? 'text-blue-600'
           : 'text-gray-600 hover:bg-gray-50'

@@ -20,6 +20,7 @@ import WaveSettings from './WaveSettings';
 import ScheduleSettings from './ScheduleSettings';
 import SeatOptimizerSettings from './SeatOptimizerSettings';
 import { DEFAULT_POSITION_LABEL } from '@/constants/positions';
+import FloorLayoutSettings, { type FloorLayoutMap } from './FloorLayoutSettings';
 
 // --- UI labels for *Store Settings* only (do NOT change from other screens) ---
 const STORE_LABEL_POSITIONS = 'ポジション設定';
@@ -175,6 +176,7 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
     | 'tables'
     | 'tablesTables'
     | 'tablesAreas'
+    | 'floorLayout'
     | 'eatdrink'
     | 'minitasks'
     | 'wavesettings'
@@ -1108,6 +1110,10 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
           }
           onClick={() => setView('tables')}
         />
+        <ListItem
+          label={<span>フロアレイアウト設定</span>}
+          onClick={() => setView('floorLayout')}
+        />
         {showTablesInfo && (
           <div id="tables-info" className="px-4 py-3 text-[13px] text-blue-900 border-b bg-blue-50/60">
             <p className="mb-1 font-medium">卓設定 / エリア設定とは？</p>
@@ -1373,6 +1379,34 @@ export default function StoreSettingsContent({ value, onChange, onSave, isSaving
       <SubPageShell title="スケジュール設定">
         <div className="text-sm text-gray-600">
           <ScheduleSettings value={value} onChange={patchRoot} />
+        </div>
+      </SubPageShell>
+    );
+  }
+
+  // --- Floor layout settings page ---
+  if (view === 'floorLayout') {
+    return (
+      <SubPageShell title="フロアレイアウト設定">
+        <div className="text-sm text-gray-700 space-y-4">
+          <p className="text-xs text-gray-600">
+            ベースレイアウトを設定します。フロア画面ではここで保存したレイアウトを基に、当日だけの微調整（日次レイアウト編集）を行えます。
+            卓の追加・番号変更もここから設定できます。
+          </p>
+          <FloorLayoutSettings
+            tables={presetTables}
+            areas={areas}
+            layout={value.floorLayoutBase as FloorLayoutMap | undefined}
+            tableCapacities={tableCapacities}
+            onChangeLayout={(next) => {
+              setLocalDirty(true);
+              onChange({ floorLayoutBase: next });
+            }}
+            onChangeTablesAreas={(nextTables, nextAreas) => {
+              setLocalDirty(true);
+              onChange({ tables: nextTables, areas: nextAreas });
+            }}
+          />
         </div>
       </SubPageShell>
     );

@@ -327,8 +327,6 @@ export default function ScheduleView({
   const initialScrollOffsetsRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
   const resetScrollScheduleRef = useRef<{ raf: number | null; timeout: number | null }>({ raf: null, timeout: null });
 
-  // No auto page scroll: header visibility is ensured by layering (z-index).
-  const ensureHeaderNotUnderAppBar = useCallback(() => { /* intentionally empty */ }, []);
   const didAutoCenterRef = useRef(false);
   // Backup of planned duration (minutes) before marking as departed
   const departDurationBackupRef = useRef<Record<string, number>>({});
@@ -577,23 +575,24 @@ export default function ScheduleView({
 
   const runSave = useCallback((id: string, patch: Record<string, unknown>, optimistic?: OptimisticPatch) => {
     if (!onSave || !id) return;
-    const hasOptimistic = optimistic && Object.keys(optimistic).length > 0;
+    const hasOptimistic = Boolean(optimistic && Object.keys(optimistic).length > 0);
     if (hasOptimistic) {
       applyOptimistic(id, optimistic!);
     }
-    let result: unknown;
     try {
-      result = onSave(patch as any, id);
+      const result = onSave(patch as any, id);
+      if (result && typeof (result as Promise<unknown>).then === 'function') {
+        return (result as Promise<unknown>).catch((err) => {
+          if (hasOptimistic) revertOptimistic(id);
+          console.error('ScheduleView onSave rejected', err);
+          return undefined;
+        });
+      }
+      return result;
     } catch (err) {
       if (hasOptimistic) revertOptimistic(id);
       console.error('ScheduleView onSave failed', err);
-      return;
-    }
-    if (result && typeof (result as Promise<unknown>).catch === 'function') {
-      (result as Promise<unknown>).catch((err) => {
-        if (hasOptimistic) revertOptimistic(id);
-        console.error('ScheduleView onSave rejected', err);
-      });
+      return undefined;
     }
   }, [onSave, applyOptimistic, revertOptimistic]);
 
@@ -984,31 +983,6 @@ export default function ScheduleView({
     };
   }, [recomputeColWidth, resetScrollOffsets]);
 
-  // Ensure the schedule container is not hidden under the top app bar
-  useLayoutEffect(() => {
-    // Run immediately and again after layout settles
-    const run = () => ensureHeaderNotUnderAppBar();
-    run();
-    // a couple of delayed runs to cover async layout/route transitions
-    const t1 = window.setTimeout(run, 0);
-    const t2 = window.setTimeout(run, 150);
-
-    const handle = () => ensureHeaderNotUnderAppBar();
-    window.addEventListener('resize', handle);
-    window.addEventListener('orientationchange', handle);
-    document.addEventListener('visibilitychange', handle);
-    window.addEventListener('focus', handle);
-
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-      window.removeEventListener('resize', handle);
-      window.removeEventListener('orientationchange', handle);
-      document.removeEventListener('visibilitychange', handle);
-      window.removeEventListener('focus', handle);
-    };
-  }, [ensureHeaderNotUnderAppBar]);
-
   useEffect(() => {
     const container = scrollParentRef.current;
     if (!container || typeof IntersectionObserver === 'undefined') return;
@@ -1018,7 +992,6 @@ export default function ScheduleView({
         if (entry.isIntersecting) {
           requestAnimationFrame(() => {
             resetScrollOffsets({ preserveCurrent: true });
-            ensureHeaderNotUnderAppBar();
           });
         }
       });
@@ -1026,7 +999,7 @@ export default function ScheduleView({
 
     obs.observe(container);
     return () => obs.disconnect();
-  }, [resetScrollOffsets, ensureHeaderNotUnderAppBar]);
+  }, [resetScrollOffsets]);
 
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1373,12 +1346,22 @@ export default function ScheduleView({
     if (!target) return;
     const baseId = String((target as any).id ?? (target as any)._key ?? '');
     if (!baseId) return;
-    const useTables = Array.isArray((target as any)?.tables)
-      ? (target as any).tables.map(normalizeTableId).filter(Boolean)
+    const useTables: string[] = Array.isArray((target as any)?.tables)
+      ? (target as any).tables
+          .map((tbl: unknown) => normalizeTableId(tbl))
+          .filter((v: string): v is string => Boolean(v))
       : [];
     const focusTableValue = normalizeTableId((target as any)?._table ?? (target as any)?.table ?? '');
     const focusTable = focusTableValue || undefined;
-    const initialSelected = focusTable ? [focusTable] : useTables;
+    const initialSelected = (() => {
+      // 連結されている卓はデフォルトで全て選択状態にする（長押しした卓だけを残さない）
+      const set = new Set<string>();
+      useTables.forEach((t) => set.add(t));
+      if (focusTable) set.add(focusTable);
+      const list = Array.from(set);
+      return list.length > 0 ? list : (focusTable ? [focusTable] : []);
+    })();
+    const originalTables = useTables.length > 0 ? [...useTables] : [...initialSelected];
 
     setReassignSessions((prev) => {
       const existing = prev[baseId];
@@ -1401,7 +1384,7 @@ export default function ScheduleView({
             _spanCols: Number((target as any)._spanCols ?? 1),
           },
           selected: initialSelected,
-          original: initialSelected,
+          original: originalTables,
         },
       };
     });
@@ -1949,14 +1932,41 @@ export default function ScheduleView({
     } satisfies CSSProperties;
   }, [isTablet, topInsetPx, bottomOffsetPx]);
 
+  const shouldAllowDefault = useCallback(
+    (target: EventTarget | null) => {
+      if (drawerOpen) return true;
+      if (!(target instanceof HTMLElement)) return false;
+      return Boolean(
+        target.closest('input, select, textarea, button, option, [contenteditable="true"], [data-allow-default]')
+      );
+    },
+    [drawerOpen],
+  );
+
+  const handleRootInteractionBlock = useCallback(
+    (event: MouseEvent<HTMLDivElement> | TouchEvent<HTMLDivElement>) => {
+      if (shouldAllowDefault(event.target)) return;
+      event.preventDefault();
+    },
+    [shouldAllowDefault],
+  );
+
+  const handleRootContextMenu = useCallback(
+    (event: MouseEvent<HTMLDivElement>) => {
+      if (shouldAllowDefault(event.target)) return;
+      event.preventDefault();
+    },
+    [shouldAllowDefault],
+  );
+
   const gridHeightPx = rowHeightsPx.reduce((a, b) => a + b, 0);
   return (
     <div
       className="relative w-full bg-transparent"
       style={rootStyle}
-      onContextMenu={(event: MouseEvent<HTMLDivElement>) => event.preventDefault()}
-      onMouseDown={(event: MouseEvent<HTMLDivElement>) => event.preventDefault()}
-      onTouchStart={(event: TouchEvent<HTMLDivElement>) => event.preventDefault()}
+      onContextMenu={handleRootContextMenu}
+      onMouseDown={handleRootInteractionBlock}
+      onTouchStart={handleRootInteractionBlock}
     >
       {/* Floating time header (smartphone only): fixed, above everything, tracks horizontal scroll */}
       {!isTablet && (
@@ -3001,9 +3011,9 @@ function ReservationBlock({
 
   const showDrink = Boolean(drinkLabel || raw?.drink || raw?.meta?.drink || raw?.reservation?.drink);
   const showEat = Boolean(eatLabel || raw?.eat || raw?.meta?.eat || raw?.reservation?.eat);
-  const extrasLabel = [drinkLabel, eatLabel, course].filter(Boolean).join(' / ');
+  const extrasLabel = [drinkLabel, eatLabel].filter(Boolean).join(' / ');
   const notes = ((item as any).notes ?? (item as any).memo ?? '').toString().trim();
-  const baseTitleParts = [guestsLabel, name, course, extrasLabel].filter(Boolean);
+  const baseTitleParts = [guestsLabel, name, course, extrasLabel, notes].filter(Boolean);
   const baseTitle = baseTitleParts.join(' / ');
   const titleText = baseTitle || undefined;
 

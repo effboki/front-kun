@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { doc, onSnapshot, getDoc, setDoc, serverTimestamp, type Unsubscribe } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc, setDoc, serverTimestamp, type Unsubscribe, deleteField } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { sanitizeCourses, type StoreSettings } from '@/types/settings';
 
@@ -149,7 +149,28 @@ export const useRealtimeStoreSettings = (storeId?: string) => {
       const ref = doc(db, 'stores', storeId as string, 'settings', 'config');
       const payload = (override ?? value ?? {}) as StoreSettings;
 
-      await setDoc(ref, { ...payload, updatedAt: serverTimestamp() }, { merge: true });
+      const { floorLayoutBase, floorLayoutDaily, ...rest } = (payload as any) ?? {};
+
+      // Reset layout maps before writing to avoid stale fixture/table keys being merged back in.
+      const clear: Record<string, unknown> = {};
+      if (floorLayoutBase && typeof floorLayoutBase === 'object') {
+        clear.floorLayoutBase = deleteField();
+      }
+      if (floorLayoutDaily && typeof floorLayoutDaily === 'object') {
+        clear.floorLayoutDaily = deleteField();
+      }
+      if (Object.keys(clear).length > 0) {
+        await setDoc(ref, clear, { merge: true });
+      }
+
+      const next: Record<string, unknown> = {
+        ...rest,
+        ...(floorLayoutBase && typeof floorLayoutBase === 'object' ? { floorLayoutBase } : {}),
+        ...(floorLayoutDaily && typeof floorLayoutDaily === 'object' ? { floorLayoutDaily } : {}),
+        updatedAt: serverTimestamp(),
+      };
+
+      await setDoc(ref, next, { merge: true });
     } finally {
       setIsSaving(false);
     }
