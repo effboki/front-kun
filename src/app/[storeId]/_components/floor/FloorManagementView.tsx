@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import { toast } from 'react-hot-toast';
 import type React from 'react';
 import type { ScheduleItem } from '@/types/schedule';
 import type { Reservation } from '@/types/reservation';
@@ -97,11 +98,11 @@ const byNumericTable = (a: string, b: string) => {
  type SeatMode = 'both' | 'single';
  type SeatSide = 'top' | 'bottom' | 'left' | 'right';
  type SeatConfig = { orientation: SeatOrientation; mode: SeatMode; side?: SeatSide };
- type LayoutEntry = {
-   x: number;
-   y: number;
-   w: number;
-   h: number;
+  type LayoutEntry = {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
    areaId?: string;
    kind?: 'table' | 'fixture';
    label?: string;
@@ -109,7 +110,32 @@ const byNumericTable = (a: string, b: string) => {
    seat?: SeatConfig;
  };
  type LayoutMap = Record<string, LayoutEntry>;
+ type ReassignSession = { base: CardModel; selected: string[]; original: string[] };
+type DisplayEntry = {
+  card: CardModel;
+  sessionId?: string;
+  source: 'existing' | 'ghost';
+  color?: { fill?: string; outline?: string };
+};
 
+const TABLE_W = 105;
+const TABLE_H = 90;
+const LEGACY_TABLE_SIZES = [
+  { w: 90, h: 90 },
+  { w: 100, h: 90 },
+  { w: 100, h: 100 },
+  { w: 110, h: 110 },
+];
+
+const normalizeTableSize = (w?: number, h?: number): { w: number; h: number } => {
+  const nw = Number(w);
+  const nh = Number(h);
+  const hasValid = Number.isFinite(nw) && nw > 0 && Number.isFinite(nh) && nh > 0;
+  if (hasValid && !LEGACY_TABLE_SIZES.some((s) => s.w === nw && s.h === nh)) {
+    return { w: nw, h: nh };
+  }
+  return { w: TABLE_W, h: TABLE_H };
+};
 const fixtureStyleMap: Record<string, { label: string; bg: string; border: string; icon: string; shape?: 'rounded' | 'pill' }> = {
   entrance: { label: '入口', bg: 'bg-emerald-50', border: 'border-emerald-300', icon: '入口', shape: 'pill' },
   stairs: { label: '階段', bg: 'bg-amber-50', border: 'border-amber-300', icon: '階段', shape: 'rounded' },
@@ -163,6 +189,7 @@ export default function FloorManagementView({
   }, [dayStartMs]);
   const baseLayoutKey = useMemo(() => `fk-floor-base-${storeId}`, [storeId]);
   const dayLayoutKey = useMemo(() => `fk-floor-${storeId}-${dayKey}`, [storeId, dayKey]);
+  const zoomKey = useMemo(() => `fk-floor-zoom-${storeId}`, [storeId]);
 
   const usableTables = useMemo(
     () => Array.from(new Set((tables ?? []).map(normalizeTableId).filter(Boolean))),
@@ -190,20 +217,18 @@ export default function FloorManagementView({
 
   const buildAutoLayout = useCallback((sections: typeof areaSections): LayoutMap => {
     const layout: LayoutMap = {};
-    const CELL_W = 130;
-    const CELL_H = 120;
     const GAP = 16;
     sections.forEach((area) => {
       area.tables.forEach((t, idx) => {
         const col = idx % 3;
         const row = Math.floor(idx / 3);
-        const x = GAP + col * (CELL_W + GAP);
-        const y = GAP + row * (CELL_H + GAP);
-        layout[t] = { x, y, w: CELL_W, h: CELL_H, areaId: area.id };
+        const x = GAP + col * (TABLE_W + GAP);
+        const y = GAP + row * (TABLE_H + GAP);
+        layout[t] = { x, y, w: TABLE_W, h: TABLE_H, areaId: area.id };
       });
     });
     return layout;
-  }, []);
+  }, [TABLE_W, TABLE_H]);
 
   const normalizeLayoutForAreas = useCallback((raw: LayoutMap): LayoutMap => {
     const next: LayoutMap = {};
@@ -220,13 +245,14 @@ export default function FloorManagementView({
       }
       if (!tablesSet.has(key)) return;
       const areaId = areaMap.get(key) ?? entry.areaId ?? '__unassigned';
-      next[key] = { ...entry, areaId, kind: 'table' };
+      const size = normalizeTableSize(entry.w as number, entry.h as number);
+      next[key] = { ...entry, ...size, areaId, kind: 'table' };
     });
     // ensure every table has an entry
     usableTables.forEach((t) => {
       if (!next[t]) {
         const auto = buildAutoLayout(areaSections);
-        next[t] = auto[t] ?? { x: 20, y: 20, w: 130, h: 120, areaId: areaMap.get(t) ?? '__unassigned', kind: 'table' };
+        next[t] = auto[t] ?? { x: 20, y: 20, w: TABLE_W, h: TABLE_H, areaId: areaMap.get(t) ?? '__unassigned', kind: 'table' };
       }
     });
     return next;
@@ -241,7 +267,7 @@ export default function FloorManagementView({
     if (typeof window !== 'undefined') {
       try {
         const raw = localStorage.getItem(dayLayoutKey) ?? localStorage.getItem(baseLayoutKey);
-        if (raw) return JSON.parse(raw) as LayoutMap;
+        if (raw) return normalizeLayoutForAreas(JSON.parse(raw) as LayoutMap);
       } catch {/* ignore */}
     }
 
@@ -256,8 +282,10 @@ export default function FloorManagementView({
   const [layout, setLayout] = useState<LayoutMap>(initialLayout);
   const layoutRef = useRef<LayoutMap>(initialLayout);
   useEffect(() => { layoutRef.current = layout; }, [layout]);
+  const skipAutoSaveRef = useRef(false);
+  const lastSavedLayoutRef = useRef<string>(JSON.stringify(initialLayout));
   const [tableEditor, setTableEditor] = useState<{ mode: 'add' | 'rename'; target?: string; value: string; areaId?: string } | null>(null);
-  const longPressRef = useRef<{ tid: number | null; x: number; y: number; target?: string }>({ tid: null, x: 0, y: 0, target: undefined });
+  const cardPressRef = useRef<Record<string, { tid: number | null; x: number; y: number; fired: boolean }>>({});
   const [editMode, setEditMode] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return sessionStorage.getItem('fk-floor-edit') === '1';
@@ -273,7 +301,13 @@ export default function FloorManagementView({
       sessionStorage.setItem('fk-floor-edit', editMode ? '1' : '0');
     }
   }, [editMode]);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState<number>(() => {
+    if (typeof window === 'undefined') return 1;
+    const raw = localStorage.getItem(zoomKey);
+    const num = raw ? Number(raw) : NaN;
+    if (Number.isFinite(num) && num > 0.1 && num <= 3) return num;
+    return 1;
+  });
   const zoomIn = useCallback(() => setZoom((v) => Math.min(1.5, Math.round((v + 0.1) * 10) / 10)), []);
   const zoomOut = useCallback(() => setZoom((v) => Math.max(0.2, Math.round((v - 0.1) * 10) / 10)), []);
   useEffect(() => {
@@ -285,6 +319,10 @@ export default function FloorManagementView({
     window.addEventListener('wheel', onWheel, { passive: false });
     return () => window.removeEventListener('wheel', onWheel);
   }, []);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try { localStorage.setItem(zoomKey, String(zoom)); } catch {/* ignore */}
+  }, [zoom, zoomKey]);
 
   const saveDayLayout = useCallback((next: LayoutMap) => {
     if (typeof window === 'undefined') return;
@@ -305,10 +343,11 @@ export default function FloorManagementView({
     }
     setDirty(false);
     if (floorLayoutBase && typeof floorLayoutBase === 'object') {
-      setLayout(floorLayoutBase as LayoutMap);
-      layoutRef.current = floorLayoutBase as LayoutMap;
+      const normalized = normalizeLayoutForAreas(floorLayoutBase as LayoutMap);
+      setLayout(normalized);
+      layoutRef.current = normalized;
     }
-  }, [dayLayoutKey, floorLayoutBase]);
+  }, [dayLayoutKey, floorLayoutBase, normalizeLayoutForAreas]);
 
   const saveAsBase = useCallback((next: LayoutMap) => {
     /* base layout is managed in Store Settings; floor view does not save base */
@@ -340,6 +379,8 @@ export default function FloorManagementView({
   const CHAIR_LONG = 26;
   const CHAIR_SHORT = 12;
   const CHAIR_OUTSET = 1;
+  const LABEL_PAD_Y = 10;
+  const TOP_PAD = 6;
   const computeChairs = useCallback(
     (capacity: number, rect: LayoutEntry): { cx: number; cy: number; side: SeatSide }[] => {
       const seat = normalizeSeatConfig(rect?.seat);
@@ -449,16 +490,33 @@ export default function FloorManagementView({
   const rotationIndexMap = useMemo(() => {
     const map = new Map<string, number>();
     Object.values(tableQueues).forEach((list) => {
+      if (!Array.isArray(list) || list.length === 0) return;
+      let currentRotation = 1;
+      let currentEnd = -Infinity;
       list.forEach((it, idx) => {
+        const start = Number((it as any)?.startMs ?? 0);
+        const end = computeEndMs(it);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+        if (idx === 0) {
+          currentRotation = 1;
+          currentEnd = end;
+        } else {
+          // 回転は「前の回が終わった後に始まるか」でのみ進める。重なっている間は同じ回転に留める。
+          if (start >= currentEnd) {
+            currentRotation += 1;
+            currentEnd = end;
+          } else {
+            currentEnd = Math.max(currentEnd, end);
+          }
+        }
         const rid = String((it as any).id ?? (it as any)._key ?? '');
         if (!rid) return;
         const prev = map.get(rid);
-        const next = idx + 1;
-        map.set(rid, prev ? Math.max(prev, next) : next);
+        map.set(rid, prev ? Math.max(prev, currentRotation) : currentRotation);
       });
     });
     return map;
-  }, [tableQueues]);
+  }, [tableQueues, computeEndMs]);
 
   const maxRotation = useMemo<Rotation>(() => {
     const max = Array.from(rotationIndexMap.values()).reduce((m, v) => Math.max(m, v), 1);
@@ -535,15 +593,177 @@ export default function FloorManagementView({
     });
     return out;
   }, [tableCardsCurrent]);
+  const conflictsByTableAll = useMemo<Record<string, ConflictPair[]>>(() => {
+    const map: Record<string, ConflictPair[]> = {};
+    const allMap: Record<string, CardModel[]> = {};
+    cards.forEach((card) => {
+      card.tables.forEach((t) => {
+        const key = normalizeTableId(t);
+        if (!key) return;
+        (allMap[key] ??= []).push(card);
+      });
+    });
+    Object.entries(allMap).forEach(([tableId, list]) => {
+      const conflicts: ConflictPair[] = [];
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i];
+          const b = list[j];
+          const start = Math.max(a.startMs, b.startMs);
+          const end = Math.min(a.endMs, b.endMs);
+          if (start < end) {
+            conflicts.push({ a, b });
+          }
+        }
+      }
+      if (conflicts.length > 0) map[tableId] = conflicts;
+    });
+    return map;
+  }, [cards]);
+  const conflictReservationIds = useMemo(() => {
+    const ids = new Set<string>();
+    const collect = (pairs: Record<string, ConflictPair[]>) => {
+      Object.values(pairs).forEach((list) => {
+        list.forEach((pair) => {
+          if (pair?.a?.id) ids.add(pair.a.id);
+          if (pair?.b?.id) ids.add(pair.b.id);
+        });
+      });
+    };
+    collect(conflictsByTableCurrent);
+    collect(conflictsByTableAll);
+    return ids;
+  }, [conflictsByTableCurrent, conflictsByTableAll]);
+  const conflictReservationTableSet = useMemo(() => {
+    const set = new Set<string>();
+    cards.forEach((card) => {
+      if (!card?.id || !conflictReservationIds.has(card.id)) return;
+      card.tables.forEach((t) => {
+        const key = normalizeTableId(t);
+        if (key) set.add(key);
+      });
+    });
+    return set;
+  }, [cards, conflictReservationIds]);
+  const conflictTableSet = useMemo(() => {
+    const set = new Set<string>();
+    Object.entries(conflictsByTableCurrent).forEach(([key, list]) => {
+      if (!Array.isArray(list) || list.length === 0) return;
+      const t = normalizeTableId(key);
+      if (t) set.add(t);
+    });
+    Object.entries(conflictsByTableAll).forEach(([key, list]) => {
+      if (!Array.isArray(list) || list.length === 0) return;
+      const t = normalizeTableId(key);
+      if (t) set.add(t);
+    });
+    return set;
+  }, [conflictsByTableCurrent, conflictsByTableAll]);
+
+  const [reassignSessions, setReassignSessions] = useState<Record<string, ReassignSession>>({});
+  const [activeReassignId, setActiveReassignId] = useState<string | null>(null);
+  const activeReassign = activeReassignId ? reassignSessions[activeReassignId] ?? null : null;
+  useEffect(() => {
+    if (activeReassignId) return;
+    const first = Object.keys(reassignSessions)[0];
+    if (first) setActiveReassignId(first);
+  }, [activeReassignId, reassignSessions]);
+  const sessionPalette = useMemo(
+    () => [
+      { fill: 'rgba(37,99,235,0.08)', outline: 'rgba(37,99,235,0.45)' }, // blue
+      { fill: 'rgba(239,68,68,0.08)', outline: 'rgba(239,68,68,0.45)' }, // red
+      { fill: 'rgba(139,92,246,0.08)', outline: 'rgba(139,92,246,0.45)' }, // purple
+      { fill: 'rgba(249,115,22,0.10)', outline: 'rgba(249,115,22,0.5)' }, // orange
+      { fill: 'rgba(6,182,212,0.10)', outline: 'rgba(6,182,212,0.45)' }, // cyan
+      { fill: 'rgba(234,179,8,0.12)', outline: 'rgba(234,179,8,0.55)' }, // yellow
+    ],
+    []
+  );
+  const sessionOrder = useMemo(() => Object.keys(reassignSessions), [reassignSessions]);
+  const pickSessionColor = useCallback(
+    (sid?: string | null) => {
+      const target = sid ? String(sid) : '';
+      const idx = target ? sessionOrder.indexOf(target) : -1;
+      return sessionPalette[idx >= 0 ? (idx % sessionPalette.length) : 0];
+    },
+    [sessionOrder, sessionPalette]
+  );
+  const sessionByReservationId = useMemo(() => {
+    const map = new Map<string, string>();
+    Object.entries(reassignSessions).forEach(([sid, session]) => {
+      if (session.base?.id) map.set(session.base.id, sid);
+    });
+    return map;
+  }, [reassignSessions]);
+  const selectedTablesBySession = useMemo(() => {
+    const map: Record<string, Array<{ sessionId: string; card: CardModel }>> = {};
+    Object.entries(reassignSessions).forEach(([sid, session]) => {
+      const list = Array.from(new Set((session.selected ?? []).map(normalizeTableId).filter(Boolean)));
+      list.forEach((t) => {
+        (map[t] ??= []).push({ sessionId: sid, card: session.base });
+      });
+    });
+    return map;
+  }, [reassignSessions]);
+  const reassignMode = sessionOrder.length > 0;
+  const CARD_LONG_MS = 650;
+  const CARD_MOVE_TOL = 10;
+  const beginCardLongPress = useCallback((key: string, e: React.PointerEvent | PointerEvent, onLong: () => void) => {
+    const x = Number((e as any)?.clientX ?? 0);
+    const y = Number((e as any)?.clientY ?? 0);
+    const state = cardPressRef.current[key] ?? { tid: null, x, y, fired: false };
+    if (state.tid != null) window.clearTimeout(state.tid);
+    state.x = x;
+    state.y = y;
+    state.fired = false;
+    state.tid = window.setTimeout(() => {
+      state.tid = null;
+      state.fired = true;
+      onLong();
+    }, CARD_LONG_MS) as unknown as number;
+    cardPressRef.current[key] = state;
+  }, []);
+  const cancelCardLongPress = useCallback((key: string) => {
+    const state = cardPressRef.current[key];
+    if (!state) return;
+    if (state.tid != null) {
+      window.clearTimeout(state.tid);
+      state.tid = null;
+    }
+    if (state.fired) {
+      window.setTimeout(() => {
+        delete cardPressRef.current[key];
+      }, 400);
+    } else {
+      delete cardPressRef.current[key];
+    }
+  }, []);
+  const abortLongPressOnMove = useCallback((key: string, e: React.PointerEvent | PointerEvent) => {
+    const state = cardPressRef.current[key];
+    if (!state || state.tid == null) return;
+    const dx = Math.abs(Number((e as any)?.clientX ?? 0) - state.x);
+    const dy = Math.abs(Number((e as any)?.clientY ?? 0) - state.y);
+    if (dx > CARD_MOVE_TOL || dy > CARD_MOVE_TOL) {
+      window.clearTimeout(state.tid);
+      state.tid = null;
+    }
+  }, []);
+  const wasLongPressFired = useCallback((key: string) => Boolean(cardPressRef.current[key]?.fired), []);
 
   const cardsByArea = useMemo(() => {
     const map = new Map<string, CardModel[]>();
     cards.forEach((card) => {
-      const targetArea =
-        card.tables.map((t) => tableToArea[t]).find(Boolean) ?? areaSections[0]?.id ?? '__default';
-      const list = map.get(targetArea) ?? [];
-      list.push(card);
-      map.set(targetArea, list);
+      const areasForCard = new Set<string>();
+      card.tables.forEach((t) => {
+        const aid = tableToArea[t];
+        if (aid) areasForCard.add(aid);
+      });
+      if (areasForCard.size === 0) areasForCard.add(areaSections[0]?.id ?? '__default');
+      areasForCard.forEach((aid) => {
+        const list = map.get(aid) ?? [];
+        if (!list.includes(card)) list.push(card);
+        map.set(aid, list);
+      });
     });
     return map;
   }, [cards, tableToArea, areaSections]);
@@ -567,7 +787,7 @@ export default function FloorManagementView({
       if (missing.length > 0) {
         const auto = buildAutoLayout(areaSections);
         missing.forEach((t) => {
-          next[t] = auto[t] ?? { x: 20, y: 20, w: 130, h: 120, areaId: areaSections[0]?.id };
+          next[t] = auto[t] ?? { x: 20, y: 20, w: TABLE_W, h: TABLE_H, areaId: areaSections[0]?.id };
         });
       }
       layoutRef.current = next;
@@ -580,6 +800,8 @@ export default function FloorManagementView({
     const remote = (floorLayoutDaily && floorLayoutDaily[dayKey]) || floorLayoutBase;
     if (remote && typeof remote === 'object') {
       const normalized = normalizeLayoutForAreas(remote as LayoutMap);
+      skipAutoSaveRef.current = true;
+      lastSavedLayoutRef.current = JSON.stringify(normalized);
       setLayout(normalized);
       layoutRef.current = normalized;
       setDirty(false);
@@ -589,7 +811,6 @@ export default function FloorManagementView({
   useEffect(() => {
     if (editModeRef.current) setEditMode(true);
   }, [layout]);
-
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<{ id: string | null; initial: Partial<ReservationInput> & { table?: string } } | null>(null);
   const [conflictModal, setConflictModal] = useState<{ tableId: string; rows: CardModel[] } | null>(null);
@@ -654,13 +875,106 @@ export default function FloorManagementView({
     setDrawerOpen(true);
   }, [dayStartMs]);
 
-  const renderReservationCard = useCallback((card: CardModel, opts?: { conflict?: boolean; highlightFuture?: boolean }) => {
+  const startReassignForCard = useCallback((card: CardModel, focusTable?: string) => {
+    if (!card) return;
+    const baseId = String(card.id ?? '');
+    if (!baseId) return;
+    const focus = normalizeTableId(focusTable);
+    const initialSelectedSet = new Set(card.tables.map(normalizeTableId).filter(Boolean));
+    if (focus) initialSelectedSet.add(focus);
+    const initialSelected = Array.from(initialSelectedSet);
+    const originalTables = card.tables.length > 0 ? [...initialSelectedSet] : (focus ? [focus] : []);
+    setReassignSessions((prev) => {
+      const existing = prev[baseId];
+      if (existing) {
+        const merged = new Set(existing.selected.map(normalizeTableId).filter(Boolean));
+        initialSelected.forEach((t) => merged.add(t));
+        return { ...prev, [baseId]: { ...existing, selected: Array.from(merged) } };
+      }
+      const seed = initialSelected.length > 0 ? initialSelected : originalTables;
+      return {
+        ...prev,
+        [baseId]: {
+          base: card,
+          selected: seed.length > 0 ? seed : [normalizeTableId(card.primaryTable)].filter(Boolean),
+          original: originalTables.length > 0 ? originalTables : [normalizeTableId(card.primaryTable)].filter(Boolean),
+        },
+      };
+    });
+    setActiveReassignId(baseId);
+  }, []);
+
+  const toggleTableSelection = useCallback((tableId: string) => {
+    const key = normalizeTableId(tableId);
+    if (!key || !activeReassignId) return;
+    setReassignSessions((prev) => {
+      const session = prev[activeReassignId];
+      if (!session) return prev;
+      const next = new Set(session.selected.map(normalizeTableId).filter(Boolean));
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return { ...prev, [activeReassignId]: { ...session, selected: Array.from(next) } };
+    });
+  }, [activeReassignId]);
+
+  const clearReassignSession = useCallback((sid: string) => {
+    setReassignSessions((prev) => {
+      if (!prev[sid]) return prev;
+      const next = { ...prev };
+      delete next[sid];
+      const remaining = Object.keys(next);
+      setActiveReassignId((current) => {
+        if (current && current !== sid) return current;
+        return remaining[0] ?? null;
+      });
+      return next;
+    });
+  }, []);
+
+  const clearAllReassign = useCallback(() => {
+    setReassignSessions({});
+    setActiveReassignId(null);
+  }, []);
+
+  const applyReassign = useCallback(async () => {
+    const entries = Object.entries(reassignSessions);
+    if (entries.length === 0) return;
+    const normalized = entries.map(([id, session]) => {
+      const list = Array.from(new Set((session.selected ?? []).map(normalizeTableId).filter(Boolean)));
+      return { id, list, primary: list[0] ?? '' };
+    });
+    const counts: Record<string, number> = {};
+    normalized.forEach((item) => {
+      if (!item.primary) return;
+      counts[item.primary] = (counts[item.primary] || 0) + 1;
+    });
+    const dup = Object.keys(counts).find((k) => counts[k] > 1);
+    if (dup) {
+      toast.error(`同じ卓番号「${dup}」に複数の予約を割り当てようとしています。調整してください。`);
+      return;
+    }
+    try {
+      for (const item of normalized) {
+        if (!item.id || item.list.length === 0) continue;
+        const patch: any = { tables: item.list, table: item.primary };
+        if (onSave) await onSave(patch, item.id);
+      }
+      toast.success('卓番変更を適用しました');
+      clearAllReassign();
+    } catch (err) {
+      console.error('[floor] apply reassign failed', err);
+      toast.error('卓番変更の適用に失敗しました');
+    }
+  }, [reassignSessions, onSave, clearAllReassign]);
+
+  const renderReservationCard = useCallback((card: CardModel, opts?: { conflict?: boolean; highlightFuture?: boolean; ghostColor?: { fill?: string; outline?: string }; hideFrame?: boolean }) => {
     const course = (card.course ?? '').toString().trim();
     const courseColor = course ? (courseColorMap.get(course) ?? courseColorMap.get('未選択')) : courseColorMap.get('未選択');
     const showArrived = card.arrived && !card.departed;
     const showPaid = card.paid && !card.departed;
-    const bg = showArrived ? '#e8f7ec' : '#ffffff';
-    const border = showPaid ? '#1d4ed8' : '#cbd5e1';
+    const baseBg = opts?.hideFrame ? 'transparent' : (showArrived ? '#e8f7ec' : '#ffffff');
+    const baseBorder = opts?.hideFrame ? undefined : (showPaid ? '#1d4ed8' : '#cbd5e1');
+    const bg = opts?.ghostColor?.fill ?? baseBg;
+    const borderColor = opts?.hideFrame ? undefined : (opts?.ghostColor?.outline ?? baseBorder);
     const accent = opts?.highlightFuture ? '#dc2626' : '#0f172a';
     const guestsLabel = Number.isFinite(card.guests) && (card.guests ?? 0) > 0 ? `${card.guests}名` : '―';
     const timeLabel = fmtTime(card.startMs);
@@ -673,39 +987,49 @@ export default function FloorManagementView({
     ].filter(Boolean) as { label: string; color: string }[];
     const bodyOpacity = card.departed ? 0.5 : 1;
     const baseClass = opts?.conflict ? 'bg-[repeating-linear-gradient(45deg,#fff7ed,#fff7ed_8px,#fde68a_8px,#fde68a_16px)]' : '';
+    const frameClass = opts?.hideFrame
+      ? 'flex h-full flex-col px-2 py-2 text-[12px] leading-tight'
+      : 'flex h-full flex-col rounded-md border shadow-sm px-2 py-2 text-[12px] leading-tight';
+    const style: React.CSSProperties = {
+      backgroundColor: bg,
+      opacity: bodyOpacity,
+    };
+    if (!opts?.hideFrame) {
+      if (borderColor) style.borderColor = borderColor;
+      const outline = opts?.ghostColor?.outline;
+      if (outline) style.boxShadow = `0 0 0 2px ${outline}`;
+      else if (showPaid) style.boxShadow = '0 0 0 2px rgba(59,130,246,0.25)';
+    }
     return (
       <div
-        className={`flex h-full flex-col rounded-md border shadow-sm px-2 py-2 text-[12px] leading-tight ${baseClass}`}
-        style={{
-          backgroundColor: bg,
-          borderColor: border,
-          opacity: bodyOpacity,
-          boxShadow: showPaid ? '0 0 0 2px rgba(59,130,246,0.25)' : undefined,
-        }}
+        className={`${frameClass} ${baseClass}`}
+        style={style}
       >
-        <div className="flex items-start justify-between gap-2 text-[13px] font-bold" style={{ color: accent }}>
-          <span className="font-mono leading-tight text-[17px]">{timeLabel}</span>
-          {extras.length > 0 ? (
-            <div className="flex items-center gap-1">
+        <div className="flex flex-col gap-[2px]">
+          {extras.length > 0 && (
+            <div className="flex items-center justify-end gap-[2px] text-[8px] leading-tight -mt-[4px] -mr-[2px] pr-0">
               {extras.map((chip) => (
                 <span
                   key={chip.label}
-                  className="inline-flex items-center justify-center gap-[2px] rounded border px-[6px] py-[2px] text-[11px] font-semibold whitespace-nowrap"
-                  style={{ borderColor: chip.color, color: chip.color, backgroundColor: '#f8fafc' }}
+                  className="inline-flex items-center justify-center gap-[2px] rounded border px-[3px] py-[1px] font-semibold whitespace-nowrap bg-slate-50"
+                  style={{ borderColor: chip.color, color: chip.color }}
                 >
                   {chip.label}
                 </span>
               ))}
             </div>
-          ) : null}
+          )}
+          <div className="flex items-start justify-center gap-2 text-[13px] font-bold text-center" style={{ color: accent }}>
+            <span className="font-mono leading-tight text-[17px]">{timeLabel}</span>
+          </div>
         </div>
         <div className="flex-1 flex items-center justify-center">
-          <div className="text-center text-[12px] text-slate-700 truncate leading-tight">{name || '—'}</div>
+          <div className="text-center text-[12px] text-slate-600 truncate leading-tight mt-[4px] mb-0">{name || '—'}</div>
         </div>
         <div className="pt-2 flex items-center justify-between gap-2 text-[13px] leading-tight">
           <span className="font-semibold text-slate-800 text-[14px]">{guestsLabel}</span>
           <span
-            className="text-[12px] font-semibold truncate text-right flex-1"
+            className="text-[11px] font-semibold truncate text-right flex-1"
             style={{ color: courseColor?.text ?? '#0f172a' }}
           >
             {course || '未選択'}
@@ -715,19 +1039,65 @@ export default function FloorManagementView({
     );
   }, [courseColorMap, extraColorMap]);
 
-  const renderConflictCard = useCallback((pair: ConflictPair) => {
+  const getCardVisual = useCallback((card: CardModel) => {
+    const showArrived = card.arrived && !card.departed;
+    const showPaid = card.paid && !card.departed;
+    const bg = showArrived ? '#e8f7ec' : '#ffffff';
+    const border = showPaid ? '#1d4ed8' : '#cbd5e1';
+    const shadow = showPaid ? '0 0 0 2px rgba(59,130,246,0.25)' : undefined;
+    return { bg, border, shadow };
+  }, []);
+
+  const renderCompactBooking = useCallback((entry: DisplayEntry, opts?: { dense?: boolean }) => {
+    const card = entry.card;
+    const guestsLabel = Number.isFinite(card.guests) && (card.guests ?? 0) > 0 ? `${card.guests}名` : '―';
+    const timeLabel = fmtTime(card.startMs);
+    const name = (card.name ?? '').toString().trim() || '—';
+    const fill = entry.color?.fill ?? '#fff7ed';
+    const outline = entry.color?.outline ?? '#f59e0b';
+    const dense = !!opts?.dense;
+    const timeSize = dense ? 'text-[11px]' : 'text-[13px]';
+    const nameSize = dense ? 'text-[10px]' : 'text-[12px]';
+    const guestsSize = dense ? 'text-[10px]' : 'text-[12px]';
+    const gapClass = dense ? 'gap-[1px]' : 'gap-[2px]';
+    const lineClamp = dense ? 'line-clamp-3' : 'line-clamp-2';
+    const monoSize = dense ? 'text-[13px]' : 'text-[15px]';
     return (
-      <div className="relative">
-        <div className="absolute right-1 top-1 z-10 flex items-center gap-1 rounded-full bg-amber-500 px-2 py-[1px] text-[10px] font-semibold text-white">
-          ⚠ 重複
-        </div>
-        <div className="grid grid-rows-2 gap-1">
-          {renderReservationCard(pair.a, { conflict: true })}
-          {renderReservationCard(pair.b, { conflict: true })}
+      <div
+        className="relative h-full w-full rounded-md border overflow-hidden"
+        style={{ backgroundColor: fill, borderColor: outline }}
+      >
+        <div className={`px-2 ${dense ? 'pt-[2px] pb-1' : 'pt-1 pb-2'} flex flex-col ${gapClass} h-full`}>
+          <div className={`flex items-center justify-between font-bold text-slate-900 leading-tight ${timeSize}`}>
+            <span className={`font-mono ${monoSize}`}>{timeLabel}</span>
+            <span className={`${guestsSize} font-semibold text-slate-800`}>{guestsLabel}</span>
+          </div>
+          <div className="flex-1 flex items-start">
+            <div className={`${nameSize} font-semibold text-slate-800 leading-snug break-words ${lineClamp} text-left ${dense ? 'pt-[1px]' : 'pt-[2px]'}`}>
+              {name}
+            </div>
+          </div>
         </div>
       </div>
     );
-  }, [renderReservationCard]);
+  }, []);
+
+  const sortEntriesForDisplay = useCallback((entries: DisplayEntry[]) => {
+    return entries.slice().sort((a, b) => (a.card.startMs - b.card.startMs) || (a.card.endMs - b.card.endMs));
+  }, []);
+
+  const findOverlapPair = useCallback((entries: DisplayEntry[]): { a: DisplayEntry; b: DisplayEntry } | null => {
+    for (let i = 0; i < entries.length; i++) {
+      for (let j = i + 1; j < entries.length; j++) {
+        const a = entries[i].card;
+        const b = entries[j].card;
+        const start = Math.max(a.startMs, b.startMs);
+        const end = Math.min(a.endMs, b.endMs);
+        if (start < end) return { a: entries[i], b: entries[j] };
+      }
+    }
+    return null;
+  }, []);
 
   const submitTableEdit = useCallback(async () => {
     if (!tableEditor) return;
@@ -753,7 +1123,7 @@ export default function FloorManagementView({
       );
       setLayout((prev) => {
         const auto = buildAutoLayout(nextAreas as any);
-        const rect = auto[nextId] ?? { x: 20, y: 20, w: 130, h: 120, areaId };
+        const rect = auto[nextId] ?? { x: 20, y: 20, w: TABLE_W, h: TABLE_H, areaId };
         const next = { ...prev, [nextId]: rect };
         layoutRef.current = next;
         return next;
@@ -773,7 +1143,7 @@ export default function FloorManagementView({
       });
       setLayout((prev) => {
         const current = prev[target];
-        const nextRect = current ? { ...current, areaId } : { x: 20, y: 20, w: 130, h: 120, areaId };
+        const nextRect = current ? { ...current, areaId } : { x: 20, y: 20, w: TABLE_W, h: TABLE_H, areaId };
         const next = { ...prev };
         delete next[target];
         next[nextId] = nextRect;
@@ -786,13 +1156,6 @@ export default function FloorManagementView({
     await onUpdateTables?.(nextTables, nextAreas);
     setTableEditor(null);
   }, [tableEditor, usableTables, areaSections, buildAutoLayout, onUpdateTables, onReplaceTableId]);
-
-  const openRename = useCallback((tableId: string) => {
-    const normalized = normalizeTableId(tableId);
-    if (!normalized) return;
-    const areaId = areaSections.find((a) => a.tables.includes(normalized))?.id;
-    setTableEditor({ mode: 'rename', target: normalized, value: normalized, areaId });
-  }, [areaSections]);
 
   const openAddTable = useCallback(() => {
     setTableEditor({ mode: 'add', value: '', areaId: areaSections[0]?.id });
@@ -808,6 +1171,18 @@ export default function FloorManagementView({
     });
     setSelectedFixture(null);
   }, [saveDayLayout]);
+
+  useEffect(() => {
+    if (!editMode) return;
+    if (skipAutoSaveRef.current) {
+      skipAutoSaveRef.current = false;
+      return;
+    }
+    const sig = JSON.stringify(layout);
+    if (sig === lastSavedLayoutRef.current) return;
+    lastSavedLayoutRef.current = sig;
+    saveDayLayout(layout);
+  }, [layout, editMode, saveDayLayout]);
 
   return (
     <div className="relative w-full overflow-hidden select-none">
@@ -859,33 +1234,6 @@ export default function FloorManagementView({
               卓を追加
             </button>
           )}
-          <button
-            type="button"
-            className="px-3 py-2 rounded border text-sm text-white bg-sky-600 shadow-sm"
-            onClick={() => saveDayLayout(layout)}
-          >
-            日次レイアウト保存
-          </button>
-          <button
-            type="button"
-            className="px-3 py-2 rounded border text-sm text-slate-700 bg-white hover:bg-slate-50"
-            onClick={() => {
-              clearDayLayout();
-              let next: LayoutMap | null = null;
-              if (typeof window !== 'undefined') {
-                const baseRaw = localStorage.getItem(baseLayoutKey);
-                if (baseRaw) {
-                  try { next = JSON.parse(baseRaw) as LayoutMap; } catch {/* ignore */}
-                }
-              }
-              if (!next) next = buildAutoLayout(areaSections);
-              setLayout(next);
-              layoutRef.current = next;
-              setDirty(false);
-            }}
-          >
-            ベースに戻す
-          </button>
         </div>
       </div>
 
@@ -913,7 +1261,7 @@ export default function FloorManagementView({
           const itemsInArea = [
             ...area.tables.map((t, idx) => {
               const normalized = normalizeTableId(t);
-              const rect = layout[normalized] ?? { x: 20 + idx * 24, y: 20 + idx * 24, w: 130, h: 120, areaId: area.id, kind: 'table' };
+              const rect = layout[normalized] ?? { x: 20 + idx * 24, y: 20 + idx * 24, w: TABLE_W, h: TABLE_H, areaId: area.id, kind: 'table' };
               return { id: normalized, rect: rect as LayoutEntry, type: 'table' as const };
             }),
             ...fixturesInArea.map(([fid, rect]) => ({
@@ -930,7 +1278,7 @@ export default function FloorManagementView({
             itemsInArea.forEach(({ rect }) => {
               const r = rect as any;
               maxX = Math.max(maxX, r.x + r.w);
-              maxY = Math.max(maxY, r.y + r.h);
+              maxY = Math.max(maxY, r.y + r.h + LABEL_PAD_Y + TOP_PAD);
             });
             return {
               width: Math.max(maxX + PADDING, 360),
@@ -938,35 +1286,42 @@ export default function FloorManagementView({
             };
           })();
 
-          // group linked tables into a single composite card
+          const linkedTableSet = useMemo(() => {
+            const set = new Set<string>();
+            selectedCards.forEach((card) => {
+              if (card.tables.length <= 1) return;
+              card.tables.forEach((t) => set.add(normalizeTableId(t)));
+            });
+            return set;
+          }, [selectedCards]);
+
+          // group linked tables into a single composite card（衝突卓は除外して個別表示を優先）
           const linkedGroups = useMemo(
             () => {
-              const groups: { card: CardModel; bounds: { x: number; y: number; w: number; h: number } }[] = [];
+              const groups: { card: CardModel; bounds: { x: number; y: number; w: number; h: number }; rects: Array<{ tableId: string; rect: LayoutEntry }> }[] = [];
               selectedCards.forEach((card) => {
                 if (card.tables.length <= 1) return;
                 const rects = card.tables
                   .map((t) => {
                     const key = normalizeTableId(t);
+                    if (!key) return null;
                     const r = layout[key];
-                    return r && (r as any).areaId === area.id ? (r as LayoutEntry) : null;
+                    const inArea = r && (r as any).areaId === area.id;
+                    const shouldHideLinked = !reassignMode && !conflictTableSet.has(key) && !conflictReservationTableSet.has(key);
+                    return inArea && shouldHideLinked ? { tableId: key, rect: r as LayoutEntry } : null;
                   })
-                  .filter((r): r is LayoutEntry => Boolean(r));
+                  .filter((r): r is { tableId: string; rect: LayoutEntry } => Boolean(r));
                 if (rects.length === 0) return;
-                const minX = Math.min(...rects.map((r) => r.x));
-                const minY = Math.min(...rects.map((r) => r.y));
-                const maxX = Math.max(...rects.map((r) => r.x + r.w));
-                const maxY = Math.max(...rects.map((r) => r.y + r.h));
-                groups.push({ card, bounds: { x: minX, y: minY, w: maxX - minX, h: maxY - minY } });
+                const minX = Math.min(...rects.map((r) => r.rect.x));
+                const minY = Math.min(...rects.map((r) => r.rect.y));
+                const maxX = Math.max(...rects.map((r) => r.rect.x + r.rect.w));
+                const maxY = Math.max(...rects.map((r) => r.rect.y + r.rect.h));
+                groups.push({ card, rects, bounds: { x: minX, y: minY, w: maxX - minX, h: maxY - minY } });
               });
               return groups;
             },
-            [selectedCards, layout, area.id]
+            [selectedCards, layout, area.id, reassignMode, conflictTableSet, conflictReservationTableSet]
           );
-          const linkedTableSet = useMemo(() => {
-            const set = new Set<string>();
-            linkedGroups.forEach((g) => g.card.tables.forEach((t) => set.add(normalizeTableId(t))));
-            return set;
-          }, [linkedGroups]);
 
           const makeHandleDrag = (itemId: string, baseRect: LayoutEntry) => (e: React.PointerEvent<HTMLDivElement>, mode: 'move' | 'resize') => {
             if (!editMode) return;
@@ -1052,7 +1407,7 @@ export default function FloorManagementView({
           };
 
           return (
-            <section key={area.id} className="rounded-xl border bg-slate-50 shadow-sm overflow-hidden">
+            <section key={area.id} className="rounded-xl border bg-slate-50 shadow-sm overflow-visible">
               <header className="flex items-center justify-between bg-white px-4 py-2 border-b">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-slate-800">{area.name}</span>
@@ -1060,7 +1415,7 @@ export default function FloorManagementView({
                 </div>
                 <div className="text-xs text-slate-500">回転 {rotation}/{maxRotation}</div>
               </header>
-              <div className="relative overflow-x-auto overflow-y-hidden bg-slate-50">
+              <div className="relative overflow-x-auto overflow-y-visible bg-slate-50">
                 <div
                   className="relative"
                   style={{
@@ -1085,191 +1440,380 @@ export default function FloorManagementView({
                       <div className="absolute inset-x-0 h-px bg-sky-400/60 pointer-events-none" style={{ top: guides.y }} />
                     )}
                     {itemsInArea.map(({ id: itemId, rect }) => {
-                    const isTable = rect.kind !== 'fixture';
-                  const normalized = itemId;
-                  if (isTable && linkedTableSet.has(normalized)) return null;
-                  const conflicts = isTable ? (conflictsByTableCurrent[normalized] ?? []) : [];
-                  const conflict = conflicts[0];
-                  const primaryCard = isTable ? primaryMap.get(normalized) ?? null : null;
-                  const linkedPrimary = isTable ? linkMap.get(normalized) : undefined;
-                  const queue = isTable ? (tableQueues[normalized] ?? []) : [];
-                  const hasFuture = isTable ? queue.length > rotation : false;
-                  const capacity = isTable ? (tableCapacitiesMap[normalized] ?? 0) : 0;
-                  const chairs = isTable ? computeChairs(capacity, rect) : [];
-                  const handleDrag = makeHandleDrag(itemId, rect);
-                  return (
-                    <div
-                      key={itemId}
-                      className={`absolute ${editMode ? 'cursor-move' : ''}`}
-                        style={{
-                          left: rect.x,
-                          top: rect.y,
-                          width: rect.w,
-                          height: rect.h,
-                        }}
-                        onPointerDown={(e) => {
-                          if (!isTable && editMode) {
-                            setSelectedFixture(itemId);
-                          }
-                          if (editMode) handleDrag(e, 'move');
-                          if (!isTable) return;
-                          longPressRef.current = { tid: null, x: e.clientX, y: e.clientY, target: normalized };
-                          const tid = window.setTimeout(() => {
-                            longPressRef.current.tid = null;
-                            openRename(normalized);
-                          }, 700) as unknown as number;
-                          longPressRef.current.tid = tid;
-                        }}
-                        onPointerUp={() => {
-                          const st = longPressRef.current;
-                          if (st.tid != null) {
-                            clearTimeout(st.tid);
-                            longPressRef.current.tid = null;
-                          }
-                        }}
-                        onPointerMove={(e) => {
-                          const st = longPressRef.current;
-                          if (st.tid == null) return;
-                          const dx = Math.abs(e.clientX - st.x);
-                          const dy = Math.abs(e.clientY - st.y);
-                          if (dx > 8 || dy > 8) {
-                            clearTimeout(st.tid!);
-                            longPressRef.current.tid = null;
-                          }
-                        }}
-                        onClick={() => {
-                          if (!editMode || isTable) return;
-                          setSelectedFixture((prev) => (prev === itemId ? null : itemId));
-                        }}
-                      >
+                      const isTable = rect.kind !== 'fixture';
+                      const normalized = itemId;
+                      const conflicts = isTable ? (conflictsByTableCurrent[normalized] ?? conflictsByTableAll[normalized] ?? []) : [];
+                      const conflict = conflicts[0];
+                      const primaryCard = isTable ? primaryMap.get(normalized) ?? null : null;
+                      const linkedPrimary = isTable ? linkMap.get(normalized) : undefined;
+                      const queue = isTable ? (tableQueues[normalized] ?? []) : [];
+                      const hasFuture = isTable ? queue.length > rotation : false;
+                      const capacity = isTable ? (tableCapacitiesMap[normalized] ?? 0) : 0;
+                      const chairs = isTable ? computeChairs(capacity, rect) : [];
+                      const hideLinkedTable = isTable
+                        && linkedTableSet.has(normalized)
+                        && !reassignMode
+                        && !conflictTableSet.has(normalized)
+                        && !conflictReservationTableSet.has(normalized);
+                      if (hideLinkedTable) return null;
+                      const handleDrag = makeHandleDrag(itemId, rect);
+                      const sessionSelections = isTable ? (selectedTablesBySession[normalized] ?? []) : [];
+                      const existingCards = isTable ? (tableCardsCurrent[normalized] ?? []) : [];
+                      const existingEntries: DisplayEntry[] = isTable
+                        ? existingCards.map((card) => {
+                            const sid = sessionByReservationId.get(card.id);
+                            const color = sid ? pickSessionColor(sid) : undefined;
+                            return { card, sessionId: sid, source: 'existing', color };
+                          })
+                        : [];
+                      const ghostEntries: DisplayEntry[] = isTable
+                        ? sessionSelections
+                            .filter(({ card }) => !existingCards.some((c) => c.id === card.id))
+                            .map(({ sessionId, card }) => ({ card, sessionId, source: 'ghost', color: pickSessionColor(sessionId) }))
+                        : [];
+                      const displayEntries = isTable ? sortEntriesForDisplay([...existingEntries, ...ghostEntries]) : [];
+                      const overlapPair = isTable ? findOverlapPair(displayEntries) : null;
+                      const moreCount = isTable ? Math.max(0, displayEntries.length - 2) : 0;
+                      const activeSelected = isTable && !!activeReassign?.selected?.map(normalizeTableId).find((t) => t === normalized);
+                      const selectedByAny = isTable && sessionSelections.length > 0;
+                      const frameTone = reassignMode && isTable
+                        ? activeSelected
+                          ? 'bg-emerald-50'
+                          : selectedByAny
+                            ? 'bg-emerald-50/50'
+                            : ''
+                        : '';
+                      const tableFrameClass = isTable && reassignMode ? 'rounded-lg border-2 border-emerald-500 border-dashed p-1' : '';
+                      const openConflictList = () => {
+                        const rows = (tableCardsCurrent[normalized] ?? []).slice().sort((a, b) => (a.startMs - b.startMs) || (a.endMs - b.endMs));
+                        setConflictModal({ tableId: normalized, rows });
+                      };
+                      const onTableToggle = () => {
+                        if (reassignMode && activeReassignId) {
+                          toggleTableSelection(normalized);
+                        }
+                      };
+                      return (
+                        <div
+                          key={itemId}
+                          className={`absolute ${editMode ? 'cursor-move' : ''}`}
+                          style={{
+                            left: rect.x,
+                            top: rect.y + LABEL_PAD_Y + TOP_PAD,
+                            width: rect.w,
+                            height: rect.h,
+                          }}
+                          onPointerDown={(e) => {
+                            if (!isTable && editMode) {
+                              setSelectedFixture(itemId);
+                            }
+                            if (editMode) handleDrag(e, 'move');
+                          }}
+                          onClick={() => {
+                            if (!editMode || isTable) return;
+                            setSelectedFixture((prev) => (prev === itemId ? null : itemId));
+                          }}
+                        >
                         {isTable && (
-                          <div className="flex items-center justify-between mb-1">
-                            <span className={`text-sm font-semibold ${hasFuture ? 'text-red-600' : 'text-slate-800'}`}>
-                              卓 {normalized}
-                            </span>
+                          <div className="pointer-events-none absolute -top-7 left-0 flex items-center gap-2 text-sm font-semibold">
+                            <span className="text-slate-800">卓 {normalized}</span>
+                            {reassignMode && activeSelected && (
+                              <span className="text-[11px] font-semibold text-emerald-700">選択中</span>
+                            )}
                           </div>
                         )}
 
-                        <div className="relative h-full w-full">
-                          {isTable ? (
-                            conflict ? (
-                              <button
-                                type="button"
-                                className="w-full text-left h-full"
-                                onClick={() => {
-                                  const rows = (tableCardsCurrent[normalized] ?? []).slice().sort((a, b) => (a.startMs - b.startMs) || (a.endMs - b.endMs));
-                                  setConflictModal({ tableId: normalized, rows });
-                                }}
-                              >
-                                {renderConflictCard(conflict)}
-                              </button>
-                            ) : primaryCard ? (
-                              <button
-                                type="button"
-                                onClick={() => openEditorForReservation(primaryCard, normalized)}
-                                className="w-full text-left h-full"
-                              >
-                                {renderReservationCard(primaryCard, { highlightFuture: hasFuture })}
-                              </button>
-                            ) : linkedPrimary ? (
-                              <div className="h-full rounded-md border border-sky-400 bg-sky-50 px-2 py-3 text-[12px] text-sky-700 flex items-center justify-center text-center">
-                                連結中 → 卓{linkedPrimary}
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                className="w-full h-full rounded-md border border-slate-300 py-6 text-center text-sm text-slate-500 hover:border-slate-400"
-                                onClick={() => openEditorForNew(normalized)}
-                              >
-                                空席（タップで予約）
-                              </button>
-                            )
-                          ) : (
-                            (() => {
-                              const style = fixtureStyleMap[rect.fixtureType ?? 'other'] ?? fixtureStyleMap.other;
-                              const label = rect.label && rect.label !== rect.fixtureType ? rect.label : style.label;
-                              const shape = style.shape === 'pill' ? 'rounded-full' : 'rounded-md';
-                              const selected = selectedFixture === itemId;
-                              return (
-                                <div
-                                  className={`h-full w-full ${shape} border ${style.border} ${style.bg} shadow-sm p-2 flex flex-col justify-center items-center gap-1 ${
-                                    selected ? 'ring-2 ring-sky-400' : ''
-                                  }`}
-                                >
-                                  <div className="text-[11px] font-semibold text-slate-700">{style.label}</div>
-                                  <div className="text-sm font-semibold text-slate-800">{label}</div>
-                                  <div className="text-[11px] text-slate-600">ドラッグで移動 / 右下でリサイズ</div>
+                          <div className={`relative h-full w-full ${tableFrameClass} ${frameTone}`}>
+                            <div className="relative h-full w-full">
+                              {isTable ? (
+                                (() => {
+                                  const renderSplitView = (pair: { a: DisplayEntry; b: DisplayEntry }) => {
+                                    const badgeNeeded = conflicts.length > 0 || moreCount > 0 || selectedByAny;
+                                    const renderHalf = (entry: DisplayEntry, pos: 'a' | 'b') => {
+                                      const pressKey = `${normalized}_${entry.card.id}_${pos}`;
+                                      return (
+                                        <button
+                                          key={pressKey}
+                                          type="button"
+                                          className="w-full h-full text-left"
+                                          onPointerDown={(e) => beginCardLongPress(pressKey, e, () => startReassignForCard(entry.card, normalized))}
+                                          onPointerUp={() => cancelCardLongPress(pressKey)}
+                                          onPointerLeave={() => cancelCardLongPress(pressKey)}
+                                          onPointerCancel={() => cancelCardLongPress(pressKey)}
+                                          onPointerMove={(e) => abortLongPressOnMove(pressKey, e)}
+                                          onClick={() => {
+                                            if (wasLongPressFired(pressKey)) return;
+                                            if (reassignMode && activeReassignId) {
+                                              onTableToggle();
+                                              return;
+                                            }
+                                            openEditorForReservation(entry.card, normalized);
+                                          }}
+                                        >
+                                          {renderCompactBooking(entry, { dense: reassignMode })}
+                                        </button>
+                                      );
+                                    };
+                                    return (
+                                      <div className="relative h-full w-full grid grid-rows-2 gap-[6px]">
+                                        {renderHalf(pair.a, 'a')}
+                                        {renderHalf(pair.b, 'b')}
+                                      </div>
+                                    );
+                                  };
+
+                                  const renderSingleEntry = (entry: DisplayEntry) => {
+                                    const pressKey = `${normalized}_${entry.card.id}_single`;
+                                    return (
+                                      <button
+                                        type="button"
+                                        className="relative w-full h-full text-left"
+                                        onPointerDown={(e) => beginCardLongPress(pressKey, e, () => startReassignForCard(entry.card, normalized))}
+                                        onPointerUp={() => cancelCardLongPress(pressKey)}
+                                        onPointerLeave={() => cancelCardLongPress(pressKey)}
+                                        onPointerCancel={() => cancelCardLongPress(pressKey)}
+                                        onPointerMove={(e) => abortLongPressOnMove(pressKey, e)}
+                                        onClick={() => {
+                                          if (wasLongPressFired(pressKey)) return;
+                                          if (reassignMode && activeReassignId) {
+                                            onTableToggle();
+                                            return;
+                                          }
+                                          openEditorForReservation(entry.card, normalized);
+                                        }}
+                                      >
+                                        {renderReservationCard(entry.card, {
+                                          highlightFuture: hasFuture,
+                                          ghostColor: entry.color,
+                                        })}
+                                      </button>
+                                    );
+                                  };
+
+                                  const renderEmpty = () => (
+                                    <button
+                                      type="button"
+                                      className="w-full h-full rounded-md border border-slate-300 py-6 text-center text-sm text-slate-500 hover:border-slate-400"
+                                      onClick={() => {
+                                        if (reassignMode && activeReassignId) {
+                                          onTableToggle();
+                                          return;
+                                        }
+                                        openEditorForNew(normalized);
+                                      }}
+                                    >
+                                      {reassignMode ? 'この卓に移動' : '空席（タップで予約）'}
+                                    </button>
+                                  );
+
+                                  if (reassignMode) {
+                                    // Merge conflict cards so double-booked tables still render both entries in reassign mode.
+                                    const entriesForUse = (() => {
+                                      if (!conflicts.length) return displayEntries;
+                                      const merged = [...displayEntries];
+                                      const seen = new Set(merged.map((e) => e.card.id));
+                                      conflicts.forEach((pair) => {
+                                        [pair.a, pair.b].forEach((card) => {
+                                          if (!card?.id || seen.has(card.id)) return;
+                                          merged.push({ card, source: 'existing' as const });
+                                          seen.add(card.id);
+                                        });
+                                      });
+                                      return sortEntriesForDisplay(merged);
+                                    })();
+                                    if (entriesForUse.length === 0) return renderEmpty();
+                                    const overlap = findOverlapPair(entriesForUse);
+                                    if (overlap) return renderSplitView(overlap);
+                                    const preferred =
+                                      entriesForUse.find((e) => e.sessionId === activeReassignId) ?? entriesForUse[0];
+                                    return renderSingleEntry(preferred);
+                                  }
+
+                                  if (displayEntries.length >= 2) {
+                                    return renderSplitView({ a: displayEntries[0], b: displayEntries[1] });
+                                  }
+                                  if (overlapPair || conflict) {
+                                    const pair = overlapPair ?? (conflict
+                                      ? { a: { card: conflict.a, source: 'existing' as const, color: undefined }, b: { card: conflict.b, source: 'existing' as const, color: undefined } }
+                                      : null);
+                                    if (pair) {
+                                      return renderSplitView(pair);
+                                    }
+                                  }
+                                  const isConflictRelated = conflictTableSet.has(normalized) || conflictReservationTableSet.has(normalized);
+                                  if (isConflictRelated && displayEntries.length > 0) {
+                                    return renderSingleEntry(displayEntries[0]);
+                                  }
+                                  if (primaryCard) {
+                                    return renderSingleEntry({ card: primaryCard, source: 'existing', color: undefined });
+                                  }
+                                  if (linkedPrimary) {
+                                    return (
+                                      <div className="h-full rounded-md border border-sky-400 bg-sky-50 px-2 py-3 text-[12px] text-sky-700 flex items-center justify-center text-center">
+                                        連結中 → 卓{linkedPrimary}
+                                      </div>
+                                    );
+                                  }
+                                  return renderEmpty();
+                                })()
+                              ) : (
+                                (() => {
+                                  const style = fixtureStyleMap[rect.fixtureType ?? 'other'] ?? fixtureStyleMap.other;
+                                  const label = rect.label && rect.label !== rect.fixtureType ? rect.label : style.label;
+                                  const shape = style.shape === 'pill' ? 'rounded-full' : 'rounded-md';
+                                  const selected = selectedFixture === itemId;
+                                  return (
+                                    <div
+                                      className={`h-full w-full ${shape} border ${style.border} ${style.bg} shadow-sm p-2 flex flex-col justify-center items-center gap-1 ${
+                                        selected ? 'ring-2 ring-sky-400' : ''
+                                      }`}
+                                    >
+                                      <div className="text-[11px] font-semibold text-slate-700">{style.label}</div>
+                                      <div className="text-sm font-semibold text-slate-800">{label}</div>
+                                      <div className="text-[11px] text-slate-600">ドラッグで移動 / 右下でリサイズ</div>
+                                    </div>
+                                  );
+                                })()
+                              )}
+                              {chairs.length > 0 && (
+                                <div className="pointer-events-none absolute inset-0">
+                                  {chairs.map((pos, idx) => {
+                                    const isHorizontal = pos.side === 'top' || pos.side === 'bottom';
+                                    const w = isHorizontal ? CHAIR_LONG : CHAIR_SHORT;
+                                    const h = isHorizontal ? CHAIR_SHORT : CHAIR_LONG;
+                                    return (
+                                      <div
+                                        key={`${itemId}-chair-${idx}`}
+                                        className="absolute rounded-full bg-slate-500 shadow-sm"
+                                        style={{
+                                          width: w,
+                                          height: h,
+                                          left: pos.cx - w / 2,
+                                          top: pos.cy - h / 2,
+                                          border: '1px solid rgba(51,65,85,0.55)',
+                                        }}
+                                      />
+                                    );
+                                  })}
                                 </div>
-                              );
-                            })()
-                          )}
-                          {chairs.length > 0 && (
-                            <div className="pointer-events-none absolute inset-0">
-                              {chairs.map((pos, idx) => {
-                                const isHorizontal = pos.side === 'top' || pos.side === 'bottom';
-                                const w = isHorizontal ? CHAIR_LONG : CHAIR_SHORT;
-                                const h = isHorizontal ? CHAIR_SHORT : CHAIR_LONG;
-                                return (
-                                  <div
-                                    key={`${itemId}-chair-${idx}`}
-                                    className="absolute rounded-full bg-slate-500 shadow-sm"
-                                    style={{
-                                      width: w,
-                                      height: h,
-                                      left: pos.cx - w / 2,
-                                      top: pos.cy - h / 2,
-                                      border: '1px solid rgba(51,65,85,0.55)',
-                                    }}
-                                  />
-                                );
-                              })}
+                              )}
                             </div>
+                          </div>
+
+                          {editMode && !isTable && selectedFixture === itemId && (
+                            <button
+                              type="button"
+                              className="absolute right-1 top-1 rounded bg-rose-600 px-2 py-[2px] text-[11px] font-semibold text-white shadow"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                deleteFixture(itemId);
+                              }}
+                            >
+                              削除
+                            </button>
+                          )}
+                          {editMode && (
+                            <div
+                              className="absolute right-0 bottom-0 w-3 h-3 bg-slate-400 rounded-sm cursor-se-resize touch-none"
+                              onPointerDown={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                handleDrag(e as any, 'resize');
+                              }}
+                            />
                           )}
                         </div>
-
-                        {editMode && !isTable && selectedFixture === itemId && (
-                          <button
-                            type="button"
-                            className="absolute right-1 top-1 rounded bg-rose-600 px-2 py-[2px] text-[11px] font-semibold text-white shadow"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deleteFixture(itemId);
-                            }}
-                          >
-                            削除
-                          </button>
-                        )}
-                        {editMode && (
-                          <div
-                            className="absolute right-0 bottom-0 w-3 h-3 bg-slate-400 rounded-sm cursor-se-resize touch-none"
-                            onPointerDown={(e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
-                              handleDrag(e as any, 'resize');
-                            }}
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
-                    {linkedGroups.map((group) => {
+                      );
+                    })}
+                    {!reassignMode && linkedGroups.map((group) => {
                       const { card, bounds: b } = group;
+                      const totalCapacity = group.rects.reduce((sum, item) => sum + (tableCapacitiesMap[item.tableId] ?? 0), 0);
+                      const labelTables = [...card.tables].map(normalizeTableId).sort(byNumericTable).filter(Boolean);
+                      const baseRect = group.rects[0]?.rect;
+                      const seatRect: LayoutEntry = baseRect
+                        ? { ...baseRect, x: 0, y: 0, w: b.w, h: b.h }
+                        : { x: 0, y: 0, w: b.w, h: b.h };
+                      const compositeChairs = computeChairs(totalCapacity, seatRect);
+                      const pressKey = `linked-${card.id}`;
+                      const resolveTableAtPoint = (el: HTMLButtonElement, clientX: number, clientY: number) => {
+                        const box = el.getBoundingClientRect();
+                        const px = (clientX - box.left) / zoom;
+                        const py = (clientY - box.top) / zoom;
+                        const hit = group.rects.find(({ rect, tableId }) => {
+                          const rx = rect.x - b.x;
+                          const ry = rect.y - b.y;
+                          return px >= rx && px <= rx + rect.w && py >= ry && py <= ry + rect.h ? tableId : null;
+                        });
+                        return hit?.tableId ?? card.primaryTable ?? labelTables[0];
+                      };
+                      const visual = getCardVisual(card);
                       return (
                         <div
                           key={`linked-${card.id}`}
                           className="absolute"
-                          style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
+                          style={{ left: b.x, top: b.y + LABEL_PAD_Y + TOP_PAD, width: b.w, height: b.h }}
                         >
                           <button
                             type="button"
-                            className="w-full h-full text-left"
-                            onClick={() => openEditorForReservation(card, card.primaryTable)}
+                            className="relative w-full h-full text-left"
+                            onPointerDown={(e) => {
+                              const targetTable = resolveTableAtPoint(e.currentTarget, e.clientX, e.clientY);
+                              beginCardLongPress(pressKey, e, () => startReassignForCard(card, targetTable));
+                            }}
+                            onPointerUp={() => cancelCardLongPress(pressKey)}
+                            onPointerLeave={() => cancelCardLongPress(pressKey)}
+                            onPointerCancel={() => cancelCardLongPress(pressKey)}
+                            onPointerMove={(e) => abortLongPressOnMove(pressKey, e)}
+                            onClick={() => {
+                              if (wasLongPressFired(pressKey)) return;
+                              openEditorForReservation(card, card.primaryTable);
+                            }}
                           >
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-sm font-semibold text-slate-800">連結: {card.tables.join(', ')}</span>
+                            <div
+                              className="pointer-events-none absolute inset-0 rounded-md"
+                              style={{
+                                backgroundColor: visual.bg,
+                                border: `1px solid ${visual.border}`,
+                                boxShadow: visual.shadow,
+                              }}
+                            />
+                            <div className="pointer-events-none absolute -top-7 left-0 text-sm font-semibold text-slate-800">
+                              連結: {labelTables.join(', ')}
                             </div>
-                            <div className="h-full">
-                              {renderReservationCard(card)}
+                              <div className="relative h-full w-full mt-1">
+                                <div className="pointer-events-none absolute inset-0">
+                                  {compositeChairs.map((pos, idx) => {
+                                    const isHorizontal = pos.side === 'top' || pos.side === 'bottom';
+                                    const w = isHorizontal ? CHAIR_LONG : CHAIR_SHORT;
+                                  const h = isHorizontal ? CHAIR_SHORT : CHAIR_LONG;
+                                  return (
+                                    <div
+                                      key={`linked-chair-${card.id}-${idx}`}
+                                      className="absolute rounded-full bg-slate-500 shadow-sm"
+                                      style={{
+                                        width: w,
+                                        height: h,
+                                        left: pos.cx - w / 2,
+                                        top: pos.cy - h / 2,
+                                        border: '1px solid rgba(51,65,85,0.55)',
+                                      }}
+                                    />
+                                  );
+                                })}
+                              </div>
+
+                              {/* center the default-size table card inside the merged bounding box */}
+                              <div className="absolute inset-0 grid place-items-center">
+                                {(() => {
+                                  const innerW = Math.min(TABLE_W, b.w);
+                                  const innerH = Math.min(TABLE_H, b.h);
+                                  return (
+                                    <div style={{ width: innerW, height: innerH }}>
+                                      {renderReservationCard(card, { hideFrame: true })}
+                                    </div>
+                                  );
+                                })()}
+                              </div>
                             </div>
                           </button>
                         </div>
@@ -1282,6 +1826,73 @@ export default function FloorManagementView({
           );
         })}
       </div>
+
+      {reassignMode && (
+        <div
+          className="fixed left-0 right-0 z-[35] px-4 pointer-events-none"
+          style={{ bottom: 'calc(env(safe-area-inset-bottom) + 48px)' }}
+        >
+          <div className="pointer-events-auto mx-auto max-w-4xl rounded-2xl border bg-white shadow-xl p-3 flex flex-col gap-2">
+            <div className="flex flex-wrap gap-2 items-center">
+              {sessionOrder.map((sid) => {
+                const session = reassignSessions[sid];
+                if (!session) return null;
+                const isActive = sid === activeReassignId;
+                const palette = pickSessionColor(sid);
+                const labelTime = fmtTime(session.base.startMs);
+                const guestsLabel = Number.isFinite(session.base.guests) && (session.base.guests ?? 0) > 0 ? `${session.base.guests}名` : '';
+                const baseTables = session.original.join(', ');
+                return (
+                  <button
+                    key={sid}
+                    type="button"
+                    onClick={() => setActiveReassignId(sid)}
+                    className={`px-3 py-1 rounded-full border text-sm transition-colors ${isActive ? 'shadow-sm' : ''}`}
+                    style={{
+                      backgroundColor: isActive ? (palette.fill ?? 'rgba(16,185,129,0.18)') : '#f8fafc',
+                      borderColor: palette.outline ?? '#10b981',
+                      color: isActive ? '#0f172a' : '#475569',
+                    }}
+                  >
+                    <span
+                      className="inline-block w-2 h-2 rounded-full mr-2 align-middle"
+                      style={{ backgroundColor: palette.outline ?? '#0f172a' }}
+                    />
+                    卓{baseTables || session.base.primaryTable} / {labelTime}{guestsLabel ? ` / ${guestsLabel}` : ''}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="px-3 py-2 rounded border text-sm bg-white text-slate-700 hover:bg-slate-50"
+                onClick={() => {
+                  if (activeReassignId) clearReassignSession(activeReassignId);
+                  else clearAllReassign();
+                }}
+              >
+                キャンセル
+              </button>
+              <div className="flex-1" />
+              <button
+                type="button"
+                className="px-3 py-2 rounded border text-sm bg-white text-slate-700 hover:bg-slate-50"
+                onClick={clearAllReassign}
+              >
+                全てクリア
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded text-sm font-semibold text-white bg-emerald-600 shadow"
+                onClick={applyReassign}
+              >
+                適用
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ReservationEditorDrawer
         open={drawerOpen}
@@ -1360,10 +1971,7 @@ export default function FloorManagementView({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between px-4 py-3 border-b">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-semibold text-slate-800">卓 {conflictModal.tableId}</span>
-                <span className="text-xs text-amber-600 font-semibold">⚠ 重複</span>
-              </div>
+              <div className="text-sm font-semibold text-slate-800">卓 {conflictModal.tableId}</div>
               <button type="button" className="text-sm text-slate-500 hover:text-slate-700" onClick={() => setConflictModal(null)}>
                 閉じる
               </button>

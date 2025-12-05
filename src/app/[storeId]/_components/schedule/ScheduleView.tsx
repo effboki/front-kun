@@ -70,6 +70,17 @@ const normalizeTableList = (values?: readonly unknown[]): string[] => {
   return out;
 };
 
+/**
+ * 予約アイテム用の安定キーを生成する。
+ * - 空文字は無効として扱い、fallback に置き換える
+ * - 文字列以外も許可し、最終的に string を返す
+ */
+const resolveStableKey = (raw: unknown, fallback: string): string => {
+  if (raw == null) return fallback;
+  const str = String(raw).trim();
+  return str ? str : fallback;
+};
+
 // アプリ上部バー（安全領域含む）のフォールバック高さ(px)。実端末では後で実測する。
 const DEFAULT_TOP_BAR_PX = 48;
 // 画面下部のタブバー（フッター）高さ(px)。実端末では後で実測する。
@@ -598,7 +609,12 @@ export default function ScheduleView({
 
   // 1) データ取得：V1は表示専用。items が渡されなければ空配列。
   const data = useMemo<(ScheduleItem & { _key: string })[]>(() => {
-    const base = (items ?? []).map((it, idx) => ({ ...it, _key: String((it as any).id ?? `tmp_${idx}`) }));
+    const base = (items ?? []).map((it, idx) => {
+      const fallback = `tmp_${idx}`;
+      const rawKey = (it as any)._key ?? (it as any).id;
+      const key = resolveStableKey(rawKey, fallback);
+      return { ...it, _key: key };
+    });
     if (!pendingMutations || Object.keys(pendingMutations).length === 0) {
       return base;
     }
@@ -710,6 +726,17 @@ export default function ScheduleView({
     const mins = Math.max(5, minutes); // 最低 5 分
     return start + mins * 60_000;
   }, [getCourseStayMin]);
+
+  const buildOverlayKey = useCallback((item: any, rowKey: string) => {
+    const primary = resolveStableKey((item as any)?._key ?? (item as any)?.id, '');
+    if (primary) {
+      // 行ごとにキーを分離しないと、複数卓に跨る同一予約が別卓で重なる
+      return `${primary}__${rowKey || 'row'}`;
+    }
+    const start = Math.max(0, Number((item as any)?.startMs ?? 0));
+    const end = computeEndMsFor(item);
+    return `${rowKey || 'row'}_${start}_${end}`;
+  }, [computeEndMsFor]);
 
   // === Edited-dot control (only for: startMs, tables, course, guests) ===
   const buildEditSignature = useCallback((it: any) => {
@@ -1344,7 +1371,7 @@ export default function ScheduleView({
 
   const startReassignForItem = useCallback((target: (ScheduleItem & { _startCol?: number; _spanCols?: number; _row?: number; _table?: string; _key?: string }) | null) => {
     if (!target) return;
-    const baseId = String((target as any).id ?? (target as any)._key ?? '');
+    const baseId = resolveStableKey((target as any).id ?? (target as any)._key, '');
     if (!baseId) return;
     const useTables: string[] = Array.isArray((target as any)?.tables)
       ? (target as any).tables
@@ -1568,7 +1595,7 @@ export default function ScheduleView({
         : [];
       if (selected.length === 0) return;
 
-      const baseId = String((base?.id ?? base?._key ?? sessionId) || sessionId);
+      const baseId = resolveStableKey((base?.id ?? base?._key ?? sessionId) as any, sessionId);
       const baseTableSet = new Set<string>();
       if (Array.isArray(base?.tables)) {
         base.tables.forEach((t: any) => {
@@ -1640,6 +1667,7 @@ export default function ScheduleView({
     if (!activeReassign && (!reassignSessions || Object.keys(reassignSessions).length === 0) && reassignPreviewBlocks.length === 0) {
       return { idxByKey: {}, maxByRow: {} } as { idxByKey: Record<string, number>; maxByRow: Record<string, number> };
     }
+
     const idxByKey: Record<string, number> = {};
     const maxByRow: Record<string, number> = {};
     const byRow: Record<string, Array<{ start: number; end: number; key: string; fixedIdx?: number }>> = {};
@@ -1659,7 +1687,7 @@ export default function ScheduleView({
       (byRow[rowKey] ??= []).push({
         start,
         end,
-        key: String((it as any)._key ?? (it as any).id ?? `${rowKey}_${start}_${end}`),
+        key: buildOverlayKey(it, rowKey),
         fixedIdx,
       });
       maxByRow[rowKey] = Math.max(maxByRow[rowKey] ?? 1, fixedIdx + 1);
@@ -1674,7 +1702,7 @@ export default function ScheduleView({
       const start = Number((p.item as any)?.startMs ?? 0);
       const end = computeEndMsFor((p.item as any));
       if (!Number.isFinite(start) || !Number.isFinite(end)) return;
-      const key = String((p.item as any)?._key ?? `preview_${rowKey}_${start}`);
+      const key = buildOverlayKey((p.item as any), rowKey);
       (byRow[rowKey] ??= []).push({ start, end, key });
     });
 
@@ -1705,7 +1733,7 @@ export default function ScheduleView({
     });
 
     return { idxByKey, maxByRow };
-  }, [activeReassign, reassignPreviewBlocks, reassignSessions, visibleStacked, computeEndMsFor, tables]);
+  }, [activeReassign, reassignPreviewBlocks, reassignSessions, visibleStacked, computeEndMsFor, tables, buildOverlayKey]);
 
   // セッションごとに、元のカードを選択卓で色付けするゴースト（アクティブでなくても表示）
   const existingOverlayBlocks = useMemo(() => {
@@ -1762,7 +1790,7 @@ export default function ScheduleView({
     });
 
     return blocks;
-  }, [reassignSessions, visibleStacked, tableIndex, tables]);
+  }, [reassignSessions, visibleStacked, tableIndex, tables, buildOverlayKey]);
 
   // 各卓の行高：既存 + プレビューの最大スタックに応じて高さを増やす
   const rowHeightsPx = useMemo(() => {
@@ -2223,8 +2251,7 @@ export default function ScheduleView({
               );
               const rowHeightForCard = rowHeightsPx[rowIdx] ?? effectiveRowH;
               const overlayKey =
-                String((it as any)._key ?? it.id ?? '') ||
-                `${tableId}_${(it as any).startMs ?? ''}_${computeEndMsFor(it)}`;
+                buildOverlayKey(it as any, tableId || String((it as any)._row ?? ''));
               const overlayIdx = activeReassign ? overlayStackInfo.idxByKey[overlayKey] : undefined;
               return (
                 <ReservationBlock
@@ -2309,8 +2336,8 @@ export default function ScheduleView({
                   {/* 既存予約のゴースト（選択中の卓のみ表示） */}
                   {existingOverlayBlocks.map((ghost, ghostIdx) => {
                     const tableKey = normalizeTableId((ghost.item as any)?._table ?? ghost.tableId ?? tables[ghost.row - 1] ?? ghost.row);
-                    const rowKey = tableKey || String(ghost.row);
-                    const key = String((ghost.item as any)?._key ?? `${ghost.item?.id}_${ghost.row}`);
+                  const rowKey = tableKey || String(ghost.row);
+                    const key = buildOverlayKey((ghost.item as any), rowKey);
                     const baseRowH = rowHeightsPx[ghost.row - 1] ?? effectiveRowH;
                     const combinedStack = Math.max(
                       rowStackCountVisible[rowKey] ?? 1,
@@ -2363,7 +2390,7 @@ export default function ScheduleView({
                   {reassignPreviewBlocks.map((preview, previewIdx) => {
                     const tableKey = normalizeTableId((preview.item as any)?._table ?? (preview.item as any)?.table ?? tables[preview.row - 1] ?? preview.row);
                     const rowKey = tableKey || String(preview.row);
-                    const key = String((preview.item as any)?._key ?? `${preview.item?.id}_${preview.row}`);
+                    const key = buildOverlayKey((preview.item as any), rowKey);
                     const baseRowH = rowHeightsPx[preview.row - 1] ?? effectiveRowH;
                     const combinedStack = Math.max(
                       rowStackCountVisible[rowKey] ?? 1,

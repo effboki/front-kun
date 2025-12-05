@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
+import { useCallback, useMemo, useRef, useState, useEffect, useLayoutEffect } from 'react';
 import type { AreaDef } from '@/types';
 
 type SeatOrientation = 'horizontal' | 'vertical';
@@ -27,6 +27,7 @@ type Props = {
   tableCapacities?: Record<string, number | string>;
   onChangeLayout: (layout: FloorLayoutMap) => void;
   onChangeTablesAreas: (tables: string[], areas: AreaDef[]) => void;
+  storeId?: string;
 };
 
 const normalizeTableId = (v?: unknown) => String(v ?? '').trim();
@@ -38,6 +39,24 @@ const serializeLayout = (map?: FloorLayoutMap | null) => {
   return JSON.stringify(sorted);
 };
 const layoutsEqual = (a?: FloorLayoutMap | null, b?: FloorLayoutMap | null) => serializeLayout(a) === serializeLayout(b);
+const TABLE_W = 105;
+const TABLE_H = 90;
+const LEGACY_TABLE_SIZES = [
+  { w: 90, h: 90 },
+  { w: 100, h: 90 },
+  { w: 100, h: 100 },
+  { w: 110, h: 110 },
+];
+
+const normalizeTableSize = (w?: number, h?: number): { w: number; h: number } => {
+  const nw = Number(w);
+  const nh = Number(h);
+  const hasValid = Number.isFinite(nw) && nw > 0 && Number.isFinite(nh) && nh > 0;
+  if (hasValid && !LEGACY_TABLE_SIZES.some((s) => s.w === nw && s.h === nh)) {
+    return { w: nw, h: nh };
+  }
+  return { w: TABLE_W, h: TABLE_H };
+};
 
 const normalizeSeatConfig = (seat?: Partial<SeatConfig>): SeatConfig => {
   const orientation: SeatOrientation = seat?.orientation === 'vertical' ? 'vertical' : 'horizontal';
@@ -57,8 +76,8 @@ const normalizeSeatConfig = (seat?: Partial<SeatConfig>): SeatConfig => {
 
 const buildAutoLayout = (areas: AreaDef[]): FloorLayoutMap => {
   const layout: FloorLayoutMap = {};
-  const CELL_W = 130;
-  const CELL_H = 120;
+  const CELL_W = TABLE_W;
+  const CELL_H = TABLE_H;
   const GAP = 16;
   areas.forEach((area) => {
     (area.tables ?? []).forEach((t, idx) => {
@@ -72,7 +91,7 @@ const buildAutoLayout = (areas: AreaDef[]): FloorLayoutMap => {
   return layout;
 };
 
-export default function FloorLayoutSettings({ tables, areas, layout, tableCapacities, onChangeLayout, onChangeTablesAreas }: Props) {
+export default function FloorLayoutSettings({ tables, areas, layout, tableCapacities, onChangeLayout, onChangeTablesAreas, storeId }: Props) {
   const cleanTables = useMemo(() => Array.from(new Set((tables ?? []).map(normalizeTableId).filter(Boolean))), [tables]);
   const tableCapMap = useMemo<Record<string, number>>(() => {
     const source = tableCapacities || {};
@@ -114,14 +133,15 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
         const areaId = areaMap.get(k) ?? rect.areaId ?? '__unassigned';
         const kind: LayoutEntry['kind'] = isFixture ? 'fixture' : 'table';
         const label = rect.label && rect.label !== rect.fixtureType ? rect.label : undefined;
-        normalized[k] = { ...rect, areaId, kind, ...(label ? { label } : {}) };
+        const size = kind === 'table' ? normalizeTableSize(rect.w as number, rect.h as number) : {};
+        normalized[k] = { ...rect, areaId, kind, ...(label ? { label } : {}), ...size };
       });
     }
     // ensure every table exists
     cleanTables.forEach((t) => {
       if (!normalized[t]) {
         const auto = buildAutoLayout(areaSections);
-        normalized[t] = auto[t] ?? { x: 20, y: 20, w: 130, h: 120, areaId: areaMap.get(t) ?? '__unassigned', kind: 'table' };
+        normalized[t] = auto[t] ?? { x: 20, y: 20, w: TABLE_W, h: TABLE_H, areaId: areaMap.get(t) ?? '__unassigned', kind: 'table' };
       }
     });
     return Object.keys(normalized).length > 0 ? normalized : buildAutoLayout(areaSections);
@@ -130,16 +150,47 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
   const initialLayout = useMemo<FloorLayoutMap>(() => normalizeLayout(layout), [layout, normalizeLayout]);
 
   const [localLayout, setLocalLayout] = useState<FloorLayoutMap>(initialLayout);
+  const keySuffix = storeId ? `-${storeId}` : '';
+  const editModeKey = useMemo(() => `fk-floorlayout-edit${keySuffix}`, [keySuffix]);
+  const previewModeKey = useMemo(() => `fk-floorlayout-preview${keySuffix}`, [keySuffix]);
+  const zoomKey = useMemo(() => `fk-floorlayout-zoom${keySuffix}`, [keySuffix]);
   const [editMode, setEditMode] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
-    return sessionStorage.getItem('fk-floorlayout-edit') === '1';
+    return (localStorage.getItem(editModeKey) ?? '0') === '1';
   });
+  const [zoom, setZoom] = useState<number>(() => {
+    if (typeof window === 'undefined') return 1;
+    const raw = localStorage.getItem(zoomKey);
+    const num = raw ? Number(raw) : NaN;
+    if (Number.isFinite(num) && num > 0.1 && num <= 3) return num;
+    return 1;
+  });
+  const zoomIn = useCallback(() => setZoom((v) => Math.min(1.5, Math.round((v + 0.1) * 10) / 10)), []);
+  const zoomOut = useCallback(() => setZoom((v) => Math.max(0.2, Math.round((v - 0.1) * 10) / 10)), []);
   const [guides, setGuides] = useState<{ x?: number; y?: number }>({});
   const layoutRef = useRef<FloorLayoutMap>(initialLayout);
   const [tableEditor, setTableEditor] = useState<{ mode: 'add' | 'rename'; target?: string; value: string; areaId?: string } | null>(null);
   const longPressRef = useRef<{ tid: number | null; x: number; y: number; target?: string }>({ tid: null, x: 0, y: 0, target: undefined });
   const editModeRef = useRef(false);
-  const [previewMode, setPreviewMode] = useState(false);
+  const [previewMode, setPreviewMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return (localStorage.getItem(previewModeKey) ?? '0') === '1';
+  });
+  const scrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const scrollPosRef = useRef<Record<string, number>>({});
+  const rememberScrollPositions = useCallback(() => {
+    Object.entries(scrollRefs.current).forEach(([areaId, el]) => {
+      if (!el) return;
+      scrollPosRef.current[areaId] = el.scrollLeft;
+    });
+  }, []);
+  const restoreScrollPositions = useCallback(() => {
+    Object.entries(scrollRefs.current).forEach(([areaId, el]) => {
+      if (!el) return;
+      const pos = scrollPosRef.current[areaId];
+      if (pos != null) el.scrollLeft = pos;
+    });
+  }, []);
   const [fixtureType, setFixtureType] = useState<string>('entrance');
   const [selectedFixture, setSelectedFixture] = useState<string | null>(null);
   const [fixtureAreaId, setFixtureAreaId] = useState<string>(() => areaSections[0]?.id || '__default');
@@ -161,7 +212,7 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
   const updateSeatConfig = useCallback(
     (tableId: string, mutator: (seat: SeatConfig) => SeatConfig) => {
       setLocalLayout((prev) => {
-        const current = prev[tableId] ?? { x: 16, y: 16, w: 130, h: 120, areaId: areaSections[0]?.id, kind: 'table' };
+        const current = prev[tableId] ?? { x: 16, y: 16, w: TABLE_W, h: TABLE_H, areaId: areaSections[0]?.id, kind: 'table' };
         const nextSeat = mutator(getSeat(current));
         const next: FloorLayoutMap = { ...prev, [tableId]: { ...current, seat: nextSeat } };
         layoutRef.current = next;
@@ -196,17 +247,39 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
   useEffect(() => {
     editModeRef.current = editMode;
     if (typeof window !== 'undefined') {
-      sessionStorage.setItem('fk-floorlayout-edit', editMode ? '1' : '0');
+      localStorage.setItem(editModeKey, editMode ? '1' : '0');
     }
-  }, [editMode]);
+  }, [editMode, editModeKey]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(previewModeKey, previewMode ? '1' : '0');
+    }
+  }, [previewMode, previewModeKey]);
+  useEffect(() => {
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) e.preventDefault();
+    };
+    window.addEventListener('wheel', onWheel, { passive: false });
+    return () => window.removeEventListener('wheel', onWheel);
+  }, []);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(zoomKey, String(zoom));
+    } catch {
+      /* ignore */
+    }
+  }, [zoom, zoomKey]);
 
   const saveLayout = useCallback((next: FloorLayoutMap) => {
+    rememberScrollPositions();
     setLocalLayout(next);
     layoutRef.current = next;
     enqueueLayoutChange(next);
-  }, [enqueueLayoutChange]);
+  }, [enqueueLayoutChange, rememberScrollPositions]);
 
   useEffect(() => {
+    rememberScrollPositions();
     const normalized = normalizeLayout(layout);
     setLocalLayout(normalized);
     layoutRef.current = normalized;
@@ -214,7 +287,11 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
     if (!layoutsEqual(normalized, layout)) {
       emitLayoutChange(normalized);
     }
-  }, [layout, normalizeLayout, emitLayoutChange]);
+    restoreScrollPositions();
+  }, [layout, normalizeLayout, emitLayoutChange, restoreScrollPositions, rememberScrollPositions]);
+  useLayoutEffect(() => {
+    restoreScrollPositions();
+  }, [localLayout, zoom, restoreScrollPositions]);
 
   const handleAddOrRename = useCallback((closeAfter = true) => {
     if (!tableEditor) return;
@@ -234,7 +311,7 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
       nextAreas = nextAreas.map((a) => a.id === areaId ? { ...a, tables: Array.from(new Set([...a.tables, nextId])) } : a);
       setLocalLayout((prev) => {
         const auto = buildAutoLayout(nextAreas);
-        const rect = auto[nextId] ?? { x: 20, y: 20, w: 130, h: 120, areaId, kind: 'table' };
+        const rect = auto[nextId] ?? { x: 20, y: 20, w: TABLE_W, h: TABLE_H, areaId, kind: 'table' };
         const merged = { ...prev, [nextId]: rect };
         layoutRef.current = merged;
         return merged;
@@ -255,7 +332,7 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
         const current = prev[target];
         const rect: LayoutEntry = current
           ? { ...current, areaId, kind: 'table' }
-          : { x: 20, y: 20, w: 130, h: 120, areaId, kind: 'table' };
+          : { x: 20, y: 20, w: TABLE_W, h: TABLE_H, areaId, kind: 'table' };
         const next: FloorLayoutMap = { ...prev };
         delete next[target];
         next[nextId] = rect;
@@ -285,6 +362,7 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
   const CHAIR_LONG = 26;
   const CHAIR_SHORT = 12;
   const CHAIR_OUTSET = 1; // small overlap to visually attach to table
+  const LABEL_PAD_Y = 10;
   const computeChairs = useCallback(
     (capacity: number, rect: LayoutEntry): { cx: number; cy: number; side: SeatSide }[] => {
       const seat = getSeat(rect);
@@ -338,7 +416,7 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
     let maxX = 0;
     let maxY = 0;
     tableIds.forEach((tid) => {
-      const rect = localLayout[tid] ?? { x: 16, y: 16, w: 130, h: 120, areaId: fallbackAreaId };
+      const rect = localLayout[tid] ?? { x: 16, y: 16, w: TABLE_W, h: TABLE_H, areaId: fallbackAreaId };
       if (!rect) return;
       maxX = Math.max(maxX, rect.x + rect.w);
       maxY = Math.max(maxY, rect.y + rect.h);
@@ -365,6 +443,25 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
         >
           {previewMode ? 'プレビュー中' : 'プレビュー'}
         </button>
+        <div className="flex items-center gap-1 text-sm text-slate-600">
+          <button
+            type="button"
+            className="rounded border px-2 py-[6px] hover:bg-slate-50"
+            onClick={zoomOut}
+            aria-label="ズームアウト"
+          >
+            −
+          </button>
+          <span className="min-w-[48px] text-center font-semibold">{Math.round(zoom * 100)}%</span>
+          <button
+            type="button"
+            className="rounded border px-2 py-[6px] hover:bg-slate-50"
+            onClick={zoomIn}
+            aria-label="ズームイン"
+          >
+            ＋
+          </button>
+        </div>
         <div className="flex items-center gap-2 text-sm">
           <label className="text-slate-600">設備を追加:</label>
           <select
@@ -414,13 +511,14 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
           const tablesInArea = area.tables.filter((t) => cleanTables.includes(t));
           const fixturesInArea = Object.entries(localLayout).filter(([id, rect]) => rect.kind === 'fixture' && (rect.areaId ?? area.id) === area.id);
           const areaLayout = tablesInArea.reduce<Record<string, LayoutEntry>>((acc, t) => {
-            const rect = localLayout[t] ?? { x: 16, y: 16, w: 130, h: 120, areaId: area.id };
+            const rect = localLayout[t] ?? { x: 16, y: 16, w: TABLE_W, h: TABLE_H, areaId: area.id };
             acc[t] = rect;
             return acc;
           }, {});
 
           const areaHandleDrag = (tableId: string, mode: 'move' | 'resize') => (e: React.PointerEvent<HTMLDivElement>) => {
             if (!editMode) return;
+            rememberScrollPositions();
             const startX = e.clientX;
             const startY = e.clientY;
             const startRect = areaLayout[tableId] ?? localLayout[tableId];
@@ -455,8 +553,8 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
             };
 
             const onMove = (ev: PointerEvent) => {
-              const dx = ev.clientX - startX;
-              const dy = ev.clientY - startY;
+              const dx = (ev.clientX - startX) / zoom;
+              const dy = (ev.clientY - startY) / zoom;
               let next: LayoutEntry = { ...startRect };
               if (mode === 'move') {
                 next.x = Math.max(0, startRect.x + dx);
@@ -472,6 +570,7 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
                 layoutRef.current = merged;
                 return merged;
               });
+              restoreScrollPositions();
             };
 
             const onUp = () => {
@@ -494,107 +593,124 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
                   <span className="text-xs text-slate-500">{tablesInArea.length}卓</span>
                 </div>
               </header>
-              <div className="relative bg-slate-50 overflow-x-auto overflow-y-hidden">
-                {guides.x != null && (
-                  <div className="absolute inset-y-0 w-px bg-sky-400/60 pointer-events-none" style={{ left: guides.x }} />
-                )}
-                {guides.y != null && (
-                  <div className="absolute inset-x-0 h-px bg-sky-400/60 pointer-events-none" style={{ top: guides.y }} />
-                )}
+              <div
+                className="relative bg-slate-50 overflow-x-auto overflow-y-hidden"
+                ref={(el) => {
+                  scrollRefs.current[area.id] = el;
+                  if (el && scrollPosRef.current[area.id] != null) {
+                    el.scrollLeft = scrollPosRef.current[area.id];
+                  }
+                }}
+                onScroll={(e) => {
+                  scrollPosRef.current[area.id] = (e.currentTarget as HTMLDivElement).scrollLeft;
+                }}
+              >
                 <div
                   className="relative"
                   style={{
-                    minHeight: bounds.height,
-                    width: bounds.width,
+                    minHeight: bounds.height * zoom,
+                    width: bounds.width * zoom,
                   }}
                 >
-                  {tablesInArea.map((tableId) => {
-                    const rect = localLayout[tableId] ?? { x: 16, y: 16, w: 130, h: 120, areaId: area.id };
-                    const seatCfg = getSeat(rect);
-                    const capacity = tableCapMap[tableId] ?? 0;
-                    const chairs = computeChairs(capacity, rect);
-                    const sideOptions = seatCfg.orientation === 'horizontal' ? ([
-                      { value: 'top', label: '上' },
-                      { value: 'bottom', label: '下' },
-                    ] as const) : ([
-                      { value: 'left', label: '左' },
-                      { value: 'right', label: '右' },
-                    ] as const);
-                    return (
-                      <div
-                        key={tableId}
-                        className={`absolute ${editMode ? 'cursor-move' : ''}`}
-                        style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
-                        onPointerDown={(e) => {
-                          if (editMode) areaHandleDrag(tableId, 'move')(e);
-                        }}
-                        onPointerUp={() => {
-                          const st = longPressRef.current;
-                          if (st.tid != null) {
-                            clearTimeout(st.tid);
-                            longPressRef.current.tid = null;
-                          }
-                        }}
-                        onPointerMove={(e) => {
-                          const st = longPressRef.current;
-                          if (st.tid == null) return;
-                          const dx = Math.abs(e.clientX - st.x);
-                          const dy = Math.abs(e.clientY - st.y);
-                          if (dx > 8 || dy > 8) {
-                            clearTimeout(st.tid!);
-                            longPressRef.current.tid = null;
-                          }
-                        }}
-                      >
+                  <div
+                    className="absolute top-0 left-0"
+                    style={{
+                      transform: `scale(${zoom})`,
+                      transformOrigin: 'top left',
+                      width: bounds.width,
+                      height: bounds.height,
+                    }}
+                  >
+                    {guides.x != null && (
+                      <div className="absolute inset-y-0 w-px bg-sky-400/60 pointer-events-none" style={{ left: guides.x }} />
+                    )}
+                    {guides.y != null && (
+                      <div className="absolute inset-x-0 h-px bg-sky-400/60 pointer-events-none" style={{ top: guides.y }} />
+                    )}
+                    {tablesInArea.map((tableId) => {
+                      const rect = localLayout[tableId] ?? { x: 16, y: 16, w: TABLE_W, h: TABLE_H, areaId: area.id };
+                      const seatCfg = getSeat(rect);
+                      const capacity = tableCapMap[tableId] ?? 0;
+                      const chairs = computeChairs(capacity, rect);
+                      const sideOptions = seatCfg.orientation === 'horizontal' ? ([
+                        { value: 'top', label: '上' },
+                        { value: 'bottom', label: '下' },
+                      ] as const) : ([
+                        { value: 'left', label: '左' },
+                        { value: 'right', label: '右' },
+                      ] as const);
+                      return (
                         <div
-                          className={`${previewMode ? 'h-full w-full rounded-md p-0 relative' : 'h-full w-full rounded-md border bg-white shadow-sm p-2 flex flex-col justify-between relative'}`}
+                          key={tableId}
+                          className={`absolute ${editMode ? 'cursor-move' : ''}`}
+                          style={{ left: rect.x, top: rect.y + LABEL_PAD_Y, width: rect.w, height: rect.h }}
+                          onPointerDown={(e) => {
+                            if (editMode) areaHandleDrag(tableId, 'move')(e);
+                          }}
+                          onPointerUp={() => {
+                            const st = longPressRef.current;
+                            if (st.tid != null) {
+                              clearTimeout(st.tid);
+                              longPressRef.current.tid = null;
+                            }
+                          }}
+                          onPointerMove={(e) => {
+                            const st = longPressRef.current;
+                            if (st.tid == null) return;
+                            const dx = Math.abs(e.clientX - st.x);
+                            const dy = Math.abs(e.clientY - st.y);
+                            if (dx > 8 || dy > 8) {
+                              clearTimeout(st.tid!);
+                              longPressRef.current.tid = null;
+                            }
+                          }}
                         >
-                          {previewMode && (
-                            <div className="pointer-events-none absolute -top-5 left-0 text-xs font-semibold text-slate-700">
-                              卓 {tableId}
-                            </div>
-                          )}
-                          {!previewMode && (
-                            <div className="flex items-center justify-between text-sm font-semibold text-slate-800">
-                              <span>卓 {tableId}</span>
-                              {editMode && (
-                                <button
-                                  type="button"
-                                  className="ml-auto inline-flex items-center rounded px-2 py-[2px] text-[11px] font-semibold text-slate-600 border border-slate-200 bg-white hover:bg-slate-50"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setOpenSeatMenu((prev) => (prev === tableId ? null : tableId));
-                                  }}
-                                  onPointerDown={(e) => {
-                                    e.stopPropagation();
-                                    e.preventDefault();
-                                  }}
-                                >
-                                  座席設定
-                                </button>
-                              )}
+                          <div
+                            className={`${previewMode ? 'h-full w-full rounded-md p-0 relative' : 'h-full w-full rounded-md border bg-white shadow-sm p-2 flex flex-col justify-between relative'}`}
+                          >
+                          <div className="pointer-events-none absolute -top-7 left-0 text-xs font-semibold text-slate-700">
+                            卓 {tableId}
+                          </div>
+                          {!previewMode && editMode && (
+                            <div className="absolute right-1 top-1">
+                              <button
+                                type="button"
+                                className="inline-flex items-center rounded px-2 py-[2px] text-[11px] font-semibold text-slate-600 border border-slate-200 bg-white hover:bg-slate-50"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenSeatMenu((prev) => (prev === tableId ? null : tableId));
+                                }}
+                                onPointerDown={(e) => {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                }}
+                              >
+                                座席設定
+                              </button>
                             </div>
                           )}
                           {previewMode ? (
-                            <div className="flex h-full flex-col rounded-md border shadow-sm px-2 py-2 text-[12px] leading-tight" style={{ backgroundColor: '#ffffff', borderColor: '#cbd5e1' }}>
-                              <div className="flex items-start justify-between gap-2 text-[13px] font-bold text-slate-800">
-                                <span className="font-mono leading-tight text-[17px]">19:30</span>
-                                <div className="flex items-center gap-1">
-                                  <span className="inline-flex items-center justify-center gap-[2px] rounded border px-[6px] py-[2px] text-[11px] font-semibold text-red-600 border-red-600 whitespace-nowrap">
+                            <div className="relative h-full w-full rounded-md border shadow-sm px-2 py-2 text-[12px] leading-tight" style={{ backgroundColor: '#ffffff', borderColor: '#cbd5e1' }}>
+                              <div className="flex flex-col gap-[2px]">
+                                <div className="flex items-center justify-end gap-[2px] text-[8px] leading-tight -mt-[3px] -mr-[2px] pr-0">
+                                  <span className="inline-flex items-center justify-center gap-[2px] rounded border px-[3px] py-[1px] text-[8px] font-semibold whitespace-nowrap bg-slate-50 border-red-600 text-red-600">
                                     P
                                   </span>
-                                  <span className="inline-flex items-center justify-center gap-[2px] rounded border px-[6px] py-[2px] text-[11px] font-semibold text-slate-600 border-slate-400 whitespace-nowrap">
+                                  <span className="inline-flex items-center justify-center gap-[2px] rounded border px-[3px] py-[1px] text-[8px] font-semibold whitespace-nowrap bg-slate-50 border-slate-500 text-slate-700">
                                     スタ
                                   </span>
                                 </div>
+                                <div className="flex items-start justify-center gap-2 text-[13px] font-bold text-slate-800">
+                                  <span className="font-mono leading-tight text-[17px]">19:30</span>
+                                </div>
                               </div>
                               <div className="flex-1 flex items-center justify-center">
-                                <div className="text-center text-[12px] text-slate-700 truncate leading-tight">しみず こういちろう</div>
+                                <div className="text-center text-[12px] text-slate-600 truncate leading-tight mt-[4px] mb-0">清水 けんいち</div>
                               </div>
                               <div className="pt-2 flex items-center justify-between gap-2 text-[13px] leading-tight">
                                 <span className="font-semibold text-slate-800 text-[14px]">2名</span>
-                                <span className="text-[12px] font-semibold truncate text-right flex-1" style={{ color: '#1f2937' }}>
-                                  2時間メッセ
+                                <span className="text-[11px] font-semibold truncate text-right flex-1" style={{ color: '#1f2937' }}>
+                                  2時間メセ
                                 </span>
                               </div>
                             </div>
@@ -708,65 +824,66 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
                     );
                   })}
                   {fixturesInArea.map(([fid, rect]) => {
-                    const style = fixtureStyleMap[rect.fixtureType ?? 'other'] ?? fixtureStyleMap.other;
-                    const label = rect.label && rect.label !== rect.fixtureType ? rect.label : style.label;
-                    const isSelected = selectedFixture === fid;
-                    const shape = style.shape === 'pill' ? 'rounded-full' : 'rounded-md';
-                    return (
-                      <div
-                        key={fid}
-                        className={`absolute ${editMode ? 'cursor-move' : ''}`}
-                        style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
-                        onPointerDown={(e) => {
-                          if (!editMode) return;
-                          setSelectedFixture(fid);
-                          areaHandleDrag(fid, 'move')(e);
-                        }}
-                      >
+                      const style = fixtureStyleMap[rect.fixtureType ?? 'other'] ?? fixtureStyleMap.other;
+                      const label = rect.label && rect.label !== rect.fixtureType ? rect.label : style.label;
+                      const isSelected = selectedFixture === fid;
+                      const shape = style.shape === 'pill' ? 'rounded-full' : 'rounded-md';
+                      return (
                         <div
-                          className={`h-full w-full ${shape} border ${style.border} ${style.bg} shadow-sm p-2 flex flex-col justify-center items-center gap-1 ${
-                            isSelected ? 'ring-2 ring-sky-400' : ''
-                          }`}
+                          key={fid}
+                          className={`absolute ${editMode ? 'cursor-move' : ''}`}
+                          style={{ left: rect.x, top: rect.y + LABEL_PAD_Y, width: rect.w, height: rect.h }}
+                          onPointerDown={(e) => {
+                            if (!editMode) return;
+                            setSelectedFixture(fid);
+                            areaHandleDrag(fid, 'move')(e);
+                          }}
                         >
-                          <div className="text-[11px] font-semibold text-slate-700">{style.icon}</div>
-                          <div className="text-sm font-semibold text-slate-800">{label}</div>
-                          <div className="text-[11px] text-slate-600">ドラッグで移動 / 右下でリサイズ</div>
-                        </div>
-                        {editMode && (
-                          <button
-                            type="button"
-                            className="absolute right-1 top-1 rounded bg-rose-600 px-2 py-[2px] text-[11px] font-semibold text-white shadow"
-                            onPointerDown={(e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setRemovedFixtures((prev) => (prev.includes(fid) ? prev : [...prev, fid]));
-                              const next = { ...layoutRef.current };
-                              delete next[fid];
-                              layoutRef.current = next;
-                              setLocalLayout(next);
-                              enqueueLayoutChange(next);
-                              setSelectedFixture(null);
-                            }}
-                          >
-                            削除
-                          </button>
-                        )}
-                        {editMode && (
                           <div
-                            className="absolute right-0 bottom-0 w-3 h-3 bg-slate-400 rounded-sm cursor-se-resize touch-none"
-                            onPointerDown={(e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
-                              areaHandleDrag(fid, 'resize')(e as any);
-                            }}
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
+                            className={`h-full w-full ${shape} border ${style.border} ${style.bg} shadow-sm p-2 flex flex-col justify-center items-center gap-1 ${
+                              isSelected ? 'ring-2 ring-sky-400' : ''
+                            }`}
+                          >
+                            <div className="text-[11px] font-semibold text-slate-700">{style.icon}</div>
+                            <div className="text-sm font-semibold text-slate-800">{label}</div>
+                            <div className="text-[11px] text-slate-600">ドラッグで移動 / 右下でリサイズ</div>
+                          </div>
+                          {editMode && (
+                            <button
+                              type="button"
+                              className="absolute right-1 top-1 rounded bg-rose-600 px-2 py-[2px] text-[11px] font-semibold text-white shadow"
+                              onPointerDown={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRemovedFixtures((prev) => (prev.includes(fid) ? prev : [...prev, fid]));
+                                const next = { ...layoutRef.current };
+                                delete next[fid];
+                                layoutRef.current = next;
+                                setLocalLayout(next);
+                                enqueueLayoutChange(next);
+                                setSelectedFixture(null);
+                              }}
+                            >
+                              削除
+                            </button>
+                          )}
+                          {editMode && (
+                            <div
+                              className="absolute right-0 bottom-0 w-3 h-3 bg-slate-400 rounded-sm cursor-se-resize touch-none"
+                              onPointerDown={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                areaHandleDrag(fid, 'resize')(e as any);
+                              }}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             </div>
