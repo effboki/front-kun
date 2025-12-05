@@ -223,6 +223,22 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
     [areaSections, getSeat, enqueueLayoutChange]
   );
 
+  const resetAllTableSizes = useCallback(() => {
+    setLocalLayout((prev) => {
+      const next: FloorLayoutMap = {};
+      Object.entries(prev).forEach(([id, rect]) => {
+        if (rect.kind === 'fixture') {
+          next[id] = rect;
+        } else {
+          next[id] = { ...rect, w: TABLE_W, h: TABLE_H };
+        }
+      });
+      layoutRef.current = next;
+      enqueueLayoutChange(next);
+      return next;
+    });
+  }, [enqueueLayoutChange]);
+
   // keep selected area valid when areas change
   useEffect(() => {
     const exists = areaSections.some((a) => a.id === fixtureAreaId);
@@ -462,6 +478,16 @@ export default function FloorLayoutSettings({ tables, areas, layout, tableCapaci
             ＋
           </button>
         </div>
+        {editMode && (
+          <button
+            type="button"
+            className="px-3 py-2 rounded border text-sm text-slate-700 bg-white hover:bg-slate-50"
+            onClick={resetAllTableSizes}
+            title="全テーブルのサイズを105x90に戻す"
+          >
+            すべての卓サイズを初期化
+          </button>
+        )}
         <div className="flex items-center gap-2 text-sm">
           <label className="text-slate-600">設備を追加:</label>
           <select
