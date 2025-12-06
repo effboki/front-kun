@@ -509,13 +509,40 @@ export default function FloorManagementView({
             currentEnd = Math.max(currentEnd, end);
           }
         }
-        const rid = String((it as any).id ?? (it as any)._key ?? '');
+        const rid = String(
+          (it as any).id
+          ?? (it as any)._key
+          ?? (it as any).reservationId
+          ?? ''
+        ).trim();
         if (!rid) return;
         const prev = map.get(rid);
         map.set(rid, prev ? Math.max(prev, currentRotation) : currentRotation);
       });
     });
     return map;
+  }, [tableQueues, computeEndMs]);
+
+  // テーブルごとの時間重複予約ID（ダブルブッキング判定用）
+  const overlappingReservationIds = useMemo(() => {
+    const ids = new Set<string>();
+    Object.values(tableQueues).forEach((list) => {
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i];
+          const b = list[j];
+          const start = Math.max(Number((a as any)?.startMs ?? 0), Number((b as any)?.startMs ?? 0));
+          const end = Math.min(computeEndMs(a as any), computeEndMs(b as any));
+          if (start < end) {
+            const ida = String((a as any)?.id ?? (a as any)?._key ?? (a as any)?.reservationId ?? '').trim();
+            const idb = String((b as any)?.id ?? (b as any)?._key ?? (b as any)?.reservationId ?? '').trim();
+            if (ida) ids.add(ida);
+            if (idb) ids.add(idb);
+          }
+        }
+      }
+    });
+    return ids;
   }, [tableQueues, computeEndMs]);
 
   const maxRotation = useMemo<Rotation>(() => {
@@ -531,12 +558,18 @@ export default function FloorManagementView({
     }
   }, [rotation, maxRotation]);
 
-  const cards = useMemo<CardModel[]>(() => {
+  // 回転を付与した予約カード（衝突考慮前の生データ）
+  const rawCards = useMemo<CardModel[]>(() => {
     return activeItems.map((it) => {
       const tablesList = (it.tables ?? []).map(normalizeTableId).filter(Boolean);
       const sortedTables = [...tablesList].sort(byNumericTable);
       const primaryTable = sortedTables[0] ?? tablesList[0] ?? '';
-      const rid = String((it as any).id ?? (it as any)._key ?? '');
+      const rid = String(
+        (it as any).id
+        ?? (it as any)._key
+        ?? (it as any).reservationId
+        ?? ''
+      ).trim();
       const rotationIdx = rotationIndexMap.get(rid) ?? 1;
       return {
         id: rid,
@@ -557,7 +590,95 @@ export default function FloorManagementView({
     });
   }, [activeItems, rotationIndexMap]);
 
-  const cardsCurrent = useMemo(() => cards.filter((c) => c.rotation === rotation), [cards, rotation]);
+  // 衝突検出用のテーブル→カード対応（全回転対象、重複検知専用）
+  const rawTableCardsAll = useMemo<Record<string, CardModel[]>>(() => {
+    const map: Record<string, CardModel[]> = {};
+    rawCards.forEach((card) => {
+      card.tables.forEach((t) => {
+        const key = normalizeTableId(t);
+        if (!key) return;
+        (map[key] ??= []).push(card);
+      });
+    });
+    Object.values(map).forEach((list) => {
+      list.sort((a, b) => (a.startMs - b.startMs) || (a.endMs - b.endMs));
+    });
+    return map;
+  }, [rawCards]);
+
+  const rawConflictsByTableAll = useMemo<Record<string, ConflictPair[]>>(() => {
+    const map: Record<string, ConflictPair[]> = {};
+    Object.entries(rawTableCardsAll).forEach(([tableId, list]) => {
+      const conflicts: ConflictPair[] = [];
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i];
+          const b = list[j];
+          const start = Math.max(a.startMs, b.startMs);
+          const end = Math.min(a.endMs, b.endMs);
+          if (start < end) {
+            conflicts.push({ a, b });
+          }
+        }
+      }
+      if (conflicts.length > 0) map[tableId] = conflicts;
+    });
+    return map;
+  }, [rawTableCardsAll]);
+
+  const conflictReservationIds = useMemo(() => {
+    const ids = new Set<string>();
+    const collect = (pairs: Record<string, ConflictPair[]>) => {
+      Object.values(pairs).forEach((list) => {
+        list.forEach((pair) => {
+          const ida = String(pair?.a?.id ?? '').trim();
+          const idb = String(pair?.b?.id ?? '').trim();
+          if (ida) ids.add(ida);
+          if (idb) ids.add(idb);
+        });
+      });
+    };
+    collect(rawConflictsByTableAll);
+    return ids;
+  }, [rawConflictsByTableAll]);
+
+  const conflictOrOverlapIds = useMemo(() => {
+    const ids = new Set<string>();
+    conflictReservationIds.forEach((id) => ids.add(id));
+    overlappingReservationIds.forEach((id) => ids.add(id));
+    return ids;
+  }, [conflictReservationIds, overlappingReservationIds]);
+
+  const conflictTableSetAll = useMemo(() => {
+    const set = new Set<string>();
+    Object.keys(rawConflictsByTableAll).forEach((key) => {
+      const t = normalizeTableId(key);
+      if (t) set.add(t);
+    });
+    return set;
+  }, [rawConflictsByTableAll]);
+
+  // 衝突する予約は rotation を 1 に強制する
+  const cards = useMemo<CardModel[]>(() => {
+    return rawCards.map((card) => {
+      if (card.id && conflictOrOverlapIds.has(card.id)) {
+        return { ...card, rotation: 1 };
+      }
+      return card;
+    });
+  }, [rawCards, conflictOrOverlapIds]);
+
+  const cardsCurrent = useMemo(
+    () => cards.filter((c) => {
+      if (c.rotation !== rotation) return false;
+      if (rotation === 1) return true;
+      if (c.id && conflictOrOverlapIds.has(c.id)) return false;
+      const hasConflictTable = c.tables.some((t) => conflictTableSetAll.has(normalizeTableId(t)));
+      if (hasConflictTable) return false;
+      return true;
+    }),
+    [cards, rotation, conflictOrOverlapIds, conflictTableSetAll]
+  );
 
   const tableCardsCurrent = useMemo<Record<string, CardModel[]>>(() => {
     const map: Record<string, CardModel[]> = {};
@@ -620,20 +741,6 @@ export default function FloorManagementView({
     });
     return map;
   }, [cards]);
-  const conflictReservationIds = useMemo(() => {
-    const ids = new Set<string>();
-    const collect = (pairs: Record<string, ConflictPair[]>) => {
-      Object.values(pairs).forEach((list) => {
-        list.forEach((pair) => {
-          if (pair?.a?.id) ids.add(pair.a.id);
-          if (pair?.b?.id) ids.add(pair.b.id);
-        });
-      });
-    };
-    collect(conflictsByTableCurrent);
-    collect(conflictsByTableAll);
-    return ids;
-  }, [conflictsByTableCurrent, conflictsByTableAll]);
   const conflictReservationTableSet = useMemo(() => {
     const set = new Set<string>();
     cards.forEach((card) => {
@@ -750,9 +857,9 @@ export default function FloorManagementView({
   }, []);
   const wasLongPressFired = useCallback((key: string) => Boolean(cardPressRef.current[key]?.fired), []);
 
-  const cardsByArea = useMemo(() => {
+  const cardsByAreaCurrent = useMemo(() => {
     const map = new Map<string, CardModel[]>();
-    cards.forEach((card) => {
+    cardsCurrent.forEach((card) => {
       const areasForCard = new Set<string>();
       card.tables.forEach((t) => {
         const aid = tableToArea[t];
@@ -766,7 +873,7 @@ export default function FloorManagementView({
       });
     });
     return map;
-  }, [cards, tableToArea, areaSections]);
+  }, [cardsCurrent, tableToArea, areaSections]);
 
   // keep layout in sync with table list (add missing, drop removed)
   useEffect(() => {
@@ -940,15 +1047,27 @@ export default function FloorManagementView({
     if (entries.length === 0) return;
     const normalized = entries.map(([id, session]) => {
       const list = Array.from(new Set((session.selected ?? []).map(normalizeTableId).filter(Boolean)));
-      return { id, list, primary: list[0] ?? '' };
+      const original = Array.from(new Set((session.original ?? []).map(normalizeTableId).filter(Boolean)));
+      const primary = list[0] ?? '';
+      const unchanged = list.length === original.length && list.every((v) => original.includes(v));
+      return { id, list, primary, original, unchanged };
     });
-    const counts: Record<string, number> = {};
+    const counts: Record<string, { total: number; items: typeof normalized }> = {};
     normalized.forEach((item) => {
+      if (item.unchanged || !item.primary) return;
       if (!item.primary) return;
-      counts[item.primary] = (counts[item.primary] || 0) + 1;
+      if (!counts[item.primary]) counts[item.primary] = { total: 0, items: [] as any };
+      counts[item.primary].total += 1;
+      counts[item.primary].items.push(item as any);
     });
-    const dup = Object.keys(counts).find((k) => counts[k] > 1);
-    if (dup) {
+    const dupEntry = Object.entries(counts).find(([, info]) => {
+      if (info.total <= 1) return false;
+      // すべての予約が元からこの卓を持っていた場合は許容（ダブルブッキング維持）
+      const allAlready = info.items.every((it: any) => (it.original ?? []).includes(it.primary));
+      return !allAlready;
+    });
+    if (dupEntry) {
+      const dup = dupEntry[0];
       toast.error(`同じ卓番号「${dup}」に複数の予約を割り当てようとしています。調整してください。`);
       return;
     }
@@ -1053,8 +1172,9 @@ export default function FloorManagementView({
     const guestsLabel = Number.isFinite(card.guests) && (card.guests ?? 0) > 0 ? `${card.guests}名` : '―';
     const timeLabel = fmtTime(card.startMs);
     const name = (card.name ?? '').toString().trim() || '—';
-    const fill = entry.color?.fill ?? '#fff7ed';
-    const outline = entry.color?.outline ?? '#f59e0b';
+    // Neutral background for conflict表示（以前のオレンジ強調をやめる）
+    const fill = entry.color?.fill ?? '#ffffff';
+    const outline = entry.color?.outline ?? '#cbd5e1';
     const dense = !!opts?.dense;
     const timeSize = dense ? 'text-[11px]' : 'text-[13px]';
     const nameSize = dense ? 'text-[10px]' : 'text-[12px]';
@@ -1239,8 +1359,7 @@ export default function FloorManagementView({
 
       <div className="flex flex-col gap-6 px-4 py-4">
         {areaSections.map((area) => {
-          const areaCards = cardsByArea.get(area.id) ?? [];
-          const selectedCards = areaCards.filter((c) => c.rotation === rotation);
+          const selectedCards = cardsByAreaCurrent.get(area.id) ?? [];
           const primaryMap = new Map<string, CardModel>();
           const linkMap = new Map<string, string>();
           selectedCards.forEach((c) => {
@@ -1447,7 +1566,8 @@ export default function FloorManagementView({
                       const primaryCard = isTable ? primaryMap.get(normalized) ?? null : null;
                       const linkedPrimary = isTable ? linkMap.get(normalized) : undefined;
                       const queue = isTable ? (tableQueues[normalized] ?? []) : [];
-                      const hasFuture = isTable ? queue.length > rotation : false;
+                      // rotation を越える「次の回転」がある場合のみ警告色にする。単なるダブルブッキングは除外。
+                      const hasFutureRotation = isTable ? (queue.length > rotation && conflicts.length === 0) : false;
                       const capacity = isTable ? (tableCapacitiesMap[normalized] ?? 0) : 0;
                       const chairs = isTable ? computeChairs(capacity, rect) : [];
                       const hideLinkedTable = isTable
@@ -1516,7 +1636,7 @@ export default function FloorManagementView({
                         >
                         {isTable && (
                           <div className="pointer-events-none absolute -top-7 left-0 flex items-center gap-2 text-sm font-semibold">
-                            <span className="text-slate-800">卓 {normalized}</span>
+                            <span className={hasFutureRotation ? 'text-red-600' : 'text-slate-800'}>卓 {normalized}</span>
                             {reassignMode && activeSelected && (
                               <span className="text-[11px] font-semibold text-emerald-700">選択中</span>
                             )}
@@ -1583,7 +1703,6 @@ export default function FloorManagementView({
                                         }}
                                       >
                                         {renderReservationCard(entry.card, {
-                                          highlightFuture: hasFuture,
                                           ghostColor: entry.color,
                                         })}
                                       </button>
@@ -1593,7 +1712,7 @@ export default function FloorManagementView({
                                   const renderEmpty = () => (
                                     <button
                                       type="button"
-                                      className="w-full h-full rounded-md border border-slate-300 py-6 text-center text-sm text-slate-500 hover:border-slate-400"
+                                      className="w-full h-full rounded-md border border-slate-300 py-6 text-center text-sm text-slate-400 hover:border-slate-400"
                                       onClick={() => {
                                         if (reassignMode && activeReassignId) {
                                           onTableToggle();
@@ -1602,7 +1721,7 @@ export default function FloorManagementView({
                                         openEditorForNew(normalized);
                                       }}
                                     >
-                                      {reassignMode ? 'この卓に移動' : '空席（タップで予約）'}
+                                      {reassignMode ? 'この卓に移動' : 'タップして予約'}
                                     </button>
                                   );
 
