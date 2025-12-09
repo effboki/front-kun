@@ -58,7 +58,7 @@ export function startOfDayMs(ms: number): number {
 
 export function startMsFromHHmmOnSameDay(dayStartMs: number, hhmm: string | number | null | undefined): number {
   const base0 = startOfDayMs(dayStartMs);
-  const mins = parseTimeToMinutes(hhmm as any);
+  const mins = parseTimeToMinutes(hhmm ?? undefined);
   return base0 + mins * 60_000;
 }
 

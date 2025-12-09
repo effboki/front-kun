@@ -91,7 +91,6 @@ export function clampRangeToGrid(rng: TimeRange, cfg: GridConfig): TimeRange {
   let eCol = msToCol(r.endMs, cfg);
 
   // まず端にはみ出たら押し戻す（長さは保持）
-  const len = eCol - sCol;
   if (sCol < minCol) {
     eCol += (minCol - sCol);
     sCol = minCol;

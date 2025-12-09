@@ -3,10 +3,10 @@ import { type StoreSettings } from '@/types/settings';
 import { getStoreId } from './firebase';
 
 // =========================
-// Local storage key (per store)
+// Local storage key (per store, resolved lazily for SPA store switching)
 // =========================
-const ns = `front-kun-${getStoreId()}`;
-export const QUEUE_KEY = `${ns}-opsQueue`;
+const queueKeyForStore = (storeId: string) => `front-kun-${storeId}-opsQueue`;
+export const getQueueKey = () => queueKeyForStore(getStoreId());
 
 // =========================
 // Op types (store-aware / dedupe-able)
@@ -36,6 +36,14 @@ type EnqueueInput =
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
 
+type LegacyQueuedAt = { queuedAt?: unknown; ts?: unknown };
+
+const normalizeQueuedAt = (input: LegacyQueuedAt): number | undefined => {
+  const raw = input.queuedAt ?? input.ts;
+  const num = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+  return Number.isFinite(num) ? Math.trunc(num) : undefined;
+};
+
 const normalizeReservationPayload = (payload: unknown): ReservationPayload | null => {
   if (!isRecord(payload)) return null;
   const idValue = payload.id;
@@ -46,8 +54,7 @@ const normalizeReservationPayload = (payload: unknown): ReservationPayload | nul
 const normalizeOp = (op: unknown, fallbackStoreId: string): Op | null => {
   if (!isRecord(op)) return null;
   const dedupeKey = typeof op.dedupeKey === 'string' ? op.dedupeKey : undefined;
-  const queuedAtRaw = Number((op as any).queuedAt ?? (op as any).ts);
-  const queuedAt = Number.isFinite(queuedAtRaw) ? Math.trunc(queuedAtRaw) : undefined;
+  const queuedAt = normalizeQueuedAt(op as LegacyQueuedAt);
   const storeId =
     typeof op.storeId === 'string' && op.storeId.length > 0 ? op.storeId : fallbackStoreId;
 
@@ -99,7 +106,7 @@ const normalizeOp = (op: unknown, fallbackStoreId: string): Op | null => {
 function loadQueue(): Op[] {
   try {
     if (typeof localStorage === 'undefined') return [];
-    const raw = localStorage.getItem(QUEUE_KEY);
+    const raw = localStorage.getItem(getQueueKey());
     const parsed = raw ? (JSON.parse(raw) as unknown) : [];
     if (!Array.isArray(parsed)) return [];
     const sid = getStoreId();
@@ -114,8 +121,8 @@ function loadQueue(): Op[] {
 function saveQueue(queue: Op[]) {
   try {
     if (typeof localStorage === 'undefined') return;
-    if (queue.length === 0) localStorage.removeItem(QUEUE_KEY);
-    else localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+    if (queue.length === 0) localStorage.removeItem(getQueueKey());
+    else localStorage.setItem(getQueueKey(), JSON.stringify(queue));
   } catch {
     // no-op
   }
@@ -131,8 +138,8 @@ export function enqueueOp(op: EnqueueInput): void {
     return;
   }
   // Stamp enqueue time (legacy entries may not have it)
-  if (!Number.isFinite(Number((normalized as any).queuedAt))) {
-    (normalized as any).queuedAt = Date.now();
+  if (!Number.isFinite(normalized.queuedAt ?? Number.NaN)) {
+    normalized.queuedAt = Date.now();
   }
 
   // 既存キューを読み取り
@@ -193,14 +200,14 @@ export async function flushQueuedOps(): Promise<void> {
     const freshOps: Op[] = [];
     let dropped = 0;
     toProcess.forEach((op) => {
-      const ts = Number((op as any).queuedAt ?? (op as any).ts);
-      if (Number.isFinite(ts) && now - ts > STALE_MS) {
+      const ts = normalizeQueuedAt(op as LegacyQueuedAt);
+      if (ts !== undefined && now - ts > STALE_MS) {
         dropped += 1;
         return;
       }
-      if (!Number.isFinite(ts)) {
+      if (ts === undefined) {
         // legacy entry: keep but stamp to avoid future indefinite retries
-        (op as any).queuedAt = now;
+        op.queuedAt = now;
       }
       freshOps.push(op);
     });

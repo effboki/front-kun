@@ -7,6 +7,7 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import { doc, getDoc, setDoc, waitForPendingWrites } from 'firebase/firestore';
 import { enqueueOp } from './opsQueue';
+import type { Reservation } from '@/types';
 import type { StoreSettings } from '@/types/settings';
 
 // ── StoreSettings のデフォルト（Firestore / localStorage 双方で使い回す）──
@@ -93,11 +94,13 @@ export function getStoreId(): string {
   return cleaned || fallback;
 }
 
-// ── localStorage 名前空間設定 ─────────────────
+// ── localStorage 名前空間設定（storeId を毎回解決して SPA での店舗切り替えにも対応） ─────────────────
+const storageNamespaceFor = (storeId: string) => `front-kun-${storeId}`;
+const reservationsKeyFor = (storeId: string) => `${storageNamespaceFor(storeId)}-reservations`;
+const storeSettingsKeyFor = (storeId: string) => `${storageNamespaceFor(storeId)}-storeSettings`;
 
-const ns = `front-kun-${getStoreId()}`;
-const RES_KEY = `${ns}-reservations`;
-const STORE_KEY = `${ns}-storeSettings`;
+const getReservationsKey = () => reservationsKeyFor(getStoreId());
+const getStoreSettingsKey = () => storeSettingsKeyFor(getStoreId());
 
 // Firebase config は .env.local (NEXT_PUBLIC_*) から取得
 export const firebaseConfig = {
@@ -128,26 +131,30 @@ export const db = getFirestore(app);
 // ─────────────────────────────────────────────
 
 /** 予約一覧を取得 */
-export function getReservations(): any[] {
+export function getReservations(): Reservation[] {
   try {
-    return JSON.parse(localStorage.getItem(RES_KEY) || '[]');
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(getReservationsKey());
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? (parsed as Reservation[]) : [];
   } catch {
     return [];
   }
 }
 
 /** 予約一覧を保存 */
-export function saveReservations(arr: any[]): void {
-  localStorage.setItem(RES_KEY, JSON.stringify(arr));
+export function saveReservations(arr: Reservation[]): void {
+  if (typeof localStorage === 'undefined') return;
+  localStorage.setItem(getReservationsKey(), JSON.stringify(arr));
 }
 
 /** 店舗設定（eatOptions / drinkOptions / courses / tables / positions / tasksByPosition）を取得 */
 export function getStoreSettings(): StoreSettings {
   try {
-    return JSON.parse(
-      localStorage.getItem(STORE_KEY) ??
-        JSON.stringify(DEFAULT_STORE_SETTINGS)
-    );
+    if (typeof localStorage === 'undefined') return DEFAULT_STORE_SETTINGS;
+    const raw = localStorage.getItem(getStoreSettingsKey());
+    const parsed = raw ? (JSON.parse(raw) as unknown) : DEFAULT_STORE_SETTINGS;
+    return (parsed as StoreSettings) ?? DEFAULT_STORE_SETTINGS;
   } catch {
     return DEFAULT_STORE_SETTINGS;
   }
@@ -155,7 +162,8 @@ export function getStoreSettings(): StoreSettings {
 
 /** 店舗設定（eatOptions / drinkOptions / courses / tables / positions / tasksByPosition）を保存 */
 export function saveStoreSettings(obj: StoreSettings): void {
-  localStorage.setItem(STORE_KEY, JSON.stringify(obj));
+  if (typeof localStorage === 'undefined') return;
+  localStorage.setItem(getStoreSettingsKey(), JSON.stringify(obj));
 }
 
 /* ────────────────────────────────
@@ -216,19 +224,19 @@ export async function saveStoreSettingsTx(
   const ref = doc(db, 'stores', getStoreId(), 'settings', 'config');
 
   // 送信前に浅いクローン（まずは受け取り shape を保つ）
-  const payload: Partial<StoreSettings> & Record<string, any> = { ...settings };
+  const payload: Partial<StoreSettings> & Record<string, unknown> = { ...settings };
 
   // === Deep sanitize (Firestore が禁止する undefined を全除去) ===
   // - トップレベル: undefined のキーは削除
   // - 配列: undefined / null を除去し、空配列になったらキーごと削除
   // - tasksByPosition: ネスト内配列の undefined / null を除去。空の配列・空の内側オブジェクトを落とし、
   //   最終的に空オブジェクトならキーごと削除
-  const safe: Record<string, any> = {};
+  const safe: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(payload)) {
     if (value === undefined) continue; // Firestore は undefined を禁止
 
     if (Array.isArray(value)) {
-      const filtered = value.filter((x) => x !== undefined && x !== null);
+      const filtered = (value as unknown[]).filter((x) => x !== undefined && x !== null);
       if (filtered.length === 0) continue; // 空で上書きしない
       safe[key] = filtered;
       continue;
@@ -236,12 +244,14 @@ export async function saveStoreSettingsTx(
 
     if (key === 'tasksByPosition' && value && typeof value === 'object' && !Array.isArray(value)) {
       const tbp: Record<string, Record<string, string[]>> = {};
-      for (const [pos, cmap] of Object.entries(value as Record<string, any>)) {
+      for (const [pos, cmap] of Object.entries(value as Record<string, unknown>)) {
         if (!cmap || typeof cmap !== 'object') continue;
         const inner: Record<string, string[]> = {};
-        for (const [course, arr] of Object.entries(cmap as Record<string, any>)) {
+        for (const [course, arr] of Object.entries(cmap as Record<string, unknown>)) {
           if (!Array.isArray(arr)) continue;
-          const filtered = (arr as any[]).filter((x) => x !== undefined && x !== null).map((x) => String(x));
+          const filtered = (arr as unknown[])
+            .filter((x) => x !== undefined && x !== null)
+            .map((x) => String(x));
           if (filtered.length > 0) inner[String(course)] = filtered;
         }
         if (Object.keys(inner).length > 0) tbp[String(pos)] = inner;
@@ -287,7 +297,7 @@ async function flushAllQueues() {
   try {
     // Firestore SDK 側のローカル書き込み（IndexedDB）の送信完了を待つ
     await waitForPendingWrites(db);
-  } catch (e) {
+  } catch {
     // no-op: offline などではここで落ちる可能性があるが、自前キューの送信に進む
   }
   await flushOpsQueueSafely();
