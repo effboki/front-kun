@@ -17,7 +17,7 @@ import { getMyMiniTaskTemplates, toInstances, countPending, yyyymmdd } from '@/l
 import { subscribeDoneSet, setDone } from '@/lib/firebase/miniTasks';
 import { DEFAULT_POSITION_LABEL } from '@/constants/positions';
 import { useReservationsData } from '@/hooks/useReservationsData';
-import { formatMinutesToTime, parseTimeToMinutes } from '@/lib/time';
+import { formatMinutesToTime, parseTimeToMinutes, resolveScheduleAnchorMs } from '@/lib/time';
 import { updateReservationFS } from '@/lib/reservations';
 
 // ===== Context =====
@@ -95,19 +95,6 @@ function saveIdSet(key: string, set: Set<string>) {
   } catch {}
 }
 
-function resolveScheduleDayStartMs(schedule?: StoreSettingsValue['schedule']): number {
-  const now = new Date();
-  const fallbackHour = 15;
-  const rawStart = Number(schedule?.dayStartHour);
-  const startHour = Number.isFinite(rawStart) ? rawStart : fallbackHour;
-  const base = new Date(now);
-  base.setHours(startHour, 0, 0, 0);
-  if (base.getTime() > now.getTime()) {
-    base.setDate(base.getDate() - 1);
-  }
-  return base.getTime();
-}
-
 // ===== Provider =====
 export function MiniTaskProvider(props: {
   children: ReactNode;
@@ -145,8 +132,8 @@ export function MiniTaskProvider(props: {
     typeof selectedPositionId === 'string' ? selectedPositionId.trim() : '';
 
   const reservationsDayStartMs = React.useMemo(
-    () => resolveScheduleDayStartMs(settings.schedule),
-    [settings.schedule]
+    () => resolveScheduleAnchorMs(settings.schedule?.dayStartHour),
+    [settings.schedule?.dayStartHour]
   );
 
   const { reservations, setReservations } = useReservationsData(storeId, {

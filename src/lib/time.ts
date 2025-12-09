@@ -74,3 +74,26 @@ export function msToHHmmFromDay(startMs: number, dayStartMs: number): string {
   const wrapped = ((diffMin % minutesInDay) + minutesInDay) % minutesInDay;
   return formatMinutesToTime(wrapped);
 }
+
+/**
+ * スケジュール用の基準開始msを「直近の開始時刻」に寄せて返す。
+ * - 今日の startHour と、前日の startHour のどちらが“今”に近いかで選択。
+ *   （開店前の朝でも当日側を選び、深夜帯は前日側を選ぶ挙動になる）
+ */
+export function resolveScheduleAnchorMs(dayStartHour?: number | null, fallbackHour = 15): number {
+  const raw = Number(dayStartHour);
+  const startHour = Number.isFinite(raw) ? raw : fallbackHour;
+  const now = Date.now();
+
+  const today = new Date(now);
+  today.setHours(startHour, 0, 0, 0);
+
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  const diffToday = Math.abs(today.getTime() - now);
+  const diffYesterday = Math.abs(now - yesterday.getTime());
+
+  const base = diffYesterday < diffToday ? yesterday : today;
+  return base.getTime();
+}

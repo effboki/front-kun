@@ -813,6 +813,18 @@ export default function FloorManagementView({
     return map;
   }, [reassignSessions]);
   const reassignMode = sessionOrder.length > 0;
+  const isCardVisibleOnTable = useCallback(
+    (card: CardModel, tableId: string) => {
+      if (!reassignMode) return true;
+      const sid = sessionByReservationId.get(card.id);
+      if (!sid) return true;
+      const session = reassignSessions[sid];
+      if (!session) return true;
+      const list = Array.from(new Set((session.selected ?? []).map(normalizeTableId).filter(Boolean)));
+      return list.includes(normalizeTableId(tableId));
+    },
+    [reassignMode, sessionByReservationId, reassignSessions]
+  );
   const CARD_LONG_MS = 650;
   const CARD_MOVE_TOL = 10;
   const beginCardLongPress = useCallback((key: string, e: React.PointerEvent | PointerEvent, onLong: () => void) => {
@@ -1580,7 +1592,9 @@ export default function FloorManagementView({
                       const sessionSelections = isTable ? (selectedTablesBySession[normalized] ?? []) : [];
                       const existingCards = isTable ? (tableCardsCurrent[normalized] ?? []) : [];
                       const existingEntries: DisplayEntry[] = isTable
-                        ? existingCards.map((card) => {
+                        ? existingCards
+                            .filter((card) => isCardVisibleOnTable(card, normalized))
+                            .map((card) => {
                             const sid = sessionByReservationId.get(card.id);
                             const color = sid ? pickSessionColor(sid) : undefined;
                             return { card, sessionId: sid, source: 'existing', color };

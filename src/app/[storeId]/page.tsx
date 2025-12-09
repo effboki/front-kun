@@ -50,7 +50,7 @@ import type {
 
 import TasksSection from './_components/TasksSection';
 import ScheduleView from './_components/schedule/ScheduleView'; // NOTE: render with storeSettings={settingsDraft}
-import { parseTimeToMinutes, formatMinutesToTime, startOfDayMs } from '@/lib/time';
+import { parseTimeToMinutes, formatMinutesToTime, startOfDayMs, resolveScheduleAnchorMs } from '@/lib/time';
 import StoreSettingsContent from "./_components/settings/StoreSettingsContent";
 import PreopenSettingsContent from "./_components/preopen/PreopenSettingsContent";
 import { ALL_POSITIONS_KEY, DEFAULT_POSITION_LABEL } from '@/constants/positions';
@@ -710,18 +710,8 @@ const [baselineSettings, setBaselineSettings] =
   const id = typeof storeId === 'string' ? storeId : 'default';
   // Day-start baseline (ms): derived from settingsDraft.schedule.dayStartHour; fallback 15:00
   const dayStartMs = useMemo(() => {
-    const startHour =
-      typeof settingsDraft?.schedule?.dayStartHour === 'number'
-        ? settingsDraft.schedule.dayStartHour
-        : 15;
-    const now = new Date();
-    const start = new Date(now);
-    start.setHours(startHour, 0, 0, 0);
-    if (start.getTime() > now.getTime()) {
-      start.setDate(start.getDate() - 1);
-    }
-    return start.getTime();
-  }, [settingsDraft]);
+    return resolveScheduleAnchorMs((settingsDraft as any)?.schedule?.dayStartHour);
+  }, [settingsDraft?.schedule?.dayStartHour]);
 
   // Display window for Schedule (parent decides; child does not hardcode)
   const scheduleStartHour = useMemo(() => {
