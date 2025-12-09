@@ -562,6 +562,13 @@ const ReservationsSection = memo(function ReservationsSection({
     ? 'text-[11px] sm:text-xs'
     : 'text-[13px] sm:text-sm';
 
+  const getCourseLabel = (res: ReservationCompat): string => {
+    const course = typeof res.course === 'string' ? res.course.trim() : '';
+    if (course) return course;
+    const courseName = typeof (res as any)?.courseName === 'string' ? (res as any).courseName.trim() : '';
+    return courseName;
+  };
+
   const handleImportApply = useCallback(
     async (rows: ImportedReservation[]) => {
       for (const row of rows) {
@@ -817,7 +824,7 @@ const ReservationsSection = memo(function ReservationsSection({
           time: r.time,
           table: (r.table ?? r.tables?.[0] ?? ''),
           name: r.name ?? '',
-          course: r.course ?? '',
+          course: getCourseLabel(r),
           eat: r.eat ?? '',
           drink: r.drink ?? '',
           guests: Number(r.guests) || 0,
@@ -841,7 +848,7 @@ const ReservationsSection = memo(function ReservationsSection({
         time: r.time,
         table: (r.table ?? r.tables?.[0] ?? ''),
         name: r.name ?? '',
-        course: r.course ?? '',
+        course: getCourseLabel(r),
         eat: r.eat ?? '',
         drink: r.drink ?? '',
         guests: Number(r.guests) || 0,
@@ -1808,7 +1815,7 @@ const ReservationsSection = memo(function ReservationsSection({
                     {/* コースセル */}
                     <td className={`border px-1 ${padY}`}>
                       {(() => {
-                        const courseRaw = typeof r.course === 'string' ? r.course.trim() : '';
+                        const courseRaw = getCourseLabel(r);
                         const selectValue = courseRaw || '未選択';
                         const handleChange = (value: string) => {
                           const next = value.trim() === '' ? '未選択' : value;

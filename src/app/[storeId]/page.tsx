@@ -3133,6 +3133,13 @@ const deleteCourse = async () => {
   const sortedReservations =
     resOrder === 'time' ? sortedByTime : resOrder === 'created' ? sortedByCreated : sortedByTable;
 
+  const getCourseLabel = useCallback((r: { course?: string; courseName?: string }) => {
+    const course = typeof r?.course === 'string' ? r.course.trim() : '';
+    if (course) return course;
+    const courseName = typeof r?.courseName === 'string' ? r.courseName.trim() : '';
+    return courseName;
+  }, []);
+
   // ▼ 共通 → タブ別フィルタへ分割
   // 1) 営業前設定の「表示する卓」だけを適用した共通フィルタ（コース絞り込みは含めない）
   const filteredByTables = useMemo(() => {
@@ -3149,6 +3156,7 @@ const deleteCourse = async () => {
   const filteredReservationsTasks = useMemo(() => {
     const map = tableToAreasLocal || {};
     return filteredByTables.filter((r) => {
+      const courseLabel = getCourseLabel(r);
       if (filterArea !== '全て') {
         const tables = Array.isArray(r.tables) && r.tables.length > 0 ? r.tables : [r.table];
 
@@ -3167,19 +3175,20 @@ const deleteCourse = async () => {
         }
       }
 
-      if (tasksFilterCourse !== '全体' && r.course !== tasksFilterCourse) return false;
+      if (tasksFilterCourse !== '全体' && courseLabel !== tasksFilterCourse) return false;
       return true;
     });
-  }, [filteredByTables, filterArea, tableToAreasLocal, tasksFilterCourse]);
+  }, [filteredByTables, filterArea, tableToAreasLocal, tasksFilterCourse, getCourseLabel]);
 
   // 3) コース開始時間表専用：営業前設定フィルタの反映有無 + cs_filterCourse を適用
   const filteredReservationsCourseStart = useMemo(() => {
     const source = courseStartFiltered ? filteredByTables : sortedReservations;
     return source.filter((r) => {
-      if (csFilterCourse !== '全体' && r.course !== csFilterCourse) return false;
+      const courseLabel = getCourseLabel(r);
+      if (csFilterCourse !== '全体' && courseLabel !== csFilterCourse) return false;
       return true;
     });
-  }, [filteredByTables, sortedReservations, courseStartFiltered, csFilterCourse]);
+  }, [filteredByTables, sortedReservations, courseStartFiltered, csFilterCourse, getCourseLabel]);
 
   /* ─── 2.x リマインド機能 state & ロジック ───────────────────────── */
   // 通知の ON/OFF（永続化：localStorage に保存 / 復元）
@@ -3254,12 +3263,13 @@ const deleteCourse = async () => {
 
     // 対象となる予約を走査
     reservations.forEach((res) => {
+      const courseLabel = getCourseLabel(res);
       // 退店済みは対象外
       if (checkedDepartures.includes(res.id)) return;
       // コース未設定は対象外
-      if (!res.course || res.course === '未選択') return;
+      if (!courseLabel || courseLabel === '未選択') return;
 
-      const cdef = courses.find((c) => c.name === res.course);
+      const cdef = courses.find((c) => c.name === courseLabel);
       if (!cdef) return;
 
       const baseMin = parseTimeToMinutes(res.time);
@@ -3267,13 +3277,13 @@ const deleteCourse = async () => {
       const _tasks = Array.isArray(cdef?.tasks) ? cdef.tasks : [];
       for (const t of _tasks) {
         // 営業前設定の表示タスクフィルターを尊重（非表示タスクは通知しない）
-        if (!isTaskAllowed(res.course, t.label)) continue;
+        if (!isTaskAllowed(courseLabel, t.label)) continue;
 
         const absMin = baseMin + t.timeOffset + (res.timeShift?.[t.label] ?? 0);
         if (absMin !== nowMin) continue; // ちょうど今の分だけ通知
 
         const dateStr = res.date || todayKey();
-        const dedupeKey = `${dateStr}_${res.id}_${t.label}_${res.course}_${res.time}`;
+        const dedupeKey = `${dateStr}_${res.id}_${t.label}_${courseLabel}_${res.time}`;
         if (hasSent(dedupeKey)) continue;
 
         markSent(dedupeKey);
@@ -3281,7 +3291,7 @@ const deleteCourse = async () => {
           storeId: id,
           reservationId: res.id,
           table: res.table,
-          course: res.course,
+          course: courseLabel,
           taskLabel: t.label,
           timeKey: nowKey,
           date: dateStr,
@@ -3291,7 +3301,7 @@ const deleteCourse = async () => {
       }
     });
     // 依存には、時刻の他、予約・設定類を含める（重い場合は最小化してOK）
-  }, [currentTime, remindersEnabled, reservations, courses, checkedTasks, selectedDisplayPosition, tasksByPosition, courseByPosition, checkedDepartures]);
+  }, [currentTime, remindersEnabled, reservations, courses, checkedTasks, selectedDisplayPosition, tasksByPosition, courseByPosition, checkedDepartures, getCourseLabel]);
 
   /** 「これから来るタスク」を時刻キーごとにまとめた配列
    *  [{ timeKey: "18:15", tasks: ["コース説明", "カレー"] }, ... ]
@@ -3303,9 +3313,10 @@ const deleteCourse = async () => {
     const map: Record<string, Set<string>> = {};
 
     filteredReservationsTasks.forEach((res) => {
+      const courseLabel = getCourseLabel(res);
       // 除外: 既に退店済みの予約
       if (checkedDepartures.includes(res.id)) return;
-      const courseDef = courses.find((c) => c.name === res.course);
+      const courseDef = courses.find((c) => c.name === courseLabel);
       if (!courseDef) return;
       const baseMin = parseTimeToMinutes(res.time);
 
@@ -3313,7 +3324,7 @@ const deleteCourse = async () => {
       for (const t of _tasks) {
         const absMin = calcTaskAbsMin(res.time, t.timeOffset, t.label, res.timeShift);
         // ---------- 表示タスクフィルター ----------
-        if (!isTaskAllowed(res.course, t.label)) continue; // 表示フィルター非対象はスキップ
+        if (!isTaskAllowed(courseLabel, t.label)) continue; // 表示フィルター非対象はスキップ
         // ------------------------------------------
         if (absMin < nowMin) continue; // 既に過ぎているタスクは対象外
         const timeKey = formatMinutesToTime(absMin);
@@ -3326,7 +3337,7 @@ const deleteCourse = async () => {
     return Object.entries(map)
       .sort((a, b) => parseTimeToMinutes(a[0]) - parseTimeToMinutes(b[0]))
       .map(([timeKey, set]) => ({ timeKey, tasks: Array.from(set) }));
-  }, [filteredReservationsTasks, courses, currentTime, checkedDepartures]);
+  }, [filteredReservationsTasks, courses, currentTime, checkedDepartures, getCourseLabel]);
 
   // 回転テーブル判定: 同じ卓番号が複数予約されている場合、その卓は回転中とみなす（参照安定化）
   const { rotatingTables, firstRotatingId } = useMemo(() => {
@@ -3358,9 +3369,10 @@ const deleteCourse = async () => {
     // ここでは CourseStart 専用の配列を利用（営業前設定フィルタの反映有無＋コース絞り込み込み）
     const source = filteredReservationsCourseStart;
     source.forEach((r) => {
+      const courseLabel = getCourseLabel(r) || '未選択';
       if (!map[r.time]) map[r.time] = {};
-      if (!map[r.time][r.course]) map[r.time][r.course] = [];
-      map[r.time][r.course].push(r);
+      if (!map[r.time][courseLabel]) map[r.time][courseLabel] = [];
+      map[r.time][courseLabel].push(r);
     });
     // timeKey → [{ courseName, reservations }]
     return Object.fromEntries(
@@ -3369,7 +3381,7 @@ const deleteCourse = async () => {
         Object.entries(coursesMap).map(([courseName, reservations]) => ({ courseName, reservations })),
       ])
     );
-  }, [filteredReservationsCourseStart]);
+  }, [filteredReservationsCourseStart, getCourseLabel]);
 
   type TaskGroup = {
     timeKey: string;
@@ -3393,14 +3405,15 @@ const deleteCourse = async () => {
     filteredReservationsTasks.forEach((res) => {
       // Skip tasks for departed reservations
       if (checkedDepartures.includes(res.id)) return;
-      if (res.course === '未選択') return;
-      const courseDef = courses.find((c) => c.name === res.course);
+      const courseLabel = getCourseLabel(res);
+      if (!courseLabel || courseLabel === '未選択') return;
+      const courseDef = courses.find((c) => c.name === courseLabel);
       if (!courseDef) return;
 
       const _tasks2 = Array.isArray(courseDef?.tasks) ? courseDef.tasks : [];
       for (const t of _tasks2) {
         // === 営業前設定の「表示するタスク」フィルター（正規化済み集合を利用） ===
-        const set = allowedLabelSetByCourse[res.course];
+        const set = allowedLabelSetByCourse[courseLabel];
         const allowed = !set || set.size === 0 || set.has(normalizeLabel(t.label));
         if (!allowed) continue;
 
@@ -3432,9 +3445,9 @@ const deleteCourse = async () => {
             taskGroup.endTimeKey = endTimeKey;
           }
         }
-        let courseGroup = taskGroup.courseGroups.find((cg) => cg.courseName === res.course);
+        let courseGroup = taskGroup.courseGroups.find((cg) => cg.courseName === courseLabel);
         if (!courseGroup) {
-          courseGroup = { courseName: res.course, reservations: [] };
+          courseGroup = { courseName: courseLabel, reservations: [] };
           taskGroup.courseGroups.push(courseGroup);
         }
         courseGroup.reservations.push(res);
@@ -3467,7 +3480,7 @@ const deleteCourse = async () => {
     });
 
     return { groupedTasks: grouped, sortedTimeKeys: keys };
-  }, [filteredReservationsTasks, courses, checkedDepartures, allowedLabelSetByCourse]);
+  }, [filteredReservationsTasks, courses, checkedDepartures, allowedLabelSetByCourse, getCourseLabel]);
 
   // ─── “リマインド用” 直近タイムキー（現在含む先頭4つ） ───
   const futureTimeKeys = useMemo(() => {
